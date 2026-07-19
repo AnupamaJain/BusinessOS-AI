@@ -1,9 +1,32 @@
 import { logger } from '@business-os-ai/shared-types';
-import type { ToolDataStore } from '@business-os-ai/mcp-business-tools';
+import type { BusinessStore, AutomationRunRecord, ContactRecord } from '@business-os-ai/mcp-business-tools';
 import { randomUUID } from 'crypto';
 
+export interface TemplateSendResult {
+  success: boolean;
+  providerMessageId?: string;
+  error?: string;
+}
+
+export type TemplateSender = (params: {
+  run: AutomationRunRecord;
+  contact: ContactRecord;
+  content: string;
+  templateKey: string;
+}) => Promise<TemplateSendResult>;
+
+export interface SchedulerWorkerOptions {
+  /**
+   * Real outbound dispatcher (WhatsApp template send via the gateway adapter).
+   * When omitted (tests / dry-run) the message is persisted without dispatch.
+   */
+  sendTemplate?: TemplateSender;
+  /** When true, evaluates eligibility but never dispatches. */
+  dryRun?: boolean;
+}
+
 export class SchedulerWorker {
-  constructor(private store: ToolDataStore) {}
+  constructor(private store: BusinessStore, private options: SchedulerWorkerOptions = {}) {}
 
   /**
    * Polls and processes all due automation runs.
@@ -18,10 +41,7 @@ export class SchedulerWorker {
     let failedCount = 0;
     let skippedCount = 0;
 
-    // Filter due runs
-    const dueRuns = this.store.automationRuns.filter((run) => {
-      return run.status === 'scheduled' && new Date(run.scheduledFor) <= now;
-    });
+    const dueRuns = await this.store.listDueAutomationRuns(now);
 
     for (const run of dueRuns) {
       processedCount++;
@@ -34,50 +54,69 @@ export class SchedulerWorker {
       }
 
       // 2. Validate current consent status (requires active marketing opt-in)
-      const contact = this.store.contacts.find((c) => c.id === run.contactId && c.organizationId === run.organizationId);
+      const contact = await this.store.findContactById(run.organizationId, run.contactId);
       if (!contact) {
-        run.status = 'failed';
-        this.logAudit(run.organizationId, 'automation_failed', 'automation_run', run.id, { error: 'contact_not_found' });
+        await this.failRun(run, 'contact_not_found');
         failedCount++;
         continue;
       }
 
-      const marketingConsent = this.store.consentRecords.filter((c) => c.contactId === run.contactId && c.organizationId === run.organizationId && c.consentType === 'marketing');
+      const consent = await this.store.listConsent(run.organizationId, run.contactId);
+      const marketingConsent = consent.filter((c) => c.consentType === 'marketing');
       const latest = marketingConsent[marketingConsent.length - 1];
 
-      // Opt-out check
-      const optOuts = this.store.consentRecords.filter((c) => c.contactId === run.contactId && c.organizationId === run.organizationId && c.action === 'opt_out');
-      const hasOptedOut = optOuts.length > 0 && (!latest || latest.action === 'opt_out' || optOuts.indexOf(optOuts[optOuts.length - 1]!) > marketingConsent.indexOf(latest));
+      const optOuts = consent.filter((c) => c.action === 'opt_out');
+      const hasOptedOut = optOuts.length > 0 &&
+        (!latest || latest.action === 'opt_out' || consent.indexOf(optOuts[optOuts.length - 1]!) > consent.indexOf(latest));
 
       if (!latest || latest.action !== 'opt_in' || hasOptedOut) {
         logger.warn('Failing run: Consent revoked or missing.', { runId: run.id, contactId: run.contactId });
-        run.status = 'failed';
-        this.logAudit(run.organizationId, 'automation_failed', 'automation_run', run.id, { error: 'consent_revoked_or_missing' });
+        await this.failRun(run, 'consent_revoked_or_missing');
         failedCount++;
         continue;
       }
 
-      // 3. Trigger WhatsApp Outbound template call (Simulated)
+      // 3. Dry-run mode: evaluate only
+      if (this.options.dryRun) {
+        logger.info('Dry-run: automation eligible, not dispatched.', { runId: run.id });
+        skippedCount++;
+        continue;
+      }
+
+      // 4. Render the approved template and dispatch
       try {
-        // Simulate sending outbound message
-        const outboundMsg = `[TEMPLATE: ${run.templateKey}] Hello! We are following up on your skincare request.`;
-        this.store.messages.push({
+        const template = await this.store.findTemplate(run.organizationId, run.templateKey);
+        const content = renderTemplate(template?.content, {
+          name: contact.name ?? 'there',
+          product: 'your enquiry',
+        }) ?? `[TEMPLATE: ${run.templateKey}] Hello! We are following up on your enquiry.`;
+
+        if (this.options.sendTemplate) {
+          const result = await this.options.sendTemplate({ run, contact, content, templateKey: run.templateKey });
+          if (!result.success) {
+            await this.failRun(run, result.error ?? 'send_failed');
+            failedCount++;
+            continue;
+          }
+        }
+
+        await this.store.insertMessage({
           direction: 'outbound',
-          content: outboundMsg,
+          content,
           createdAt: now.toISOString(),
           organizationId: run.organizationId,
           conversationId: run.conversationId,
+          messageType: 'template',
         });
 
-        run.status = 'completed';
-        this.logAudit(run.organizationId, 'automation_completed', 'automation_run', run.id, { templateKey: run.templateKey });
+        await this.store.updateAutomationRun(run.organizationId, run.id, { status: 'sent' });
+        await this.logAudit(run.organizationId, 'automation_completed', 'automation_run', run.id, { templateKey: run.templateKey });
         completedCount++;
-        
+
         logger.info('Automation campaign run executed successfully.', { runId: run.id, contactId: run.contactId });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        run.status = 'failed';
-        this.logAudit(run.organizationId, 'automation_failed', 'automation_run', run.id, { error: errorMsg });
+        await this.failRun(run, errorMsg);
         failedCount++;
       }
     }
@@ -85,14 +124,19 @@ export class SchedulerWorker {
     return { processedCount, completedCount, failedCount, skippedCount };
   }
 
-  private logAudit(
+  private async failRun(run: AutomationRunRecord, error: string): Promise<void> {
+    await this.store.updateAutomationRun(run.organizationId, run.id, { status: 'failed' });
+    await this.logAudit(run.organizationId, 'automation_failed', 'automation_run', run.id, { error });
+  }
+
+  private async logAudit(
     organizationId: string,
     action: string,
     entityType: string,
     entityId: string,
-    details: Record<string, unknown>
-  ): void {
-    this.store.auditEvents.push({
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    await this.store.insertAuditEvent({
       id: randomUUID(),
       organizationId,
       action,
@@ -103,4 +147,9 @@ export class SchedulerWorker {
       createdAt: new Date().toISOString(),
     });
   }
+}
+
+function renderTemplate(content: string | undefined, params: Record<string, string>): string | undefined {
+  if (!content) return undefined;
+  return content.replace(/\{\{(\w+)\}\}/g, (_m, key: string) => params[key] ?? '');
 }

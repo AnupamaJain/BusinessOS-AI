@@ -1,6 +1,7 @@
 import { MockEmbeddingProvider } from './mock-embedding';
 import { logger } from '@business-os-ai/shared-types';
 import type { ToolDataStore } from '@business-os-ai/mcp-business-tools';
+import { InMemoryVectorStore, type VectorStore, type ChunkRecord, type RetrievedChunk } from './vector-store';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -34,16 +35,52 @@ export function chunkMarkdown(text: string, maxChars = 500, overlap = 100): stri
   return chunks;
 }
 
+/** In-memory chunk table used by tests and offline evaluation. */
+export const simulatedChunks: ChunkRecord[] = [];
+
+const defaultVectorStore = new InMemoryVectorStore(simulatedChunks);
+
 /**
- * Ingestion runner.
- * Reads markdown documents from a directory, chunks them, generates embeddings,
- * and stores them in the given ToolDataStore (simulating Supabase pgvector).
+ * Ingest markdown documents provided as content strings.
+ * Chunks each document, embeds every chunk, and replaces the document's chunks
+ * in the vector store (pgvector in production, in-memory for tests).
+ */
+export async function ingestMarkdownContent(
+  organizationId: string,
+  documents: Array<{ title: string; sourcePath: string; content: string }>,
+  embedder: EmbeddingProvider = new MockEmbeddingProvider(),
+  vectorStore: VectorStore = defaultVectorStore,
+): Promise<{ documentCount: number; chunkCount: number }> {
+  let totalChunks = 0;
+  for (const doc of documents) {
+    const chunks = chunkMarkdown(doc.content);
+    const embedded: Array<{ content: string; embedding: number[] }> = [];
+    for (const chunkText of chunks) {
+      const embedding = await embedder.getEmbedding(chunkText);
+      embedded.push({ content: chunkText, embedding });
+    }
+    const result = await vectorStore.replaceDocumentChunks({
+      organizationId,
+      sourcePath: doc.sourcePath,
+      title: doc.title,
+      chunks: embedded,
+    });
+    totalChunks += result.chunkCount;
+  }
+
+  logger.info('Ingested markdown documents', { organizationId, documentCount: documents.length, totalChunks });
+  return { documentCount: documents.length, chunkCount: totalChunks };
+}
+
+/**
+ * Ingestion runner over a directory of markdown files.
  */
 export async function ingestMarkdownDocuments(
-  store: ToolDataStore,
+  _store: ToolDataStore,
   organizationId: string,
   baseDir: string,
   embedder: EmbeddingProvider = new MockEmbeddingProvider(),
+  vectorStore: VectorStore = defaultVectorStore,
 ): Promise<void> {
   if (!fs.existsSync(baseDir)) {
     logger.warn('Ingestion base directory does not exist', { baseDir });
@@ -51,59 +88,17 @@ export async function ingestMarkdownDocuments(
   }
 
   const files = fs.readdirSync(baseDir).filter((f) => f.endsWith('.md'));
-  for (const file of files) {
-    const fullPath = path.join(baseDir, file);
-    const content = fs.readFileSync(fullPath, 'utf-8');
-    const docId = `doc_${file.replace('.md', '')}`;
+  const documents = files.map((file) => ({
+    title: file.replace('.md', '').toUpperCase(),
+    sourcePath: file,
+    content: fs.readFileSync(path.join(baseDir, file), 'utf-8'),
+  }));
 
-    // Add document to store
-    store.products.push({
-      sku: docId,
-      name: file.replace('.md', '').toUpperCase(),
-      price: '',
-      skinType: '',
-      description: `Document: ${file}`,
-      suitableFor: '',
-      organizationId,
-    });
-
-    const chunks = chunkMarkdown(content);
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkText = chunks[i]!;
-      const embedding = await embedder.getEmbedding(chunkText);
-
-      // Simulate storing chunk
-      // In real code, we insert into `knowledge_chunks` table with pgvector
-      // We will model store.auditEvents or a mock collection for retrieval
-      // Let's store chunk inside auditEvents or as a custom structure in store.
-      // Wait, we can reuse store's list of products as documents, or save in custom store property.
-      // To simulate retrieve without changing MCP ToolDataStore type, we can add a custom array mapping
-      // or associate with the document. Let's record the chunk directly in ToolDataStore or via a global mock.
-      simulatedChunks.push({
-        id: `${docId}_chk_${i}`,
-        organizationId,
-        documentId: docId,
-        content: chunkText,
-        embedding,
-      });
-    }
-  }
-
-  logger.info('Ingested markdown documents', { organizationId, documentCount: files.length, totalChunks: simulatedChunks.length });
+  await ingestMarkdownContent(organizationId, documents, embedder, vectorStore);
 }
 
-// Simulated table for local tests
-export const simulatedChunks: Array<{
-  id: string;
-  organizationId: string;
-  documentId: string;
-  content: string;
-  embedding: number[];
-}> = [];
-
 /**
- * Tenant-scoped cosine similarity retrieval.
- * Computes cosine similarity against simulated chunks.
+ * Tenant-scoped similarity retrieval over the vector store.
  */
 export async function retrieveRelevantChunks(
   organizationId: string,
@@ -111,37 +106,8 @@ export async function retrieveRelevantChunks(
   threshold = 0.7,
   limit = 3,
   embedder: EmbeddingProvider = new MockEmbeddingProvider(),
-): Promise<Array<{ documentId: string; chunkId: string; content: string; score: number }>> {
+  vectorStore: VectorStore = defaultVectorStore,
+): Promise<RetrievedChunk[]> {
   const queryVec = await embedder.getEmbedding(query);
-  const results: Array<{ documentId: string; chunkId: string; content: string; score: number }> = [];
-
-  const tenantChunks = simulatedChunks.filter((c) => c.organizationId === organizationId);
-  for (const chunk of tenantChunks) {
-    const score = cosineSimilarity(queryVec, chunk.embedding);
-    if (score >= threshold) {
-      results.push({
-        documentId: chunk.documentId,
-        chunkId: chunk.id,
-        content: chunk.content,
-        score,
-      });
-    }
-  }
-
-  // Sort by score descending and take limit
-  return results.sort((a, b) => b.score - a.score).slice(0, limit);
-}
-
-function cosineSimilarity(vecA: number[], vecB: number[]): number {
-  if (vecA.length !== vecB.length) return 0;
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i]! * vecB[i]!;
-    normA += vecA[i]! * vecA[i]!;
-    normB += vecB[i]! * vecB[i]!;
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  return vectorStore.search(organizationId, queryVec, threshold, limit);
 }

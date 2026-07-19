@@ -74,3 +74,25 @@ Handoff Compliance:      100% (Target: >= 95%)
 Tool Selection Accuracy: 100% (Target: >= 90%)
 Prohibited Actions:      0 Violations (Target: 0)
 ```
+
+---
+
+## Phase 9: Production Integration (2026-07-19) ✅
+
+Everything below is REAL and verified live — no mocks in the production path.
+
+- [x] Live Supabase project `vhszjxrqgmfiiooshjqf` (Mumbai): 4 migrations applied, RLS via `public.is_member_of`, seeded org/products/packages/templates, owner auth user
+- [x] `SupabaseBusinessStore` — all MCP tools now async over a `BusinessStore` contract (in-memory impl retained for tests/eval)
+- [x] LLM gateway: Anthropic direct + Vercel AI Gateway (OIDC) + OpenAI providers; no silent mock fallback; per-tenant usage persisted to `llm_usage`
+- [x] RAG: real 1536-dim embeddings (AI Gateway/OpenAI), pgvector `knowledge_chunks` + `match_knowledge_chunks` RPC, ingestion endpoint + script
+- [x] Agent graph: LLM intent classification (safety intents stay deterministic), LLM-composed grounded replies, deterministic policy + response-safety gates, durable opt-out persistence
+- [x] Meta Cloud API adapter: full inbound parsing (text/interactive/button/media), X-Hub-Signature-256 HMAC verification, real send path
+- [x] Gateway deployed to Vercel (`business-os-gateway`), webhook → agent → reply verified in production; `waitUntil` keeps post-response processing alive
+- [x] Durable webhook dedup (`webhook_events` unique constraint), Postgres message/conversation/contact persistence
+- [x] Operator API (`/api/operator/messages`) with Supabase JWT auth + org membership check — verified live
+- [x] Scheduler: consent-safe dispatch through the real adapter, Vercel Cron (daily on Hobby) + standalone worker loop
+- [x] Razorpay payment links + signature-verified webhook (`/webhooks/razorpay`), persisted to payments/orders
+- [x] Dashboard (`business-os-web` on Vercel): Supabase auth, live conversations/leads/handoffs/catalog/scheduler/usage, operator replies via gateway
+- [x] Test suite: 163 unit/integration tests green; evaluation 30/30 (100%)
+
+Pending user-supplied credentials (see docs/GO-LIVE.md): Vercel AI Gateway card OR LLM API key; Meta WhatsApp tokens; Razorpay keys.

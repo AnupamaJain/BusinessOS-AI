@@ -13,6 +13,7 @@
   "dependencies": {
     "@business-os-ai/shared-types": "workspace:*",
     "@business-os-ai/database": "workspace:*",
+    "@supabase/supabase-js": "^2.49.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

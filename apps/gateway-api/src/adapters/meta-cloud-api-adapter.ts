@@ -1,10 +1,54 @@
+import { z } from 'zod';
 import type { WhatsAppAdapter, InboundMessage, OutboundMessage, SendResult } from './types';
 import { logger } from '@business-os-ai/shared-types';
 
 /**
- * Meta Cloud API adapter skeleton.
- * Does NOT send real messages until proper configuration exists.
- * Documents required setup in README.
+ * Meta WhatsApp Cloud API webhook payload schema.
+ * Covers text, interactive (button/list replies), button, media and status events.
+ */
+const MetaInboundMessageSchema = z.object({
+  id: z.string(),
+  from: z.string(),
+  timestamp: z.string(),
+  type: z.string(),
+  text: z.object({ body: z.string() }).optional(),
+  button: z.object({ text: z.string().optional(), payload: z.string().optional() }).optional(),
+  interactive: z.object({
+    type: z.string().optional(),
+    button_reply: z.object({ id: z.string(), title: z.string() }).optional(),
+    list_reply: z.object({ id: z.string(), title: z.string() }).optional(),
+  }).optional(),
+  image: z.object({ id: z.string().optional(), caption: z.string().optional() }).optional(),
+  document: z.object({ id: z.string().optional(), caption: z.string().optional(), filename: z.string().optional() }).optional(),
+  reaction: z.object({ message_id: z.string().optional(), emoji: z.string().optional() }).optional(),
+});
+
+const MetaWebhookBodySchema = z.object({
+  object: z.string(),
+  entry: z.array(z.object({
+    id: z.string(),
+    changes: z.array(z.object({
+      value: z.object({
+        messaging_product: z.string().optional(),
+        metadata: z.object({
+          display_phone_number: z.string().optional(),
+          phone_number_id: z.string().optional(),
+        }).optional(),
+        contacts: z.array(z.object({
+          wa_id: z.string().optional(),
+          profile: z.object({ name: z.string().optional() }).optional(),
+        })).optional(),
+        messages: z.array(MetaInboundMessageSchema).optional(),
+        statuses: z.array(z.unknown()).optional(),
+      }),
+      field: z.string(),
+    })),
+  })),
+});
+
+/**
+ * Meta WhatsApp Cloud API adapter.
+ * Sends messages via graph.facebook.com and parses real webhook payloads.
  *
  * Required env vars:
  * - META_WHATSAPP_ACCESS_TOKEN
@@ -34,11 +78,59 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
   }
 
   parseInboundEvent(body: unknown): InboundMessage[] {
-    // Same parsing logic as MockWhatsAppAdapter — reuses Meta webhook schema
-    // Full implementation deferred until Meta configuration exists
-    const { MockWhatsAppAdapter } = require('./mock-whatsapp-adapter');
-    const mock = new MockWhatsAppAdapter(this.verifyToken) as WhatsAppAdapter;
-    return mock.parseInboundEvent(body);
+    const parsed = MetaWebhookBodySchema.safeParse(body);
+    if (!parsed.success) {
+      logger.warn('MetaCloudApiAdapter: unrecognised webhook body', { issues: parsed.error.issues.slice(0, 3) });
+      return [];
+    }
+
+    const messages: InboundMessage[] = [];
+    for (const entry of parsed.data.entry) {
+      for (const change of entry.changes) {
+        if (change.field !== 'messages') continue;
+        const value = change.value;
+        const senderName = value.contacts?.[0]?.profile?.name;
+        for (const msg of value.messages ?? []) {
+          // Normalise message text across supported types
+          let text: string | undefined;
+          let type: InboundMessage['type'] = 'system';
+          if (msg.type === 'text' && msg.text) {
+            type = 'text';
+            text = msg.text.body;
+          } else if (msg.type === 'interactive' && msg.interactive) {
+            type = 'interactive';
+            text = msg.interactive.button_reply?.title ?? msg.interactive.list_reply?.title;
+          } else if (msg.type === 'button' && msg.button) {
+            type = 'interactive';
+            text = msg.button.text ?? msg.button.payload;
+          } else if (msg.type === 'image') {
+            type = 'image';
+            text = msg.image?.caption;
+          } else if (msg.type === 'document') {
+            type = 'document';
+            text = msg.document?.caption ?? msg.document?.filename;
+          } else if (msg.type === 'reaction') {
+            type = 'reaction';
+            text = msg.reaction?.emoji;
+          }
+
+          messages.push({
+            providerMessageId: msg.id,
+            from: msg.from,
+            timestamp: new Date(parseInt(msg.timestamp, 10) * 1000),
+            type,
+            text,
+            metadata: {
+              phoneNumberId: value.metadata?.phone_number_id,
+              displayPhoneNumber: value.metadata?.display_phone_number,
+              senderName,
+              rawType: msg.type,
+            },
+          });
+        }
+      }
+    }
+    return messages;
   }
 
   async sendMessage(organizationId: string, message: OutboundMessage): Promise<SendResult> {

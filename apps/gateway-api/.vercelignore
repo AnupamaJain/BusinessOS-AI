@@ -1,0 +1,5 @@
+src
+node_modules
+dist
+*.ts
+!api/index.js

@@ -35,7 +35,8 @@ export class CoordinatorAgent {
         { role: 'system', content: selectedAgent.systemPrompt },
         { role: 'user', content: state.inboundMessage }
       ],
-      preferredProvider: 'mock'
+      // Uses the gateway's default provider: first registered real provider,
+      // falling back to mock only when no real credential is configured.
     });
 
     return {

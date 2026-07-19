@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { VerticalRegistry, travelVertical, skincareVertical } from '../index';
+import { VerticalRegistry, travelVertical } from '../index';
 
 describe('VerticalRegistry', () => {
   it('registers and retrieves built-in verticals', () => {

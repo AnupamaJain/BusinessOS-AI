@@ -1,0 +1,140 @@
+/* ─── Shared app-level types (structural, independent of supabase-js) ── */
+
+export interface AuthSession {
+  access_token: string;
+  user: {
+    id: string;
+    email?: string | null;
+  };
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+}
+
+export type ConversationStatus = 'active' | 'waiting_for_human' | 'resolved' | 'closed';
+
+export interface ConversationListItem {
+  id: string;
+  contact_id: string | null;
+  channel: string;
+  status: ConversationStatus;
+  created_at: string;
+  contactName: string;
+  contactPhone: string;
+  lastMessage: string | null;
+  lastMessageAt: string | null;
+}
+
+export interface MessageRow {
+  id: string;
+  conversation_id: string;
+  direction: 'inbound' | 'outbound';
+  message_type: string;
+  content: string;
+  created_at: string;
+}
+
+export type HandoffStatus = 'pending' | 'claimed' | 'resolved';
+
+export interface HandoffItem {
+  id: string;
+  conversation_id: string;
+  contact_id: string | null;
+  reason: string;
+  priority: string;
+  status: HandoffStatus;
+  summary: string | null;
+  claimed_by: string | null;
+  created_at: string;
+  contactName: string;
+  contactPhone: string;
+}
+
+export interface LeadItem {
+  id: string;
+  contact_id: string | null;
+  stage: string;
+  service_interest: string | null;
+  score: number | null;
+  qualification_summary: string | null;
+  created_at: string;
+  contactName: string;
+  contactPhone: string;
+}
+
+export interface ContactRow {
+  id: string;
+  name: string | null;
+  phone_number: string;
+  email: string | null;
+}
+
+export interface ProductRow {
+  id: string;
+  sku: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  base_price: number | null;
+  currency: string | null;
+  status: string | null;
+}
+
+export interface PackageRow {
+  id: string;
+  sku: string;
+  title: string;
+  duration_days: number | null;
+  price_per_person: number | null;
+  currency: string | null;
+  inclusions: unknown;
+  status: string | null;
+}
+
+export interface KnowledgeDocRow {
+  id: string;
+  title: string;
+  source_path: string | null;
+  status: string | null;
+}
+
+export interface MessageTemplateRow {
+  id: string;
+  template_key: string;
+  name: string;
+  content: string | null;
+  status: string | null;
+}
+
+export interface AutomationRunItem {
+  id: string;
+  contact_id: string | null;
+  campaign_type: string;
+  template_key: string | null;
+  status: string;
+  scheduled_for: string | null;
+  contactName: string;
+  contactPhone: string;
+}
+
+export interface LlmModelUsage {
+  provider: string;
+  model: string;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+}
+
+export interface LlmUsageSummary {
+  totalRequests: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  byModel: LlmModelUsage[];
+}
+
+export interface HandoffReasonCount {
+  reason: string;
+  count: number;
+}

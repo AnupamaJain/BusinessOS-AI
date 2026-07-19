@@ -9,12 +9,24 @@ export interface StoredMessage {
   id: string;
   organizationId: string;
   conversationId?: string;
+  contactId?: string;
   contactPhone: string;
   direction: 'inbound' | 'outbound';
   messageType: string;
   content: string;
   providerMessageId: string;
   createdAt: Date;
+}
+
+/** Persistence contract shared by the in-memory and Supabase implementations. */
+export interface MessagePersistence {
+  persistInbound(organizationId: string, inbound: import('../adapters/types').InboundMessage): Promise<StoredMessage>;
+  persistOutbound(organizationId: string, to: string, content: string, providerMessageId: string, conversationId?: string): Promise<StoredMessage>;
+}
+
+/** Idempotency contract — sync in-memory or async database-backed. */
+export interface IdempotencyStore {
+  tryAcquire(providerMessageId: string): boolean | Promise<boolean>;
 }
 
 export class MessageService {

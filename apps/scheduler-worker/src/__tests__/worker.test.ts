@@ -46,7 +46,7 @@ describe('Scheduler Worker', () => {
     const result = await worker.processDueRuns();
     expect(result.processedCount).toBe(1);
     expect(result.completedCount).toBe(1);
-    expect(store.automationRuns[0]?.status).toBe('completed');
+    expect(store.automationRuns[0]?.status).toBe('sent');
     expect(store.messages.length).toBe(1);
     expect(store.messages[0]?.direction).toBe('outbound');
     expect(store.auditEvents.some((e) => e.action === 'automation_completed')).toBe(true);

@@ -1,0 +1,374 @@
+import { randomUUID } from 'crypto';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { logger } from '@business-os-ai/shared-types';
+import type {
+  BusinessStore, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
+  ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
+} from './store';
+
+/**
+ * Production BusinessStore backed by Supabase Postgres.
+ *
+ * Uses the service-role client; tenant scope is enforced programmatically on
+ * every query (organization_id filter) since service role bypasses RLS.
+ */
+export class SupabaseBusinessStore implements BusinessStore {
+  constructor(private readonly db: SupabaseClient) {}
+
+  private fail(op: string, error: { message: string } | null): never {
+    logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
+    throw new Error(`Database operation failed: ${op}: ${error?.message}`);
+  }
+
+  // ─── Contacts & consent ───────────────────────────────────────────
+
+  async findContactById(organizationId: string, contactId: string): Promise<ContactRecord | undefined> {
+    const { data, error } = await this.db.from('contacts')
+      .select('id, organization_id, phone_number, name, email')
+      .eq('organization_id', organizationId).eq('id', contactId).maybeSingle();
+    if (error) this.fail('findContactById', error);
+    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+  }
+
+  async findContactByPhone(organizationId: string, phone: string): Promise<ContactRecord | undefined> {
+    const { data, error } = await this.db.from('contacts')
+      .select('id, organization_id, phone_number, name, email')
+      .eq('organization_id', organizationId).eq('phone_number', phone).maybeSingle();
+    if (error) this.fail('findContactByPhone', error);
+    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+  }
+
+  async upsertContactByPhone(organizationId: string, phone: string, name?: string): Promise<ContactRecord> {
+    const existing = await this.findContactByPhone(organizationId, phone);
+    if (existing) return existing;
+    const { data, error } = await this.db.from('contacts')
+      .insert({ organization_id: organizationId, phone_number: phone, name })
+      .select('id, organization_id, phone_number, name').single();
+    if (error || !data) this.fail('upsertContactByPhone', error);
+    return { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined };
+  }
+
+  async listConsent(organizationId: string, contactId: string): Promise<ConsentRow[]> {
+    const { data, error } = await this.db.from('consent_records')
+      .select('contact_id, organization_id, consent_type, action, recorded_at')
+      .eq('organization_id', organizationId).eq('contact_id', contactId)
+      .order('recorded_at', { ascending: true });
+    if (error) this.fail('listConsent', error);
+    return (data ?? []).map((r) => ({ contactId: r.contact_id, organizationId: r.organization_id, consentType: r.consent_type, action: r.action }));
+  }
+
+  async insertConsent(row: ConsentRow & { source?: string }): Promise<void> {
+    const { error } = await this.db.from('consent_records').insert({
+      organization_id: row.organizationId, contact_id: row.contactId,
+      consent_type: row.consentType, action: row.action, source: row.source ?? 'whatsapp_conversation',
+    });
+    if (error) this.fail('insertConsent', error);
+  }
+
+  // ─── Leads ────────────────────────────────────────────────────────
+
+  private mapLead(r: Record<string, any>): LeadRecord {
+    return {
+      id: r.id, organizationId: r.organization_id, contactId: r.contact_id, conversationId: r.conversation_id,
+      stage: r.stage, serviceInterest: r.service_interest, budgetRange: r.budget_range ?? undefined,
+      purchaseTimeline: r.purchase_timeline ?? undefined, qualificationSummary: r.qualification_summary ?? undefined,
+      score: r.score ?? undefined, idempotencyKey: r.idempotency_key,
+    };
+  }
+
+  async latestLeadForContact(organizationId: string, contactId: string): Promise<LeadRecord | undefined> {
+    const { data, error } = await this.db.from('leads').select('*')
+      .eq('organization_id', organizationId).eq('contact_id', contactId)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) this.fail('latestLeadForContact', error);
+    return data ? this.mapLead(data) : undefined;
+  }
+
+  async findLeadByIdempotencyKey(organizationId: string, idempotencyKey: string): Promise<LeadRecord | undefined> {
+    const { data, error } = await this.db.from('leads').select('*')
+      .eq('organization_id', organizationId).eq('idempotency_key', idempotencyKey).maybeSingle();
+    if (error) this.fail('findLeadByIdempotencyKey', error);
+    return data ? this.mapLead(data) : undefined;
+  }
+
+  async insertLead(lead: LeadRecord): Promise<LeadRecord> {
+    const { error } = await this.db.from('leads').insert({
+      id: lead.id, organization_id: lead.organizationId, contact_id: lead.contactId,
+      conversation_id: lead.conversationId, stage: lead.stage, service_interest: lead.serviceInterest,
+      budget_range: lead.budgetRange, purchase_timeline: lead.purchaseTimeline,
+      qualification_summary: lead.qualificationSummary, score: lead.score, idempotency_key: lead.idempotencyKey,
+    });
+    if (error) this.fail('insertLead', error);
+    return lead;
+  }
+
+  async updateLead(organizationId: string, leadId: string, patch: Partial<LeadRecord>): Promise<void> {
+    const row: Record<string, unknown> = {};
+    if (patch.stage !== undefined) row['stage'] = patch.stage;
+    if (patch.serviceInterest !== undefined) row['service_interest'] = patch.serviceInterest;
+    if (patch.budgetRange !== undefined) row['budget_range'] = patch.budgetRange;
+    if (patch.purchaseTimeline !== undefined) row['purchase_timeline'] = patch.purchaseTimeline;
+    if (patch.qualificationSummary !== undefined) row['qualification_summary'] = patch.qualificationSummary;
+    if (patch.score !== undefined) row['score'] = patch.score;
+    const { error } = await this.db.from('leads').update(row)
+      .eq('organization_id', organizationId).eq('id', leadId);
+    if (error) this.fail('updateLead', error);
+  }
+
+  // ─── Conversations & messages ─────────────────────────────────────
+
+  async getConversation(organizationId: string, conversationId: string): Promise<ConversationRecord | undefined> {
+    const { data, error } = await this.db.from('conversations')
+      .select('id, organization_id, contact_id, status')
+      .eq('organization_id', organizationId).eq('id', conversationId).maybeSingle();
+    if (error) this.fail('getConversation', error);
+    return data ? { id: data.id, organizationId: data.organization_id, contactId: data.contact_id, status: data.status } : undefined;
+  }
+
+  async findOrCreateActiveConversation(organizationId: string, contactId: string): Promise<ConversationRecord> {
+    const { data, error } = await this.db.from('conversations')
+      .select('id, organization_id, contact_id, status')
+      .eq('organization_id', organizationId).eq('contact_id', contactId)
+      .in('status', ['active', 'waiting_for_human'])
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) this.fail('findOrCreateActiveConversation', error);
+    if (data) return { id: data.id, organizationId: data.organization_id, contactId: data.contact_id, status: data.status };
+
+    const { data: created, error: insertErr } = await this.db.from('conversations')
+      .insert({ organization_id: organizationId, contact_id: contactId, channel: 'whatsapp', status: 'active' })
+      .select('id, organization_id, contact_id, status').single();
+    if (insertErr || !created) this.fail('findOrCreateActiveConversation.insert', insertErr);
+    return { id: created.id, organizationId: created.organization_id, contactId: created.contact_id, status: created.status };
+  }
+
+  async updateConversationStatus(organizationId: string, conversationId: string, status: string): Promise<void> {
+    const { error } = await this.db.from('conversations').update({ status })
+      .eq('organization_id', organizationId).eq('id', conversationId);
+    if (error) this.fail('updateConversationStatus', error);
+  }
+
+  async listRecentMessages(organizationId: string, conversationId: string, limit: number): Promise<MessageRecord[]> {
+    const { data, error } = await this.db.from('messages')
+      .select('direction, content, created_at, organization_id, conversation_id, message_type, provider_message_id')
+      .eq('organization_id', organizationId).eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false }).limit(limit);
+    if (error) this.fail('listRecentMessages', error);
+    return (data ?? []).reverse().map((m) => ({
+      direction: m.direction, content: m.content, createdAt: m.created_at,
+      organizationId: m.organization_id, conversationId: m.conversation_id,
+      messageType: m.message_type, providerMessageId: m.provider_message_id ?? undefined,
+    }));
+  }
+
+  async insertMessage(message: MessageRecord): Promise<void> {
+    const { error } = await this.db.from('messages').insert({
+      organization_id: message.organizationId, conversation_id: message.conversationId,
+      direction: message.direction, message_type: message.messageType ?? 'text',
+      content: message.content, provider_message_id: message.providerMessageId,
+      created_at: message.createdAt,
+    });
+    if (error) this.fail('insertMessage', error);
+  }
+
+  // ─── Handoffs ─────────────────────────────────────────────────────
+
+  private mapHandoff(r: Record<string, any>): HandoffRecord {
+    return {
+      id: r.id, organizationId: r.organization_id, conversationId: r.conversation_id, contactId: r.contact_id,
+      reason: r.reason, priority: r.priority, status: r.status, summary: r.summary,
+      idempotencyKey: r.idempotency_key ?? '',
+    };
+  }
+
+  async findOpenHandoff(organizationId: string, conversationId: string): Promise<HandoffRecord | undefined> {
+    const { data, error } = await this.db.from('handoffs').select('*')
+      .eq('organization_id', organizationId).eq('conversation_id', conversationId)
+      .in('status', ['pending', 'claimed'])
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) this.fail('findOpenHandoff', error);
+    return data ? this.mapHandoff(data) : undefined;
+  }
+
+  async findHandoffByIdempotencyKey(organizationId: string, idempotencyKey: string): Promise<HandoffRecord | undefined> {
+    // handoffs table stores idempotency in summary metadata; dedupe via audit trail instead.
+    const { data, error } = await this.db.from('audit_events')
+      .select('entity_id')
+      .eq('organization_id', organizationId).eq('action', 'handoff_created')
+      .eq('details->>idempotencyKey', idempotencyKey).limit(1).maybeSingle();
+    if (error) this.fail('findHandoffByIdempotencyKey', error);
+    if (!data?.entity_id) return undefined;
+    const { data: handoff, error: hErr } = await this.db.from('handoffs').select('*')
+      .eq('organization_id', organizationId).eq('id', data.entity_id).maybeSingle();
+    if (hErr) this.fail('findHandoffByIdempotencyKey.load', hErr);
+    return handoff ? this.mapHandoff(handoff) : undefined;
+  }
+
+  async insertHandoff(handoff: HandoffRecord): Promise<HandoffRecord> {
+    const { error } = await this.db.from('handoffs').insert({
+      id: handoff.id, organization_id: handoff.organizationId, conversation_id: handoff.conversationId,
+      contact_id: handoff.contactId, reason: handoff.reason, priority: handoff.priority,
+      status: handoff.status, summary: handoff.summary,
+    });
+    if (error) this.fail('insertHandoff', error);
+    // Record the idempotency key on the audit trail (handoffs table has no idempotency column)
+    await this.insertAuditEvent({
+      id: randomUUID(), organizationId: handoff.organizationId, action: 'handoff_created',
+      entityType: 'handoff', entityId: handoff.id, actorType: 'agent',
+      details: { idempotencyKey: handoff.idempotencyKey, reason: handoff.reason, priority: handoff.priority },
+      createdAt: new Date().toISOString(),
+    });
+    return handoff;
+  }
+
+  // ─── Audit ────────────────────────────────────────────────────────
+
+  async insertAuditEvent(event: AuditEventRecord): Promise<void> {
+    const { error } = await this.db.from('audit_events').insert({
+      id: event.id, organization_id: event.organizationId, action: event.action,
+      entity_type: event.entityType, entity_id: event.entityId || null, actor_type: event.actorType,
+      details: event.details, created_at: event.createdAt,
+    });
+    if (error) this.fail('insertAuditEvent', error);
+  }
+
+  // ─── Automation ───────────────────────────────────────────────────
+
+  private mapRun(r: Record<string, any>): AutomationRunRecord {
+    return {
+      id: r.id, organizationId: r.organization_id, contactId: r.contact_id, conversationId: r.conversation_id,
+      templateKey: r.template_key, campaignType: r.campaign_type, idempotencyKey: r.idempotency_key,
+      status: r.status, scheduledFor: r.scheduled_for,
+    };
+  }
+
+  async findAutomationRunByIdempotencyKey(organizationId: string, idempotencyKey: string): Promise<AutomationRunRecord | undefined> {
+    const { data, error } = await this.db.from('automation_runs').select('*')
+      .eq('organization_id', organizationId).eq('idempotency_key', idempotencyKey).maybeSingle();
+    if (error) this.fail('findAutomationRunByIdempotencyKey', error);
+    return data ? this.mapRun(data) : undefined;
+  }
+
+  async insertAutomationRun(run: AutomationRunRecord): Promise<AutomationRunRecord> {
+    const { error } = await this.db.from('automation_runs').insert({
+      id: run.id, organization_id: run.organizationId, contact_id: run.contactId,
+      conversation_id: run.conversationId, campaign_type: run.campaignType,
+      template_key: run.templateKey, idempotency_key: run.idempotencyKey,
+      status: run.status, scheduled_for: run.scheduledFor,
+    });
+    if (error) this.fail('insertAutomationRun', error);
+    return run;
+  }
+
+  async listDueAutomationRuns(now: Date): Promise<AutomationRunRecord[]> {
+    const { data, error } = await this.db.from('automation_runs').select('*')
+      .eq('status', 'scheduled').lte('scheduled_for', now.toISOString()).limit(100);
+    if (error) this.fail('listDueAutomationRuns', error);
+    return (data ?? []).map((r) => this.mapRun(r));
+  }
+
+  async updateAutomationRun(organizationId: string, runId: string, patch: Partial<AutomationRunRecord>): Promise<void> {
+    const row: Record<string, unknown> = {};
+    if (patch.status !== undefined) row['status'] = patch.status;
+    if (patch.status === 'sent') row['sent_at'] = new Date().toISOString();
+    const { error } = await this.db.from('automation_runs').update(row)
+      .eq('organization_id', organizationId).eq('id', runId);
+    if (error) this.fail('updateAutomationRun', error);
+  }
+
+  // ─── Catalog & orders ─────────────────────────────────────────────
+
+  async searchProducts(organizationId: string, query: string, filters?: { skinType?: string; concern?: string }): Promise<ProductRecord[]> {
+    const { data, error } = await this.db.from('products')
+      .select('sku, name, description, category, base_price, currency')
+      .eq('organization_id', organizationId).eq('status', 'active').limit(200);
+    if (error) this.fail('searchProducts', error);
+
+    const lowered = query.toLowerCase();
+    return (data ?? [])
+      .map((p) => ({
+        sku: p.sku,
+        name: p.name,
+        price: `₹${Number(p.base_price).toLocaleString('en-IN')}`,
+        skinType: p.description ?? '',
+        description: p.description ?? '',
+        suitableFor: p.category ?? '',
+        organizationId,
+      }))
+      .filter((p) => {
+        const text = `${p.name} ${p.description} ${p.suitableFor}`.toLowerCase();
+        if (!text.includes(lowered) && !lowered.split(' ').some((w) => w.length > 2 && text.includes(w))) return false;
+        if (filters?.skinType && !text.includes(filters.skinType.toLowerCase())) return false;
+        if (filters?.concern && !text.includes(filters.concern.toLowerCase())) return false;
+        return true;
+      });
+  }
+
+  async findTemplate(organizationId: string, templateKey: string): Promise<TemplateRecord | undefined> {
+    const { data, error } = await this.db.from('message_templates')
+      .select('template_key, organization_id, status, name, content')
+      .eq('organization_id', organizationId).eq('template_key', templateKey).maybeSingle();
+    if (error) this.fail('findTemplate', error);
+    return data ? { templateKey: data.template_key, organizationId: data.organization_id, status: data.status, name: data.name, content: data.content } : undefined;
+  }
+
+  async findOrderByNumber(organizationId: string, contactId: string, orderNumber: string): Promise<OrderRecord | undefined> {
+    const { data, error } = await this.db.from('orders')
+      .select('id, organization_id, contact_id, order_number, status, total_amount, currency, created_at, order_items(title, quantity)')
+      .eq('organization_id', organizationId).eq('contact_id', contactId)
+      .ilike('order_number', orderNumber).maybeSingle();
+    if (error) this.fail('findOrderByNumber', error);
+    if (!data) return undefined;
+    const items = (data.order_items ?? []).map((i: { title: string; quantity: number }) => `${i.title} x${i.quantity}`).join(', ');
+    return {
+      id: data.id, organizationId: data.organization_id, contactId: data.contact_id,
+      orderNumber: data.order_number, status: data.status,
+      totalAmount: `₹${Number(data.total_amount).toLocaleString('en-IN')}`,
+      items, estimatedDelivery: '',
+    };
+  }
+
+  // ─── Travel ───────────────────────────────────────────────────────
+
+  async searchPackages(organizationId: string, filters?: { destination?: string; maxBudgetPerPerson?: number; durationDays?: number }): Promise<PackageRecord[]> {
+    const { data, error } = await this.db.from('packages')
+      .select('sku, title, duration_days, price_per_person, currency, inclusions, destinations(name)')
+      .eq('organization_id', organizationId).eq('status', 'active').limit(100);
+    if (error) this.fail('searchPackages', error);
+
+    return (data ?? [])
+      .map((p) => {
+        const destination = (p.destinations as unknown as { name: string } | null)?.name
+          ?? p.title.split(' ')[0] ?? '';
+        return {
+          sku: p.sku, title: p.title, destination,
+          durationDays: p.duration_days, pricePerPerson: Number(p.price_per_person),
+          currency: p.currency, inclusions: (p.inclusions as string[]) ?? [], organizationId,
+        };
+      })
+      .filter((p) => {
+        if (filters?.destination && !(`${p.destination} ${p.title}`.toLowerCase().includes(filters.destination.toLowerCase()))) return false;
+        if (filters?.maxBudgetPerPerson && p.pricePerPerson > filters.maxBudgetPerPerson) return false;
+        if (filters?.durationDays && p.durationDays > filters.durationDays) return false;
+        return true;
+      });
+  }
+
+  async insertBooking(booking: Omit<BookingRecord, 'id' | 'bookingNumber' | 'status'>): Promise<BookingRecord> {
+    const { data: pkg, error: pkgErr } = await this.db.from('packages')
+      .select('id').eq('organization_id', booking.organizationId).eq('sku', booking.packageSku).maybeSingle();
+    if (pkgErr) this.fail('insertBooking.package', pkgErr);
+
+    const bookingNumber = `BK-${Math.floor(10000 + Math.random() * 90000)}`;
+    const { data, error } = await this.db.from('bookings').insert({
+      organization_id: booking.organizationId, contact_id: booking.contactId,
+      package_id: pkg?.id ?? null, booking_number: bookingNumber,
+      travel_date: new Date(booking.travelDate).toISOString(),
+      traveler_count: booking.travelerCount, total_amount: booking.totalAmount,
+      currency: 'INR', status: 'confirmed',
+    }).select('id').single();
+    if (error || !data) this.fail('insertBooking', error);
+
+    return { ...booking, id: data.id, bookingNumber, status: 'confirmed' };
+  }
+}

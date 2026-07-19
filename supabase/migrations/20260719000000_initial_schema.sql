@@ -386,8 +386,9 @@ CREATE POLICY org_members_select ON organization_members
 -- For all other tenant-bound tables, create SELECT/INSERT/UPDATE policies
 -- scoped to the user's organization memberships.
 
--- Helper function to check membership
-CREATE OR REPLACE FUNCTION auth.is_member_of(org_id UUID)
+-- Helper function to check membership.
+-- Lives in public schema: hosted Supabase does not allow creating objects in auth.
+CREATE OR REPLACE FUNCTION public.is_member_of(org_id UUID)
 RETURNS BOOLEAN AS $$
 BEGIN
   RETURN EXISTS (
@@ -411,19 +412,19 @@ BEGIN
   LOOP
     -- SELECT policy
     EXECUTE format(
-      'CREATE POLICY %I ON %I FOR SELECT USING (auth.is_member_of(organization_id))',
+      'CREATE POLICY %I ON %I FOR SELECT USING (public.is_member_of(organization_id))',
       tbl || '_select', tbl
     );
 
     -- INSERT policy
     EXECUTE format(
-      'CREATE POLICY %I ON %I FOR INSERT WITH CHECK (auth.is_member_of(organization_id))',
+      'CREATE POLICY %I ON %I FOR INSERT WITH CHECK (public.is_member_of(organization_id))',
       tbl || '_insert', tbl
     );
 
     -- UPDATE policy
     EXECUTE format(
-      'CREATE POLICY %I ON %I FOR UPDATE USING (auth.is_member_of(organization_id))',
+      'CREATE POLICY %I ON %I FOR UPDATE USING (public.is_member_of(organization_id))',
       tbl || '_update', tbl
     );
   END LOOP;
@@ -432,7 +433,7 @@ $$;
 
 -- Audit events: SELECT only (no update/delete allowed by trigger)
 CREATE POLICY audit_events_select ON audit_events
-  FOR SELECT USING (auth.is_member_of(organization_id));
+  FOR SELECT USING (public.is_member_of(organization_id));
 
 CREATE POLICY audit_events_insert ON audit_events
-  FOR INSERT WITH CHECK (auth.is_member_of(organization_id));
+  FOR INSERT WITH CHECK (public.is_member_of(organization_id));

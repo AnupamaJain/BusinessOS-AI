@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createApp } from '../app';
 import { MockWhatsAppAdapter } from '../adapters/mock-whatsapp-adapter';
 import { IdempotencyService } from '../services/idempotency-service';

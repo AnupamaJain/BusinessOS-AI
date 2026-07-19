@@ -1,24 +1,75 @@
 import express from 'express';
+import { createHmac, timingSafeEqual } from 'crypto';
 import type { WhatsAppAdapter, OutboundMessage } from './adapters/types';
-import { IdempotencyService } from './services/idempotency-service';
-import { MessageService } from './services/message-service';
+import type { MessagePersistence, IdempotencyStore } from './services/message-service';
 import { logger } from '@business-os-ai/shared-types';
 import { z } from 'zod';
+
+export interface InboundCallbackMessage {
+  providerMessageId: string;
+  from: string;
+  text?: string;
+  type?: string;
+  contactId?: string;
+  conversationId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateAppDeps {
+  adapter: WhatsAppAdapter;
+  idempotencyService: IdempotencyStore;
+  messageService: MessagePersistence;
+  defaultOrgId: string;
+  onInboundMessage?: (orgId: string, message: InboundCallbackMessage) => void | Promise<void>;
+  /** Meta app secret — enables X-Hub-Signature-256 verification when set. */
+  appSecret?: string;
+  /** Allowed browser origins for /api/* routes (operator dashboard). */
+  corsOrigins?: string[];
+  /** Register additional production routes (operator API, internal endpoints). */
+  registerRoutes?: (app: express.Express) => void;
+  /** Middleware applied before all routes (e.g. Vercel OIDC token capture). */
+  preMiddleware?: express.RequestHandler;
+  /**
+   * Keeps post-response webhook processing alive on serverless platforms
+   * (Vercel freezes the function after the response unless waitUntil is used).
+   */
+  backgroundTask?: (work: Promise<unknown>) => void;
+}
 
 /**
  * Creates the Express app with webhook and internal message routes.
  */
-export function createApp(deps: {
-  adapter: WhatsAppAdapter;
-  idempotencyService: IdempotencyService;
-  messageService: MessageService;
-  defaultOrgId: string;
-  onInboundMessage?: (orgId: string, message: { providerMessageId: string; from: string; text?: string }) => void | Promise<void>;
-}): express.Express {
+export function createApp(deps: CreateAppDeps): express.Express {
   const app = express();
-  app.use(express.json());
+
+  if (deps.preMiddleware) {
+    app.use(deps.preMiddleware);
+  }
+
+  // Capture the raw body for webhook signature verification
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }));
 
   const { adapter, idempotencyService, messageService, defaultOrgId } = deps;
+
+  // ─── CORS for browser-facing /api routes ─────────────────────────
+  const corsOrigins = deps.corsOrigins ?? [];
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && (corsOrigins.includes('*') || corsOrigins.includes(origin))) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
 
   /**
    * GET /webhook — Meta verification challenge.
@@ -41,27 +92,39 @@ export function createApp(deps: {
 
   /**
    * POST /webhook — Inbound WhatsApp events.
-   * Quickly returns 200, then processes asynchronously.
+   * Verifies the Meta HMAC signature (when configured), returns 200 quickly,
+   * then processes asynchronously.
    */
   app.post('/webhook', (req, res) => {
+    if (deps.appSecret) {
+      const signature = req.headers['x-hub-signature-256'];
+      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      if (!verifyMetaSignature(deps.appSecret, rawBody, typeof signature === 'string' ? signature : undefined)) {
+        logger.warn('Webhook rejected: invalid X-Hub-Signature-256');
+        res.status(401).send('Invalid signature');
+        return;
+      }
+    }
+
     // Return 200 immediately per Meta requirements
     res.status(200).send('EVENT_RECEIVED');
 
-    // Process asynchronously
-    void (async () => {
+    // Process asynchronously (kept alive via waitUntil on serverless)
+    const processing = (async () => {
       try {
         const messages = adapter.parseInboundEvent(req.body);
         for (const msg of messages) {
-          // Idempotency check
-          if (!idempotencyService.tryAcquire(msg.providerMessageId)) {
+          // Idempotency check (durable in production)
+          const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
+          if (!acquired) {
             logger.info('Duplicate webhook event skipped', {
               providerMessageId: msg.providerMessageId,
             });
             continue;
           }
 
-          // Persist inbound message
-          await messageService.persistInbound(defaultOrgId, msg);
+          // Persist inbound message (resolves contact + conversation)
+          const stored = await messageService.persistInbound(defaultOrgId, msg);
 
           // Invoke agent service (callback)
           if (deps.onInboundMessage) {
@@ -69,6 +132,10 @@ export function createApp(deps: {
               providerMessageId: msg.providerMessageId,
               from: msg.from,
               text: msg.text,
+              type: msg.type,
+              contactId: stored.contactId,
+              conversationId: stored.conversationId,
+              metadata: msg.metadata,
             });
           }
         }
@@ -76,6 +143,12 @@ export function createApp(deps: {
         logger.error('Webhook processing error', {}, err instanceof Error ? err : new Error(String(err)));
       }
     })();
+
+    if (deps.backgroundTask) {
+      deps.backgroundTask(processing);
+    } else {
+      void processing;
+    }
   });
 
   /**
@@ -102,7 +175,8 @@ export function createApp(deps: {
     const { organizationId, ...messageData } = parsed.data;
 
     // Check idempotency
-    if (!idempotencyService.tryAcquire(`outbound:${messageData.idempotencyKey}`)) {
+    const acquired = await idempotencyService.tryAcquire(`outbound:${messageData.idempotencyKey}`);
+    if (!acquired) {
       res.status(409).json({ error: 'Duplicate send request', idempotencyKey: messageData.idempotencyKey });
       return;
     }
@@ -122,7 +196,7 @@ export function createApp(deps: {
       await messageService.persistOutbound(
         organizationId,
         messageData.to,
-        messageData.text ?? '',
+        messageData.text ?? `[template:${messageData.templateKey}]`,
         result.providerMessageId,
       );
     }
@@ -135,5 +209,20 @@ export function createApp(deps: {
     res.status(200).json({ status: 'ok' });
   });
 
+  // Production-only routes (operator API, internal RAG/scheduler endpoints)
+  deps.registerRoutes?.(app);
+
   return app;
+}
+
+function verifyMetaSignature(appSecret: string, rawBody: Buffer | undefined, signatureHeader: string | undefined): boolean {
+  if (!rawBody || !signatureHeader || !signatureHeader.startsWith('sha256=')) return false;
+  const expected = createHmac('sha256', appSecret).update(rawBody).digest('hex');
+  const provided = signatureHeader.slice('sha256='.length);
+  if (provided.length !== expected.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(provided, 'hex'), Buffer.from(expected, 'hex'));
+  } catch {
+    return false;
+  }
 }

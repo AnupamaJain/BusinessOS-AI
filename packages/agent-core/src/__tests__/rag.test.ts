@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { chunkMarkdown, ingestMarkdownDocuments, retrieveRelevantChunks, simulatedChunks } from '../rag';
 import { ToolDataStore } from '@business-os-ai/mcp-business-tools';
 import * as path from 'path';

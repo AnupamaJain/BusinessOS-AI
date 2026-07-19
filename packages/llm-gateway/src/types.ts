@@ -1,4 +1,4 @@
-export type LLMProviderName = 'openai' | 'anthropic' | 'google' | 'llama' | 'mock';
+export type LLMProviderName = 'openai' | 'anthropic' | 'google' | 'llama' | 'gateway' | 'mock';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';

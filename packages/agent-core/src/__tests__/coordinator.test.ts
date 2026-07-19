@@ -7,8 +7,8 @@ const CONV_A = '33333333-3333-3333-3333-333333333333';
 
 describe('CoordinatorAgent', () => {
   it('delegates travel package inquiries to travel-planner sales specialist agent', async () => {
-    const state = createInitialState(ORG_A, CONTACT_A, CONV_A, 'Hi, I want a 5-day honeymoon package for Bali.');
-    state.intent = 'package_inquiry';
+    const state = createInitialState({ organizationId: ORG_A, contactId: CONTACT_A, conversationId: CONV_A, inboundMessage: 'Hi, I want a 5-day honeymoon package for Bali.', traceId: 'trace-1' });
+    state.intent = 'sales_enquiry';
 
     const coordinator = new CoordinatorAgent();
     const result = await coordinator.coordinate(state, 'travel');
@@ -19,7 +19,7 @@ describe('CoordinatorAgent', () => {
   });
 
   it('delegates support & cancellation questions to travel care support agent', async () => {
-    const state = createInitialState(ORG_A, CONTACT_A, CONV_A, 'What is the visa policy and cancellation refund for Europe tour?');
+    const state = createInitialState({ organizationId: ORG_A, contactId: CONTACT_A, conversationId: CONV_A, inboundMessage: 'What is the visa policy and cancellation refund for Europe tour?', traceId: 'trace-2' });
     state.intent = 'support_question';
 
     const coordinator = new CoordinatorAgent();

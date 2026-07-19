@@ -132,9 +132,9 @@ BEGIN
     'bookings', 'quotes', 'itineraries'
   ]
   LOOP
-    EXECUTE format('CREATE POLICY %I ON %I FOR SELECT USING (auth.is_member_of(organization_id))', tbl || '_select', tbl);
-    EXECUTE format('CREATE POLICY %I ON %I FOR INSERT WITH CHECK (auth.is_member_of(organization_id))', tbl || '_insert', tbl);
-    EXECUTE format('CREATE POLICY %I ON %I FOR UPDATE USING (auth.is_member_of(organization_id))', tbl || '_update', tbl);
+    EXECUTE format('CREATE POLICY %I ON %I FOR SELECT USING (public.is_member_of(organization_id))', tbl || '_select', tbl);
+    EXECUTE format('CREATE POLICY %I ON %I FOR INSERT WITH CHECK (public.is_member_of(organization_id))', tbl || '_insert', tbl);
+    EXECUTE format('CREATE POLICY %I ON %I FOR UPDATE USING (public.is_member_of(organization_id))', tbl || '_update', tbl);
   END LOOP;
 END;
 $$;
