@@ -7,7 +7,7 @@
 
 ## 1. Overview & Objectives
 
-The **Payment Agent** handles financial transactions for the BusinessOS AI Travel Vertical:
+The **Payment Agent** handles financial transactions for the SaarthiOne Travel Vertical:
 - Generates secure Razorpay / Stripe / UPI payment links
 - Sends invoice receipts via WhatsApp
 - Verifies payment webhook signatures idempotently

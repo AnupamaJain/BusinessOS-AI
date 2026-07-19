@@ -1,7 +1,7 @@
 # Product Requirements Document (PRD)
 
 ## 1. Product Identification
-- **Product Name**: BusinessOS AI (Travel Skill)
+- **Product Name**: SaarthiOne (Travel Skill)
 - **Target Audience**: Travel agencies, tour operators, destination management companies (DMCs), boutique travel consultants.
 - **Primary Channels**: WhatsApp Business API (Meta Cloud API), Instagram Messaging, Messenger.
 

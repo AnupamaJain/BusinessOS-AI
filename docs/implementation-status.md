@@ -96,3 +96,20 @@ Everything below is REAL and verified live — no mocks in the production path.
 - [x] Test suite: 163 unit/integration tests green; evaluation 30/30 (100%)
 
 Pending user-supplied credentials (see docs/GO-LIVE.md): Vercel AI Gateway card OR LLM API key; Meta WhatsApp tokens; Razorpay keys.
+
+---
+
+## Phase 10: Travel CRM Extensions & SaarthiOne Rebranding (2026-07-19) ✅
+
+- [x] Refactored brand identity to **SaarthiOne** across documentation, UI, and package namespaces (`@business-os-ai/*` kept for backend packages to avoid breaking changes).
+- [x] Added interactive conversation-first landing page (`apps/web/src/LandingPage.tsx`).
+- [x] Implemented Travel domain models (`packages`, `bookings`) to the `SupabaseBusinessStore`.
+- [x] Added `searchTravelPackages` and `createTravelBooking` MCP tools with persistent storage mapping.
+
+---
+
+## Phase 11: Native Meta AI Agents Integration (In Progress) ⏳
+
+- [ ] Analyze Meta AI Native Agent documentation for handoff structures.
+- [ ] Implement `metadata` parsing in `/webhook` gateway ingress to preserve Meta AI context.
+- [ ] Route specialized fallback tasks (bookings, support escalation) from Meta AI to the SaarthiOne Coordinator Agent.

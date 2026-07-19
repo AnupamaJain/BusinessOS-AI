@@ -42,7 +42,33 @@ node scripts/ingest-knowledge-base.mjs
 ```
 This reads `knowledge-base/d2c-skincare/*.md` and POSTs them to `/internal/rag/ingest`, which chunks, embeds (1536-dim) and stores them in `knowledge_chunks` (pgvector, tenant-scoped, cosine-similarity RPC `match_knowledge_chunks`).
 
-## Step 2 — Connect WhatsApp (Meta Business)
+## Step 2 — Connect WhatsApp
+
+You can use **either Twilio (easiest) or Meta**. The gateway picks Twilio first if its credentials are set, otherwise Meta, otherwise a local mock. Both are fully implemented (send + inbound + signature verification).
+
+### Option A — Twilio (recommended for a fast start; no business verification)
+
+1. Sign up at https://twilio.com → Console. Note your **Account SID** and **Auth Token** (Console home).
+2. Open **Messaging → Try it out → Send a WhatsApp message** to activate the **WhatsApp Sandbox**. Follow the instructions to join (send `join <two-words>` from your phone to the sandbox number, e.g. `+1 415 523 8886`).
+3. In the sandbox settings, set **"When a message comes in"** to:
+   `https://business-os-gateway.vercel.app/webhooks/twilio` (HTTP POST).
+4. Set the credentials on the gateway:
+   ```bash
+   cd apps/gateway-api/.vercel-deploy
+   printf 'ACxxxxxxxx'  | vercel env add TWILIO_ACCOUNT_SID production
+   printf '<auth-token>' | vercel env add TWILIO_AUTH_TOKEN production
+   printf '+14155238886' | vercel env add TWILIO_WHATSAPP_NUMBER production
+   printf 'https://business-os-gateway.vercel.app/webhooks/twilio' | vercel env add TWILIO_WEBHOOK_URL production
+   vercel deploy --prod --yes
+   ```
+5. Message the sandbox number from your joined phone — the reply flows through the agent and appears in the dashboard. Requests are validated with the `X-Twilio-Signature` HMAC. Confirm the active provider anytime:
+   ```bash
+   curl https://business-os-gateway.vercel.app/internal/llm/health -H "x-internal-key: $INTERNAL_API_KEY"
+   # → "whatsappProvider": "twilio"
+   ```
+   The sandbox can message anyone who has joined it; for unrestricted sending, move to a Twilio WhatsApp Sender (Twilio handles the Meta business approval).
+
+### Option B — Meta WhatsApp Business (direct)
 
 1. In https://developers.facebook.com create (or open) your app → **WhatsApp → API Setup**.
 2. Copy: **Phone Number ID**, a **permanent access token** (System User token with `whatsapp_business_messaging`), and the **App Secret** (App Settings → Basic).

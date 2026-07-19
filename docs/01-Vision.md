@@ -10,11 +10,11 @@ Traditionally, an SMB required:
 5. Payment gateway setup
 6. Email marketing software
 
-**BusinessOS AI** replaces this complex stack with **Conversational Interfaces**. WhatsApp becomes the primary operating UI for both the SMB owner and their customers.
+**SaarthiOne** replaces this complex stack with **Conversational Interfaces**. WhatsApp becomes the primary operating UI for both the SMB owner and their customers.
 
 ```mermaid
 graph LR
-    Sub[Customer] -->|WhatsApp / Instagram| AI[BusinessOS AI Employee]
+    Sub[Customer] -->|WhatsApp / Instagram| AI[SaarthiOne Employee]
     AI -->|Qualifies| CRM[CRM & Leads]
     AI -->|Recommends| Catalog[Packages & Pricing]
     AI -->|Reserves| Booking[Booking Engine]

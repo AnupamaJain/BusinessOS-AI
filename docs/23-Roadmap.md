@@ -2,7 +2,7 @@
 
 ```mermaid
 gantt
-    title BusinessOS AI 12-Month Roadmap
+    title SaarthiOne 12-Month Roadmap
     dateFormat  YYYY-MM-DD
     section Phase 1: Foundation & Travel MVP
     Platform Rebrand & Auth         :done, p1, 2026-07-01, 2026-07-15

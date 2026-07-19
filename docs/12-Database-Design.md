@@ -26,8 +26,10 @@ All 23 tables are tenant-isolated by `organization_id` foreign key referencing `
 ### Travel Vertical Extension Tables (`20260720000001_travel_schema.sql`)
 17. `destinations` — Travel destinations
 18. `packages` — Holiday packages
+    - Core fields: `sku`, `title`, `destination`, `duration_days`, `price_per_person`, `currency`, `inclusions`
 19. `hotels` — Hotel accommodations
 20. `flights` — Flight schedules
 21. `bookings` — Travel package reservations
+    - Core fields: `booking_number`, `package_sku`, `travel_date`, `traveler_count`, `total_amount`, `status` (`confirmed`, `pending`, `cancelled`)
 22. `quotes` — Price estimates & itineraries
 23. `itineraries` — Day-by-day travel plans

@@ -38189,7 +38189,8 @@ __export(vercel_exports, {
 module.exports = __toCommonJS(vercel_exports);
 
 // src/server.ts
-var import_crypto7 = require("crypto");
+var import_express2 = __toESM(require_express2());
+var import_crypto8 = require("crypto");
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -42997,6 +42998,107 @@ var MetaCloudApiAdapter = class {
         success: false,
         error: `Failed to communicate with Meta API: ${errorMsg}`
       };
+    }
+  }
+};
+
+// src/adapters/twilio-whatsapp-adapter.ts
+var import_crypto3 = require("crypto");
+var TwilioWhatsAppAdapter = class {
+  accountSid;
+  authToken;
+  fromNumber;
+  constructor(config) {
+    this.accountSid = config.accountSid;
+    this.authToken = config.authToken;
+    this.fromNumber = config.fromNumber.replace(/^whatsapp:/, "");
+  }
+  /** Twilio has no GET verification handshake; kept for interface parity. */
+  verifyWebhook(_token, challenge) {
+    return challenge;
+  }
+  parseInboundEvent(body) {
+    const form = body ?? {};
+    const sid = form["MessageSid"] ?? form["SmsMessageSid"] ?? form["SmsSid"];
+    const from = form["From"];
+    if (!sid || !from) {
+      return [];
+    }
+    if (form["MessageStatus"] && !form["Body"] && !form["NumMedia"]) {
+      return [];
+    }
+    const numMedia = parseInt(form["NumMedia"] ?? "0", 10);
+    let type = "text";
+    let mediaUrl;
+    if (numMedia > 0) {
+      const contentType = form["MediaContentType0"] ?? "";
+      type = contentType.startsWith("image/") ? "image" : "document";
+      mediaUrl = form["MediaUrl0"];
+    }
+    return [{
+      providerMessageId: sid,
+      from: from.replace(/^whatsapp:/, ""),
+      timestamp: /* @__PURE__ */ new Date(),
+      type,
+      text: form["Body"] || void 0,
+      mediaUrl,
+      metadata: {
+        senderName: form["ProfileName"],
+        waId: form["WaId"],
+        channel: "twilio",
+        to: form["To"]?.replace(/^whatsapp:/, "")
+      }
+    }];
+  }
+  async sendMessage(organizationId, message) {
+    if (!message.text) {
+      return { success: false, error: "Twilio adapter supports text messages only in this path." };
+    }
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${this.accountSid}/Messages.json`;
+    const params = new URLSearchParams({
+      From: `whatsapp:${this.fromNumber}`,
+      To: `whatsapp:${message.to.replace(/^whatsapp:/, "")}`,
+      Body: message.text
+    });
+    const auth = Buffer.from(`${this.accountSid}:${this.authToken}`).toString("base64");
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: params.toString()
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        logger.error("Twilio API error", { status: response.status, message: data.message, code: data.code, organizationId });
+        return { success: false, error: `Twilio API ${response.status}: ${data.message ?? "unknown error"}` };
+      }
+      logger.info("Twilio WhatsApp message sent", { organizationId, sid: data.sid });
+      return { success: true, providerMessageId: data.sid };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      logger.error("Twilio communication error", { error: errorMsg, organizationId });
+      return { success: false, error: `Failed to reach Twilio: ${errorMsg}` };
+    }
+  }
+  /**
+   * Validates the Twilio request signature.
+   * @param url   The exact public URL Twilio was configured to call.
+   * @param params The POST form parameters (as a flat string map).
+   * @param signature The X-Twilio-Signature header value.
+   */
+  verifySignature(url, params, signature) {
+    if (!signature) return false;
+    const data = Object.keys(params).sort().reduce((acc, key) => acc + key + params[key], url);
+    const expected = (0, import_crypto3.createHmac)("sha1", this.authToken).update(Buffer.from(data, "utf-8")).digest("base64");
+    try {
+      const a = Buffer.from(signature);
+      const b = Buffer.from(expected);
+      return a.length === b.length && (0, import_crypto3.timingSafeEqual)(a, b);
+    } catch {
+      return false;
     }
   }
 };
@@ -50992,7 +51094,7 @@ function assertTenantMatch(resourceOrgId, expectedOrgId) {
 }
 
 // ../../packages/mcp-business-tools/src/tools.ts
-var import_crypto3 = require("crypto");
+var import_crypto4 = require("crypto");
 async function getCustomerContext(store, input) {
   const contact = await store.findContactById(input.organizationId, input.contactId);
   if (!contact) {
@@ -51034,10 +51136,10 @@ async function upsertQualifiedLead(store, input) {
       score: input.score,
       stage: stage2
     });
-    await store.insertAuditEvent({ id: (0, import_crypto3.randomUUID)(), organizationId: input.organizationId, action: "lead_updated", entityType: "lead", entityId: existing.id, actorType: "agent", details: { idempotencyKey: input.idempotencyKey }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+    await store.insertAuditEvent({ id: (0, import_crypto4.randomUUID)(), organizationId: input.organizationId, action: "lead_updated", entityType: "lead", entityId: existing.id, actorType: "agent", details: { idempotencyKey: input.idempotencyKey }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
     return { leadId: existing.id, action: "updated", stage: stage2 };
   }
-  const leadId = (0, import_crypto3.randomUUID)();
+  const leadId = (0, import_crypto4.randomUUID)();
   const stage = input.score >= 50 ? "qualified" : "contacted";
   await store.insertLead({
     id: leadId,
@@ -51052,7 +51154,7 @@ async function upsertQualifiedLead(store, input) {
     score: input.score,
     idempotencyKey: input.idempotencyKey
   });
-  await store.insertAuditEvent({ id: (0, import_crypto3.randomUUID)(), organizationId: input.organizationId, action: "lead_created", entityType: "lead", entityId: leadId, actorType: "agent", details: { idempotencyKey: input.idempotencyKey, score: input.score }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+  await store.insertAuditEvent({ id: (0, import_crypto4.randomUUID)(), organizationId: input.organizationId, action: "lead_created", entityType: "lead", entityId: leadId, actorType: "agent", details: { idempotencyKey: input.idempotencyKey, score: input.score }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
   logger.info("Lead created", { organizationId: input.organizationId, leadId });
   return { leadId, action: "created", stage };
 }
@@ -51065,7 +51167,7 @@ async function createHumanHandoff(store, input) {
   if (existing) {
     return { handoffId: existing.id, conversationStatus: "waiting_for_human" };
   }
-  const handoffId = (0, import_crypto3.randomUUID)();
+  const handoffId = (0, import_crypto4.randomUUID)();
   await store.insertHandoff({
     id: handoffId,
     organizationId: input.organizationId,
@@ -51078,7 +51180,7 @@ async function createHumanHandoff(store, input) {
     idempotencyKey: input.idempotencyKey
   });
   await store.updateConversationStatus(input.organizationId, input.conversationId, "waiting_for_human");
-  await store.insertAuditEvent({ id: (0, import_crypto3.randomUUID)(), organizationId: input.organizationId, action: "handoff_created", entityType: "handoff", entityId: handoffId, actorType: "agent", details: { reason: input.reason, priority: input.priority }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+  await store.insertAuditEvent({ id: (0, import_crypto4.randomUUID)(), organizationId: input.organizationId, action: "handoff_created", entityType: "handoff", entityId: handoffId, actorType: "agent", details: { reason: input.reason, priority: input.priority }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
   logger.info("Human handoff created", { organizationId: input.organizationId, handoffId });
   return { handoffId, conversationStatus: "waiting_for_human" };
 }
@@ -51134,7 +51236,7 @@ async function searchTravelPackages(store, input) {
 }
 
 // ../../packages/mcp-business-tools/src/supabase-store.ts
-var import_crypto4 = require("crypto");
+var import_crypto5 = require("crypto");
 var SupabaseBusinessStore = class {
   constructor(db) {
     this.db = db;
@@ -51313,7 +51415,7 @@ var SupabaseBusinessStore = class {
     });
     if (error) this.fail("insertHandoff", error);
     await this.insertAuditEvent({
-      id: (0, import_crypto4.randomUUID)(),
+      id: (0, import_crypto5.randomUUID)(),
       organizationId: handoff.organizationId,
       action: "handoff_created",
       entityType: "handoff",
@@ -52890,7 +52992,7 @@ var CreateOrderInputSchema = external_exports.object({
 });
 
 // ../../packages/commerce/src/razorpay.ts
-var import_crypto5 = require("crypto");
+var import_crypto6 = require("crypto");
 var RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
 var MIN_EXPIRY_MINUTES = 15;
 var DEFAULT_EXPIRY_MINUTES = 60;
@@ -53003,13 +53105,13 @@ var RazorpayPaymentService = class {
     if (!this.webhookSecret) {
       return false;
     }
-    const expected = (0, import_crypto5.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
+    const expected = (0, import_crypto6.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
     const expectedBuffer = Buffer.from(expected, "utf8");
     const signatureBuffer = Buffer.from(signature, "utf8");
     if (expectedBuffer.length !== signatureBuffer.length) {
       return false;
     }
-    return (0, import_crypto5.timingSafeEqual)(expectedBuffer, signatureBuffer);
+    return (0, import_crypto6.timingSafeEqual)(expectedBuffer, signatureBuffer);
   }
   async handleWebhookEvent(event) {
     const parsed = RazorpayWebhookEventSchema.safeParse(event);
@@ -53069,7 +53171,7 @@ var RazorpayPaymentService = class {
 var path = __toESM(require("path"));
 
 // ../scheduler-worker/src/worker.ts
-var import_crypto6 = require("crypto");
+var import_crypto7 = require("crypto");
 var SchedulerWorker = class {
   constructor(store, options = {}) {
     this.store = store;
@@ -53156,7 +53258,7 @@ var SchedulerWorker = class {
   }
   async logAudit(organizationId, action, entityType, entityId, details) {
     await this.store.insertAuditEvent({
-      id: (0, import_crypto6.randomUUID)(),
+      id: (0, import_crypto7.randomUUID)(),
       organizationId,
       action,
       entityType,
@@ -53267,15 +53369,26 @@ function buildServer(env = process.env) {
   const accessToken = env["META_WHATSAPP_ACCESS_TOKEN"];
   const phoneNumberId = env["META_WHATSAPP_PHONE_NUMBER_ID"];
   const mockRequested = env["ENABLE_MOCK_WHATSAPP"] === "true";
+  const twilioSid = env["TWILIO_ACCOUNT_SID"];
+  const twilioToken = env["TWILIO_AUTH_TOKEN"];
+  const twilioNumber = env["TWILIO_WHATSAPP_NUMBER"];
+  const twilioAdapter = twilioSid && twilioToken && twilioNumber ? new TwilioWhatsAppAdapter({ accountSid: twilioSid, authToken: twilioToken, fromNumber: twilioNumber }) : null;
   let adapter;
-  if (!mockRequested && accessToken && phoneNumberId) {
+  let activeProvider;
+  if (!mockRequested && twilioAdapter) {
+    logger.info("Twilio WhatsApp adapter active", { fromNumber: twilioNumber });
+    adapter = twilioAdapter;
+    activeProvider = "twilio";
+  } else if (!mockRequested && accessToken && phoneNumberId) {
     logger.info("Meta WhatsApp Cloud API adapter active", { phoneNumberId });
     adapter = new MetaCloudApiAdapter({ accessToken, phoneNumberId, verifyToken });
+    activeProvider = "meta";
   } else {
     if (!mockRequested) {
-      logger.warn("META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID not set \u2014 WhatsApp sends will be recorded locally until Meta credentials are configured.");
+      logger.warn("No WhatsApp provider credentials set (Twilio or Meta) \u2014 sends recorded locally until configured.");
     }
     adapter = new MockWhatsAppAdapter(verifyToken);
+    activeProvider = "mock";
   }
   const idempotencyService = new SupabaseIdempotencyService(db);
   const messageService = new SupabaseMessageService(store);
@@ -53332,6 +53445,25 @@ function buildServer(env = process.env) {
       await idempotencyService.markProcessed(msg.providerMessageId, orgId, errorMsg);
     }
   }
+  async function ingestInboundMessages(messages) {
+    for (const msg of messages) {
+      const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
+      if (!acquired) {
+        logger.info("Duplicate inbound event skipped", { providerMessageId: msg.providerMessageId });
+        continue;
+      }
+      const stored = await messageService.persistInbound(defaultOrgId, msg);
+      await handleInbound(defaultOrgId, {
+        providerMessageId: msg.providerMessageId,
+        from: msg.from,
+        text: msg.text,
+        type: msg.type,
+        contactId: stored.contactId,
+        conversationId: stored.conversationId,
+        metadata: msg.metadata
+      });
+    }
+  }
   function isInternalAuthorised(req) {
     const key = req.headers["x-internal-key"];
     if (internalApiKey && key === internalApiKey) return true;
@@ -53355,6 +53487,26 @@ function buildServer(env = process.env) {
     supabase: db
   }) : null;
   const registerRoutes = (app3) => {
+    app3.post("/webhooks/twilio", import_express2.default.urlencoded({ extended: false }), (req, res) => {
+      if (!twilioAdapter) {
+        res.status(503).type("text/xml").send("<Response></Response>");
+        return;
+      }
+      const form = req.body ?? {};
+      const signature = req.headers["x-twilio-signature"];
+      const publicUrl = env["TWILIO_WEBHOOK_URL"] ?? `https://${req.headers["x-forwarded-host"] ?? req.headers.host}${req.originalUrl}`;
+      if (!twilioAdapter.verifySignature(publicUrl, form, typeof signature === "string" ? signature : void 0)) {
+        logger.warn("Twilio webhook rejected: invalid X-Twilio-Signature", { publicUrl });
+        res.status(403).type("text/xml").send("<Response></Response>");
+        return;
+      }
+      res.status(200).type("text/xml").send("<Response></Response>");
+      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form));
+      try {
+        (0, import_functions.waitUntil)(work);
+      } catch {
+      }
+    });
     app3.post("/webhooks/razorpay", async (req, res) => {
       if (!razorpay) {
         res.status(503).json({ error: "Razorpay not configured (set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)." });
@@ -53403,12 +53555,12 @@ function buildServer(env = process.env) {
         to: contact.phone,
         type: "text",
         text: parsed.data.text,
-        idempotencyKey: `operator:${(0, import_crypto7.randomUUID)()}`
+        idempotencyKey: `operator:${(0, import_crypto8.randomUUID)()}`
       });
       if (result.success && result.providerMessageId) {
         await messageService.persistOutbound(operator.organizationId, contact.phone, parsed.data.text, result.providerMessageId, conversation.id);
         await store.insertAuditEvent({
-          id: (0, import_crypto7.randomUUID)(),
+          id: (0, import_crypto8.randomUUID)(),
           organizationId: operator.organizationId,
           action: "operator_message_sent",
           entityType: "message",
@@ -53492,7 +53644,8 @@ function buildServer(env = process.env) {
       }
       const report = {
         providers: llm.realProviderNames,
-        embeddingConfigured: !!embedder
+        embeddingConfigured: !!embedder,
+        whatsappProvider: activeProvider
       };
       try {
         const completion = await llm.generateCompletion({

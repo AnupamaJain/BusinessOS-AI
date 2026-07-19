@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { createApp, type InboundCallbackMessage } from './app';
 import { MockWhatsAppAdapter } from './adapters/mock-whatsapp-adapter';
 import { MetaCloudApiAdapter } from './adapters/meta-cloud-api-adapter';
-import type { WhatsAppAdapter } from './adapters/types';
+import { TwilioWhatsAppAdapter } from './adapters/twilio-whatsapp-adapter';
+import type { WhatsAppAdapter, InboundMessage } from './adapters/types';
 import { SupabaseIdempotencyService, SupabaseMessageService } from './services/supabase-services';
 import { createServiceClient, type SupabaseClient } from '@business-os-ai/database';
 import { SupabaseBusinessStore } from '@business-os-ai/mcp-business-tools';
@@ -73,20 +74,34 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const embedder = createEmbeddingProviderFromEnv(env);
   const vectorStore = new SupabaseVectorStore(db);
 
-  // ── WhatsApp adapter selection ──
+  // ── WhatsApp adapter selection (Twilio → Meta → Mock) ──
   const accessToken = env['META_WHATSAPP_ACCESS_TOKEN'];
   const phoneNumberId = env['META_WHATSAPP_PHONE_NUMBER_ID'];
   const mockRequested = env['ENABLE_MOCK_WHATSAPP'] === 'true';
 
+  const twilioSid = env['TWILIO_ACCOUNT_SID'];
+  const twilioToken = env['TWILIO_AUTH_TOKEN'];
+  const twilioNumber = env['TWILIO_WHATSAPP_NUMBER'];
+  const twilioAdapter = (twilioSid && twilioToken && twilioNumber)
+    ? new TwilioWhatsAppAdapter({ accountSid: twilioSid, authToken: twilioToken, fromNumber: twilioNumber })
+    : null;
+
   let adapter: WhatsAppAdapter;
-  if (!mockRequested && accessToken && phoneNumberId) {
+  let activeProvider: 'twilio' | 'meta' | 'mock';
+  if (!mockRequested && twilioAdapter) {
+    logger.info('Twilio WhatsApp adapter active', { fromNumber: twilioNumber });
+    adapter = twilioAdapter;
+    activeProvider = 'twilio';
+  } else if (!mockRequested && accessToken && phoneNumberId) {
     logger.info('Meta WhatsApp Cloud API adapter active', { phoneNumberId });
     adapter = new MetaCloudApiAdapter({ accessToken, phoneNumberId, verifyToken });
+    activeProvider = 'meta';
   } else {
     if (!mockRequested) {
-      logger.warn('META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp sends will be recorded locally until Meta credentials are configured.');
+      logger.warn('No WhatsApp provider credentials set (Twilio or Meta) — sends recorded locally until configured.');
     }
     adapter = new MockWhatsAppAdapter(verifyToken);
+    activeProvider = 'mock';
   }
 
   const idempotencyService = new SupabaseIdempotencyService(db);
@@ -153,6 +168,27 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
+  // ── Shared inbound pipeline: dedup → persist → agent (used by Twilio route) ──
+  async function ingestInboundMessages(messages: InboundMessage[]): Promise<void> {
+    for (const msg of messages) {
+      const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
+      if (!acquired) {
+        logger.info('Duplicate inbound event skipped', { providerMessageId: msg.providerMessageId });
+        continue;
+      }
+      const stored = await messageService.persistInbound(defaultOrgId, msg);
+      await handleInbound(defaultOrgId, {
+        providerMessageId: msg.providerMessageId,
+        from: msg.from,
+        text: msg.text,
+        type: msg.type,
+        contactId: stored.contactId,
+        conversationId: stored.conversationId,
+        metadata: msg.metadata,
+      });
+    }
+  }
+
   // ── Auth helpers for internal/operator routes ──
   function isInternalAuthorised(req: express.Request): boolean {
     const key = req.headers['x-internal-key'];
@@ -184,6 +220,36 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
   // ── Production routes ──
   const registerRoutes = (app: express.Express): void => {
+    /**
+     * Twilio WhatsApp inbound webhook (form-encoded).
+     * Signature-verified against the exact configured public URL.
+     */
+    app.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res) => {
+      if (!twilioAdapter) {
+        res.status(503).type('text/xml').send('<Response></Response>');
+        return;
+      }
+      const form = (req.body ?? {}) as Record<string, string>;
+      const signature = req.headers['x-twilio-signature'];
+      const publicUrl = env['TWILIO_WEBHOOK_URL']
+        ?? `https://${req.headers['x-forwarded-host'] ?? req.headers.host}${req.originalUrl}`;
+      if (!twilioAdapter.verifySignature(publicUrl, form, typeof signature === 'string' ? signature : undefined)) {
+        logger.warn('Twilio webhook rejected: invalid X-Twilio-Signature', { publicUrl });
+        res.status(403).type('text/xml').send('<Response></Response>');
+        return;
+      }
+
+      // Empty TwiML ack — the agent reply is sent asynchronously via the API.
+      res.status(200).type('text/xml').send('<Response></Response>');
+
+      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form));
+      try {
+        waitUntil(work);
+      } catch {
+        void work;
+      }
+    });
+
     /** Razorpay payment webhook — signature-verified, updates payments/orders. */
     app.post('/webhooks/razorpay', async (req, res) => {
       if (!razorpay) {
@@ -336,6 +402,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       const report: Record<string, unknown> = {
         providers: llm.realProviderNames,
         embeddingConfigured: !!embedder,
+        whatsappProvider: activeProvider,
       };
       try {
         const completion = await llm.generateCompletion({

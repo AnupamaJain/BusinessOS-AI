@@ -1,4 +1,4 @@
-# BusinessOS AI — Executive Summary
+# SaarthiOne — Executive Summary
 
 > **Mission Statement**: *"Run your entire business through AI-powered conversations."*
 
@@ -6,7 +6,7 @@
 
 ## 1. The Opportunity
 
-Meta is building an AI-native Business Operating System inside WhatsApp, Messenger, and Instagram. Rather than building a basic chatbot builder, **BusinessOS AI** is designed as the **"Shopify + Salesforce + Zendesk + HubSpot + AI Employee"** for SMBs.
+Meta is building an AI-native Business Operating System inside WhatsApp, Messenger, and Instagram. Rather than building a basic chatbot builder, **SaarthiOne** is designed as the **"Shopify + Salesforce + Zendesk + HubSpot + AI Employee"** for SMBs.
 
 Instead of hiring:
 - Receptionists
@@ -15,7 +15,7 @@ Instead of hiring:
 - Booking coordinators
 - Campaign managers
 
-SMBs subscribe to BusinessOS AI. The AI handles sales, itineraries, bookings, payments, support, and marketing 24/7 on WhatsApp.
+SMBs subscribe to SaarthiOne. The AI handles sales, itineraries, bookings, payments, support, and marketing 24/7 on WhatsApp.
 
 ---
 

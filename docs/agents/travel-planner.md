@@ -8,7 +8,7 @@
 
 ## 1. Overview & Objectives
 
-The **Travel Planner Agent** is the conversational frontline of the BusinessOS AI Travel Vertical. It acts as an expert travel advisor, interacting with customers on WhatsApp, Instagram, and Messenger to:
+The **Travel Planner Agent** is the conversational frontline of the SaarthiOne Travel Vertical. It acts as an expert travel advisor, interacting with customers on WhatsApp, Instagram, and Messenger to:
 - Qualify travel leads (budget, dates, destination, group size, travel style)
 - Query the holiday package catalog (`TRV-BALI-001`, `TRV-EUR-002`, `TRV-GOA-003`)
 - Generate personalized day-by-day trip itineraries

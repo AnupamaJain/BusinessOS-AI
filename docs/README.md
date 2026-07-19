@@ -1,6 +1,6 @@
-# BusinessOS AI — Documentation Directory
+# SaarthiOne — Documentation Directory
 
-Welcome to the complete Architecture Repository & Engineering Handbook for **BusinessOS AI**.
+Welcome to the complete Architecture Repository & Engineering Handbook for **SaarthiOne**.
 
 ---
 
