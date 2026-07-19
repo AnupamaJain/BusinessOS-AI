@@ -39,7 +39,7 @@ describe('TwilioWhatsAppAdapter', () => {
   });
 
   describe('verifySignature', () => {
-    const url = 'https://business-os-gateway.vercel.app/webhooks/twilio';
+    const url = 'https://saarthione-api.vercel.app/webhooks/twilio';
     const params = { From: 'whatsapp:+919876543210', Body: 'Hi', MessageSid: 'SM123' };
 
     function validSignature(): string {

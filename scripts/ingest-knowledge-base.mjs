@@ -19,7 +19,7 @@ if (existsSync(envFile)) {
   }
 }
 
-const gatewayUrl = process.argv[2] ?? process.env.GATEWAY_URL ?? 'https://business-os-gateway.vercel.app';
+const gatewayUrl = process.argv[2] ?? process.env.GATEWAY_URL ?? 'https://saarthione-api.vercel.app';
 const internalKey = process.env.INTERNAL_API_KEY;
 if (!internalKey) {
   console.error('INTERNAL_API_KEY missing (expected in root .env)');
