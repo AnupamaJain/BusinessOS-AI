@@ -580,3 +580,12 @@ body {
   font-weight: 700;
   color: var(--color-success);
 }
+
+/* Landing journey — stack stage rows on narrow screens */
+@media (max-width: 900px) {
+  .journey-stage-row {
+    grid-template-columns: 1fr !important;
+    gap: 28px !important;
+  }
+  .journey-stage-row > div { order: initial !important; }
+}

@@ -10,6 +10,207 @@ interface LandingPageProps {
   onStartOnboarding: () => void;
 }
 
+// ─── Customer Journey (discovery → loyalty) ─────────────────────────────
+type ScreenItem =
+  | { kind: 'sys'; text: string }
+  | { kind: 'in'; text: React.ReactNode; time: string }
+  | { kind: 'out'; text: React.ReactNode; time: string }
+  | { kind: 'card'; loc: string; price: string; title: string; incl: string[]; time: string }
+  | { kind: 'list'; head: string; opts: { name: string; sub: string; sel?: boolean }[] }
+  | { kind: 'pay'; who: string; sub: string; amount: string; note: string };
+
+interface JourneyStage {
+  num: string;
+  phase: string;
+  title: string;
+  body: string;
+  tags: string[];
+  sub: string;
+  screen: ScreenItem[];
+}
+
+const JOURNEY_STAGES: JourneyStage[] = [
+  {
+    num: '01', phase: 'Discover', title: 'It starts with a single tap.',
+    body: 'Aarav taps “Chat on WhatsApp” from an Instagram ad. No landing page, no lead form — the thread opens already knowing which offer brought him in, and Saarthi greets him instantly.',
+    tags: ['entry · click-to-WhatsApp ad', 'creates · contact + consent'],
+    sub: 'Business account · replies instantly',
+    screen: [
+      { kind: 'sys', text: '›› This chat started from an ad on Instagram.' },
+      { kind: 'sys', text: '🔒 Messages are handled by an AI assistant. A human can take over anytime.' },
+      { kind: 'in', text: 'Namaste Aarav! 🌏 I’m Saarthi, your travel concierge. I saw you were looking at our island getaways — want me to find the perfect trip for you?', time: '11:04' },
+      { kind: 'out', text: 'Yes please! Thinking of a honeymoon.', time: '11:04' },
+    ],
+  },
+  {
+    num: '02', phase: 'Understand', title: 'A few natural questions, not a form.',
+    body: 'Instead of a 12-field enquiry form, Saarthi asks the way a good agent would — dates, travellers, budget — one message at a time. Every answer is captured as a qualified lead the moment it’s given.',
+    tags: ['intent · LLM classifier → sales', 'tool · upsert_qualified_lead'],
+    sub: 'typing…',
+    screen: [
+      { kind: 'in', text: 'Congratulations! 🎉 To tailor this, may I ask a few quick things — when are you travelling, and for how many people?', time: '11:05' },
+      { kind: 'out', text: 'Mid-October, 2 of us. Budget around ₹1 lakh each.', time: '11:06' },
+      { kind: 'in', text: 'Perfect — beaches or mountains for the honeymoon? 🏝️⛰️', time: '11:06' },
+      { kind: 'out', text: 'Beaches, definitely.', time: '11:06' },
+    ],
+  },
+  {
+    num: '03', phase: 'Recommend', title: 'A grounded recommendation, not a guess.',
+    body: 'Saarthi searches the real package catalogue and answers with an offer it can stand behind — accurate title, price, and inclusions pulled straight from your own data. No invented products, no wrong prices.',
+    tags: ['tool · search_travel_packages', 'grounded by · catalogue + RAG'],
+    sub: 'Business account',
+    screen: [
+      { kind: 'in', text: 'I’ve got a feeling you’ll love this one. 💫', time: '11:07' },
+      { kind: 'card', loc: '🌴 Bali, Indonesia', price: '₹49,999 / person', title: 'Bali Honeymoon & Romance Escapes · 5N / 6D', incl: ['4-Star villa with private pool', 'Daily breakfast + candlelight dinner', 'Nusa Penida island tour'], time: '11:07' },
+      { kind: 'out', text: 'Ooh that looks perfect 😍', time: '11:08' },
+    ],
+  },
+  {
+    num: '04', phase: 'Choose', title: 'Choose right inside the chat.',
+    body: 'Options arrive as a tappable list — room tiers, add-ons, dates — so choosing feels like picking a reply, not filling a cart. The selection flows back into the thread as a confirmed quote.',
+    tags: ['ui · in-thread list picker', 'tool · create quote'],
+    sub: 'Business account',
+    screen: [
+      { kind: 'in', text: 'Lovely! Pick your villa and I’ll lock the price. 🏡', time: '11:09' },
+      { kind: 'list', head: '🏝️ Choose your stay', opts: [
+        { name: 'Private Pool Villa', sub: '5N · sea view · ₹49,999 / person', sel: true },
+        { name: 'Garden Suite', sub: '5N · garden view · ₹42,999 / person' },
+        { name: 'Beachfront Villa', sub: '5N · beachfront · ₹61,999 / person' },
+      ] },
+      { kind: 'out', text: 'Private Pool Villa for 2 🙌', time: '11:10' },
+    ],
+  },
+  {
+    num: '05', phase: 'Pay', title: 'Pay without ever leaving WhatsApp.',
+    body: 'Saarthi generates a secure payment link and drops it into the thread. Aarav pays with UPI or card in a couple of taps — and the booking flips to confirmed the instant the payment webhook fires.',
+    tags: ['gateway · Razorpay payment link', 'verified · signed webhook → paid'],
+    sub: 'Business account',
+    screen: [
+      { kind: 'in', text: <>All set! Total for 2 travellers: <b>₹99,998</b>. Here’s your secure payment link 👇</>, time: '11:11' },
+      { kind: 'pay', who: 'Wanderlust Travel', sub: 'Bali Honeymoon · 2 travellers', amount: '₹99,998', note: 'UPI · Cards · Netbanking — via Razorpay' },
+      { kind: 'out', text: 'Paid! ✅', time: '11:12' },
+      { kind: 'in', text: <>🎉 Booking <b>BK-48213</b> confirmed! Your itinerary and villa voucher are on the way.</>, time: '11:12' },
+    ],
+  },
+  {
+    num: '06', phase: 'Retain', title: 'The relationship doesn’t end at checkout.',
+    body: 'Consent-safe follow-ups keep the thread warm — a pre-trip checklist, a “how was it?” after, and a returning-guest offer next season. Every message respects opt-out and the sending window.',
+    tags: ['engine · scheduler + templates', 'guardrail · consent + 09–21h'],
+    sub: 'Business account',
+    screen: [
+      { kind: 'sys', text: '— 3 days before travel —' },
+      { kind: 'in', text: '✈️ Bali countdown! Your packing checklist & e-visa steps are ready. Want them now?', time: '09:30' },
+      { kind: 'sys', text: '— 1 week after travel —' },
+      { kind: 'in', text: <>Welcome home, Aarav! 🥥 How was the honeymoon? Leave a quick review and unlock <b>10% off</b> your next escape.</>, time: '18:15' },
+      { kind: 'out', text: 'It was magical, thank you! ⭐⭐⭐⭐⭐', time: '18:20' },
+    ],
+  },
+];
+
+function JourneyPhone({ sub, screen }: { sub: string; screen: ScreenItem[] }) {
+  return (
+    <div style={{
+      width: '330px', maxWidth: '100%', backgroundColor: '#0b141a',
+      borderRadius: '26px', border: '1px solid rgba(0, 242, 254, 0.25)',
+      boxShadow: '0 20px 50px rgba(0,0,0,0.7), 0 0 30px rgba(0, 242, 254, 0.08)', overflow: 'hidden',
+    }}>
+      {/* WhatsApp header */}
+      <div style={{ backgroundColor: '#1f2c34', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px' }}>
+        <span style={{ color: '#8696a0', fontSize: '18px' }}>‹</span>
+        <div style={{ width: '34px', height: '34px', borderRadius: '50%', background: 'linear-gradient(135deg, #00f2fe, #4facfe)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px' }}>🧭</div>
+        <div style={{ lineHeight: 1.25, minWidth: 0 }}>
+          <div style={{ color: '#e9edef', fontWeight: 600, fontSize: '14px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+            Wanderlust Travel <span style={{ color: '#53bdeb', fontSize: '11px' }}>✔</span>
+          </div>
+          <div style={{ color: '#8696a0', fontSize: '11px' }}>{sub}</div>
+        </div>
+        <div style={{ marginLeft: 'auto', color: '#8696a0', display: 'flex', gap: '14px', fontSize: '14px' }}>📞 ⋮</div>
+      </div>
+      {/* Chat body */}
+      <div style={{ padding: '14px 12px', minHeight: '300px', display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: '#0b141a', backgroundImage: 'radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px)', backgroundSize: '18px 18px' }}>
+        {screen.map((item, i) => {
+          if (item.kind === 'sys') {
+            return <div key={i} style={{ alignSelf: 'center', textAlign: 'center', maxWidth: '85%', background: 'rgba(31,44,52,0.7)', color: '#8696a0', fontSize: '11px', padding: '6px 12px', borderRadius: '9px', lineHeight: 1.4 }}>{item.text}</div>;
+          }
+          if (item.kind === 'in' || item.kind === 'out') {
+            const out = item.kind === 'out';
+            return (
+              <div key={i} style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '84%', backgroundColor: out ? '#005c4b' : '#1f2c34', color: '#e9edef', padding: '7px 10px 6px', borderRadius: out ? '10px 10px 3px 10px' : '10px 10px 10px 3px', fontSize: '13.5px', lineHeight: 1.42 }}>
+                {item.text}
+                <span style={{ display: 'block', textAlign: 'right', color: '#8696a0', fontSize: '10px', marginTop: '3px' }}>
+                  {!out && <span style={{ color: '#00f2fe', fontFamily: 'monospace', fontSize: '9px', letterSpacing: '0.04em', marginRight: '5px' }}>AI</span>}
+                  {item.time}{out && <span style={{ color: '#53bdeb' }}> ✓✓</span>}
+                </span>
+              </div>
+            );
+          }
+          if (item.kind === 'card') {
+            return (
+              <div key={i} style={{ alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#1f2c34', borderRadius: '10px 10px 10px 3px', overflow: 'hidden' }}>
+                <div style={{ height: '90px', background: 'linear-gradient(120deg, rgba(0,242,254,0.25), rgba(43,108,255,0.25)), linear-gradient(180deg, #0e7c86, #0a4a6b)', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: '8px 10px' }}>
+                  <span style={{ color: '#fff', fontWeight: 700, fontSize: '13px', textShadow: '0 1px 4px rgba(0,0,0,0.5)' }}>{item.loc}</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#fff', background: 'rgba(0,0,0,0.35)', padding: '3px 7px', borderRadius: '6px' }}>{item.price}</span>
+                </div>
+                <div style={{ padding: '10px 11px 11px' }}>
+                  <div style={{ color: '#e9edef', fontWeight: 700, fontSize: '13px' }}>{item.title}</div>
+                  <ul style={{ margin: '8px 0 0', paddingLeft: '15px', color: '#8696a0', fontSize: '12px', lineHeight: 1.7 }}>
+                    {item.incl.map((x, k) => <li key={k}>{x}</li>)}
+                  </ul>
+                  <div style={{ textAlign: 'right', color: '#8696a0', fontSize: '10px', marginTop: '8px' }}>{item.time}</div>
+                </div>
+                <div style={{ display: 'flex', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                  <button style={{ flex: 1, background: 'transparent', border: 'none', color: '#53bdeb', fontSize: '12.5px', padding: '10px 4px' }}>ℹ️ Details</button>
+                  <button style={{ flex: 1, background: 'transparent', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.07)', color: '#53bdeb', fontSize: '12.5px', padding: '10px 4px' }}>📅 Check dates</button>
+                </div>
+              </div>
+            );
+          }
+          if (item.kind === 'list') {
+            return (
+              <div key={i} style={{ alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#1f2c34', borderRadius: '10px 10px 10px 3px', padding: '11px 12px' }}>
+                <div style={{ color: '#e9edef', fontWeight: 700, fontSize: '13px', marginBottom: '9px' }}>{item.head}</div>
+                {item.opts.map((o, k) => (
+                  <div key={k} style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 0', borderTop: k === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                    <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid ' + (o.sel ? '#34d399' : '#8696a0'), marginTop: '2px', flexShrink: 0, background: o.sel ? 'radial-gradient(circle, #34d399 42%, transparent 46%)' : 'transparent' }} />
+                    <span>
+                      <div style={{ color: '#e9edef', fontSize: '13px', fontWeight: 600 }}>{o.name}</div>
+                      <div style={{ color: '#8696a0', fontSize: '11.5px' }}>{o.sub}</div>
+                    </span>
+                  </div>
+                ))}
+                <button style={{ marginTop: '10px', background: '#00a884', color: '#04231c', border: 'none', width: '100%', padding: '9px', borderRadius: '8px', fontWeight: 700, fontSize: '13px' }}>Confirm selection</button>
+              </div>
+            );
+          }
+          // pay
+          return (
+            <div key={i} style={{ alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#1f2c34', borderRadius: '10px 10px 10px 3px', padding: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ width: '34px', height: '34px', borderRadius: '8px', background: 'linear-gradient(135deg, #00f2fe, #4facfe)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' }}>🧭</span>
+                <span>
+                  <div style={{ color: '#e9edef', fontSize: '13px', fontWeight: 700 }}>{item.who}</div>
+                  <div style={{ color: '#8696a0', fontSize: '11px' }}>{item.sub}</div>
+                </span>
+                <span style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                  <div style={{ color: '#e9edef', fontWeight: 700, fontSize: '14px' }}>{item.amount}</div>
+                  <div style={{ color: '#8696a0', fontSize: '10px' }}>incl. taxes</div>
+                </span>
+              </div>
+              <button style={{ marginTop: '11px', background: '#00a884', color: '#04231c', border: 'none', width: '100%', padding: '10px', borderRadius: '8px', fontWeight: 700, fontSize: '13px' }}>🔒 Pay securely</button>
+              <div style={{ textAlign: 'center', color: '#8696a0', fontSize: '10px', marginTop: '8px' }}>{item.note}</div>
+            </div>
+          );
+        })}
+      </div>
+      {/* Input bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 12px 12px', backgroundColor: '#0b141a' }}>
+        <span style={{ flex: 1, backgroundColor: '#1f2c34', borderRadius: '20px', padding: '9px 14px', color: '#8696a0', fontSize: '13px' }}>Message</span>
+        <span style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#00a884', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px', flexShrink: 0 }}>🎤</span>
+      </div>
+    </div>
+  );
+}
+
 export function LandingPage({ onLaunchApp, onStartOnboarding }: LandingPageProps) {
   const [selectedAgent, setSelectedAgent] = useState<string>('sales');
   const [selectedIndustry, setSelectedIndustry] = useState<string>('travel');
@@ -613,32 +814,67 @@ export function LandingPage({ onLaunchApp, onStartOnboarding }: LandingPageProps
           </p>
         </div>
 
-        {/* Journey Flow Steps */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', overflowX: 'auto', paddingBottom: '20px' }}>
-          {[
-            { step: '01', title: 'Lead', desc: 'Inbound WhatsApp / IG inquiry captured' },
-            { step: '02', title: 'Conversation', desc: 'AI qualifies interest & answers queries' },
-            { step: '03', title: 'Booking', desc: 'Package or slot reserved in real-time' },
-            { step: '04', title: 'Payment', desc: 'Instant Razorpay / Stripe checkout link' },
-            { step: '05', title: 'Customer', desc: 'Automated receipt & voucher dispatch' },
-            { step: '06', title: 'Loyalty', desc: 'Consent-safe re-engagement & reviews' }
-          ].map((item, index, arr) => (
-            <React.Fragment key={item.step}>
-              <div style={{ 
-                flex: 1, minWidth: '150px', backgroundColor: '#0e131d', 
+        {/* Journey Flow Steps (overview ribbon) */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', overflowX: 'auto', paddingBottom: '20px', marginBottom: '20px' }}>
+          {JOURNEY_STAGES.map((item, index, arr) => (
+            <React.Fragment key={item.num}>
+              <div style={{
+                flex: 1, minWidth: '150px', backgroundColor: '#0e131d',
                 borderRadius: '16px', padding: '24px 16px', textAlign: 'center',
                 border: '1px solid rgba(0, 242, 254, 0.2)',
                 boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)'
               }}>
-                <div style={{ fontSize: '12px', fontWeight: 800, color: '#00f2fe', marginBottom: '8px' }}>{item.step}</div>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', marginBottom: '6px' }}>{item.title}</h3>
-                <p style={{ fontSize: '11px', color: '#9ca3af', lineHeight: 1.4 }}>{item.desc}</p>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: '#00f2fe', marginBottom: '8px' }}>{item.num}</div>
+                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', marginBottom: '6px' }}>{item.phase}</h3>
+                <p style={{ fontSize: '11px', color: '#9ca3af', lineHeight: 1.4 }}>{item.body.split('.')[0]}.</p>
               </div>
               {index < arr.length - 1 && (
                 <ChevronRight size={24} style={{ color: '#00f2fe', flexShrink: 0 }} />
               )}
             </React.Fragment>
           ))}
+        </div>
+
+        {/* Detailed stage-by-stage walkthrough with WhatsApp mockups */}
+        <div style={{ marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '30px' }}>
+            <p style={{ color: '#9ca3af', fontSize: '15px', maxWidth: '640px', margin: '0 auto' }}>
+              Meet <strong style={{ color: '#fff' }}>Aarav</strong>. He sees a holiday ad, taps through to WhatsApp, and never leaves the chat again. Every screen below is the same conversation, moving forward.
+            </p>
+          </div>
+          {JOURNEY_STAGES.map((stage, idx) => {
+            const flip = idx % 2 === 1;
+            return (
+              <div key={stage.num} style={{
+                display: 'grid', gridTemplateColumns: '1fr 340px', gap: '48px', alignItems: 'center',
+                padding: '40px 0', borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+              }} className="journey-stage-row">
+                <div style={{ order: flip ? 2 : 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#00f2fe', fontFamily: 'monospace', fontSize: '13px', letterSpacing: '0.05em' }}>
+                    <span style={{ height: '1px', width: '40px', background: 'linear-gradient(90deg, #00f2fe, #4facfe)' }} />
+                    Stage {stage.num} · {stage.phase}
+                  </div>
+                  <h3 style={{ fontSize: '26px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', color: '#fff', marginTop: '14px', letterSpacing: '-0.5px' }}>{stage.title}</h3>
+                  <p style={{ color: '#9ca3af', fontSize: '15px', lineHeight: 1.6, marginTop: '14px', maxWidth: '440px' }}>{stage.body}</p>
+                  <div style={{ marginTop: '20px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {stage.tags.map((t, k) => {
+                      const parts = t.split('·');
+                      const head = (parts[0] ?? '').trim();
+                      const rest = parts.slice(1).join('·').trim();
+                      return (
+                        <span key={k} style={{ fontFamily: 'monospace', fontSize: '11.5px', border: '1px dashed rgba(255,255,255,0.15)', color: '#9ca3af', borderRadius: '7px', padding: '6px 10px' }}>
+                          <span style={{ color: '#00f2fe' }}>{head}</span>{rest ? ' · ' + rest : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div style={{ order: flip ? 1 : 2, display: 'flex', justifyContent: 'center' }}>
+                  <JourneyPhone sub={stage.sub} screen={stage.screen} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 
