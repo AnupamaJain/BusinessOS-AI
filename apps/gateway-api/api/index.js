@@ -51490,22 +51490,34 @@ var SupabaseBusinessStore = class {
   async searchProducts(organizationId, query, filters) {
     const { data, error } = await this.db.from("products").select("sku, name, description, category, base_price, currency").eq("organization_id", organizationId).eq("status", "active").limit(200);
     if (error) this.fail("searchProducts", error);
-    const lowered = query.toLowerCase();
-    return (data ?? []).map((p) => ({
+    const rows = (data ?? []).map((p) => ({
       sku: p.sku,
       name: p.name,
       price: `\u20B9${Number(p.base_price).toLocaleString("en-IN")}`,
       skinType: p.description ?? "",
       description: p.description ?? "",
       suitableFor: p.category ?? "",
-      organizationId
-    })).filter((p) => {
-      const text = `${p.name} ${p.description} ${p.suitableFor}`.toLowerCase();
-      if (!text.includes(lowered) && !lowered.split(" ").some((w) => w.length > 2 && text.includes(w))) return false;
-      if (filters?.skinType && !text.includes(filters.skinType.toLowerCase())) return false;
-      if (filters?.concern && !text.includes(filters.concern.toLowerCase())) return false;
-      return true;
+      organizationId,
+      _text: `${p.name} ${p.description ?? ""} ${p.category ?? ""}`.toLowerCase()
+    }));
+    const lowered = query.toLowerCase();
+    const queryWords = lowered.split(/\W+/).filter((w) => w.length > 2);
+    const categoryKeywords = ["cleanser", "serum", "moisturiser", "moisturizer", "sunscreen", "toner", "mask", "cream"];
+    const queryCategories = categoryKeywords.filter((c) => lowered.includes(c));
+    const scored = rows.map((p) => {
+      let score = 0;
+      for (const w of queryWords) if (p._text.includes(w)) score += 1;
+      if (queryCategories.some((c) => p.suitableFor.toLowerCase().includes(c) || p._text.includes(c))) score += 5;
+      if (filters?.skinType) {
+        if (p._text.includes(filters.skinType.toLowerCase()) || p._text.includes("all skin types")) score += 2;
+      }
+      if (filters?.concern && p._text.includes(filters.concern.toLowerCase())) score += 2;
+      return { p, score };
     });
+    const anyCategoryHit = queryCategories.length > 0 && scored.some((s) => s.score >= 5);
+    const matches = scored.filter((s) => anyCategoryHit ? s.score >= 5 : s.score > 0).sort((a, b) => b.score - a.score);
+    const chosen = matches.length > 0 ? matches.map((s) => s.p) : rows;
+    return chosen.map(({ _text, ...rest }) => rest);
   }
   async findTemplate(organizationId, templateKey) {
     const { data, error } = await this.db.from("message_templates").select("template_key, organization_id, status, name, content").eq("organization_id", organizationId).eq("template_key", templateKey).maybeSingle();

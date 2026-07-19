@@ -1,59 +1,46 @@
 # GlowRoot Skincare — Product Catalog
 
-## AquaShield SPF 50 Sunscreen (Oily Skin)
+## GlowRoot Gentle Foaming Cleanser
 
-- **SKU**: GR-SUN-001
-- **Price**: ₹799
-- **Skin Type**: Oily, combination
-- **Key Ingredients**: Zinc Oxide, Niacinamide, Green Tea Extract
-- **SPF**: 50 PA++++
-- **Finish**: Matte, non-greasy
-- **Size**: 50ml
-- **Description**: Lightweight, matte-finish sunscreen designed for oily and combination skin. Provides broad-spectrum UVA/UVB protection without clogging pores. Enriched with niacinamide to control excess oil and green tea extract for antioxidant protection.
-- **Suitable For**: Daily use, outdoor activities
-- **Not Suitable For**: Very dry or sensitive skin (consider HydraGlow SPF 40 instead)
+- **SKU**: GR-CLN-01
+- **Price**: ₹499
+- **Skin Type**: Oily, combination, all skin types
+- **Key Ingredients**: Niacinamide, Green Tea Extract, Glycerin
+- **Size**: 150ml
+- **Description**: A sulphate-free, pH-balanced foaming cleanser for oily and combination skin. Removes excess oil and impurities without stripping the skin. Niacinamide helps control oil and green tea provides antioxidant protection.
+- **Suitable For**: Daily cleansing, oily and acne-prone skin
+- **Usage**: Massage a small amount onto damp skin morning and evening, then rinse.
 
-## HydraGlow SPF 40 Sunscreen (Dry Skin)
+## GlowRoot 10% Niacinamide Serum
 
-- **SKU**: GR-SUN-002
-- **Price**: ₹899
-- **Skin Type**: Dry, normal
-- **Key Ingredients**: Hyaluronic Acid, Vitamin E, Shea Butter
-- **SPF**: 40 PA+++
-- **Finish**: Dewy, moisturising
-- **Size**: 50ml
-- **Description**: Hydrating sunscreen with a dewy finish, perfect for dry and normal skin types. Contains hyaluronic acid for deep hydration and vitamin E for nourishment.
-- **Suitable For**: Daily use, indoor/outdoor
-- **Not Suitable For**: Very oily skin (consider AquaShield SPF 50 instead)
-
-## GlowRoot Vitamin C Serum
-
-- **SKU**: GR-SER-001
-- **Price**: ₹1,299
-- **Skin Type**: All skin types
-- **Key Ingredients**: 15% L-Ascorbic Acid, Ferulic Acid, Vitamin E
-- **Size**: 30ml
-- **Description**: Brightening serum with stable Vitamin C to reduce dark spots, even skin tone, and boost collagen production. Best used in the morning before sunscreen.
-- **Suitable For**: Dull skin, uneven tone, hyperpigmentation
-- **Usage**: Apply 3-4 drops on clean skin before moisturiser and sunscreen.
-
-## GlowRoot Niacinamide 10% + Zinc 1% Serum
-
-- **SKU**: GR-SER-002
+- **SKU**: GR-SRM-02
 - **Price**: ₹699
 - **Skin Type**: Oily, acne-prone
 - **Key Ingredients**: 10% Niacinamide, 1% Zinc PCA
 - **Size**: 30ml
-- **Description**: Oil-control serum that minimises pores, regulates sebum, and reduces blemishes. Lightweight and fast-absorbing.
-- **Suitable For**: Oily skin, large pores, acne marks
-- **Usage**: Apply after cleansing, morning and evening.
+- **Description**: Oil-control serum that reduces acne marks, minimises the appearance of pores, and regulates sebum. Lightweight and fast-absorbing.
+- **Suitable For**: Oily skin, large pores, acne marks, blemishes
+- **Usage**: Apply a few drops after cleansing, morning and evening, before moisturiser.
 
-## GlowRoot Gentle Foam Cleanser
+## GlowRoot Ceramide Moisturiser
 
-- **SKU**: GR-CLN-001
-- **Price**: ₹499
-- **Skin Type**: All skin types
-- **Key Ingredients**: Aloe Vera, Chamomile, Glycerin
-- **Size**: 150ml
-- **Description**: A gentle, pH-balanced foaming cleanser that removes impurities without stripping the skin. Suitable for daily use.
-- **Suitable For**: Sensitive skin, daily cleansing
+- **SKU**: GR-MST-03
+- **Price**: ₹599
+- **Skin Type**: Dry, normal, sensitive
+- **Key Ingredients**: Ceramides, Hyaluronic Acid
+- **Size**: 50ml
+- **Description**: Barrier-repair moisturiser with ceramides and hyaluronic acid for deep, lasting hydration. Strengthens the skin barrier and soothes dry, sensitive skin.
+- **Suitable For**: Dry and sensitive skin, daily hydration
+- **Usage**: Apply to clean skin morning and evening as the last step before sunscreen.
+
+## GlowRoot SPF 50 PA+++ Sunscreen
+
+- **SKU**: GR-SPF-04
+- **Price**: ₹649
+- **Skin Type**: All skin types (including oily and combination)
+- **SPF**: 50 PA+++
+- **Finish**: Lightweight, no white cast, water resistant
+- **Size**: 50ml
+- **Description**: Lightweight broad-spectrum SPF 50 PA+++ sunscreen suitable for all skin types, including oily and acne-prone skin. No white cast, non-greasy, and water resistant — ideal for daily use and outdoor activities.
+- **Suitable For**: Daily sun protection, oily and combination skin, outdoor use
+- **Usage**: Apply generously as the last step of your morning routine, 15 minutes before sun exposure. Reapply every 2–3 hours outdoors.
