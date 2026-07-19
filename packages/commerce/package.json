@@ -1,0 +1,24 @@
+{
+  "name": "@business-os-ai/commerce",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@business-os-ai/shared-types": "workspace:*",
+    "@business-os-ai/database": "workspace:*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@business-os-ai/config": "workspace:*",
+    "@types/node": "^26.1.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

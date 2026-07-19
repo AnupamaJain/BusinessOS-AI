@@ -165,6 +165,31 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
 
+  packages/commerce:
+    dependencies:
+      '@business-os-ai/database':
+        specifier: workspace:*
+        version: link:../database
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
   packages/config:
     dependencies:
       zod:
@@ -283,11 +308,58 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
 
+  packages/marketing:
+    dependencies:
+      '@business-os-ai/database':
+        specifier: workspace:*
+        version: link:../database
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
   packages/mcp-business-tools:
     dependencies:
       '@business-os-ai/database':
         specifier: workspace:*
         version: link:../database
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
+  packages/observability:
+    dependencies:
       '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
