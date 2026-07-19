@@ -1,0 +1,12 @@
+{
+  "name": "@whatsapp-smb/agent-service",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Agent service — setup in Phase 4'",
+    "build": "echo 'Agent service — setup in Phase 4'",
+    "lint": "echo 'ok'",
+    "typecheck": "echo 'ok'",
+    "test": "echo 'ok'"
+  }
+}

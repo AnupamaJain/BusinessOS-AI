@@ -1,0 +1,12 @@
+{
+  "name": "@whatsapp-smb/integrations",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Integrations — setup in Phase 2'",
+    "build": "echo 'Integrations — setup in Phase 2'",
+    "lint": "echo 'ok'",
+    "typecheck": "echo 'ok'",
+    "test": "echo 'ok'"
+  }
+}
