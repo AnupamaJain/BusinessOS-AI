@@ -42920,45 +42920,71 @@ var MetaCloudApiAdapter = class {
       };
     }
     const url = `https://graph.facebook.com/v21.0/${this.phoneNumberId}/messages`;
-    let payload = {
+    const base = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: message.to
     };
-    if (message.type === "text") {
+    const body = message.text ?? " ";
+    let payload;
+    if (message.list) {
       payload = {
-        ...payload,
-        type: "text",
-        text: {
-          body: message.text
+        ...base,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          ...message.list.header ? { header: { type: "text", text: message.list.header.slice(0, 60) } } : {},
+          body: { text: body.slice(0, 1024) },
+          action: {
+            button: message.list.button.slice(0, 20),
+            sections: [{
+              rows: message.list.items.map((it) => ({
+                id: it.id.slice(0, 200),
+                title: it.title.slice(0, 24),
+                ...it.description ? { description: it.description.slice(0, 72) } : {}
+              }))
+            }]
+          }
+        }
+      };
+    } else if (message.buttons && message.buttons.length > 0) {
+      payload = {
+        ...base,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: body.slice(0, 1024) },
+          action: {
+            buttons: message.buttons.slice(0, 3).map((b) => ({
+              type: "reply",
+              reply: { id: b.id.slice(0, 256), title: b.title.slice(0, 20) }
+            }))
+          }
+        }
+      };
+    } else if (message.cta) {
+      payload = {
+        ...base,
+        type: "interactive",
+        interactive: {
+          type: "cta_url",
+          body: { text: body.slice(0, 1024) },
+          action: { name: "cta_url", parameters: { display_text: message.cta.label.slice(0, 20), url: message.cta.url } }
         }
       };
     } else if (message.type === "template") {
-      const parameters = message.templateParams ? Object.entries(message.templateParams).map(([_, val]) => ({
-        type: "text",
-        text: val
-      })) : [];
+      const parameters = message.templateParams ? Object.entries(message.templateParams).map(([_, val]) => ({ type: "text", text: val })) : [];
       payload = {
-        ...payload,
+        ...base,
         type: "template",
         template: {
           name: message.templateKey,
-          language: {
-            code: "en"
-          },
-          components: parameters.length > 0 ? [
-            {
-              type: "body",
-              parameters
-            }
-          ] : []
+          language: { code: "en" },
+          components: parameters.length > 0 ? [{ type: "body", parameters }] : []
         }
       };
     } else {
-      return {
-        success: false,
-        error: `Unsupported message type: ${message.type}`
-      };
+      payload = { ...base, type: "text", text: { body } };
     }
     try {
       const response = await fetch(url, {
@@ -43051,14 +43077,15 @@ var TwilioWhatsAppAdapter = class {
     }];
   }
   async sendMessage(organizationId, message) {
-    if (!message.text) {
-      return { success: false, error: "Twilio adapter supports text messages only in this path." };
+    const bodyText = renderTwilioBody(message);
+    if (!bodyText) {
+      return { success: false, error: "Twilio adapter: empty message body." };
     }
     const url = `https://api.twilio.com/2010-04-01/Accounts/${this.accountSid}/Messages.json`;
     const params = new URLSearchParams({
       From: `whatsapp:${this.fromNumber}`,
       To: `whatsapp:${message.to.replace(/^whatsapp:/, "")}`,
-      Body: message.text
+      Body: bodyText
     });
     const auth = Buffer.from(`${this.accountSid}:${this.authToken}`).toString("base64");
     try {
@@ -43089,6 +43116,10 @@ var TwilioWhatsAppAdapter = class {
    * @param params The POST form parameters (as a flat string map).
    * @param signature The X-Twilio-Signature header value.
    */
+  /** Exposed for tests. */
+  static renderBody(message) {
+    return renderTwilioBody(message);
+  }
   verifySignature(url, params, signature) {
     if (!signature) return false;
     const data = Object.keys(params).sort().reduce((acc, key) => acc + key + params[key], url);
@@ -43102,6 +43133,26 @@ var TwilioWhatsAppAdapter = class {
     }
   }
 };
+function renderTwilioBody(message) {
+  const parts = [];
+  if (message.text) parts.push(message.text.trim());
+  if (message.list) {
+    const lines = [];
+    if (message.list.header) lines.push(`*${message.list.header}*`);
+    message.list.items.forEach((it, i) => {
+      lines.push(`${i + 1}. *${it.title}*${it.description ? ` \u2014 ${it.description}` : ""}`);
+    });
+    lines.push(`
+_Reply with the name or number to choose._`);
+    parts.push(lines.join("\n"));
+  } else if (message.buttons && message.buttons.length > 0) {
+    parts.push(message.buttons.map((b) => `\u25B8 ${b.title}`).join("\n"));
+  }
+  if (message.cta) {
+    parts.push(`${message.cta.label}: ${message.cta.url}`);
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
 
 // src/services/supabase-services.ts
 var SupabaseIdempotencyService = class {
@@ -53409,6 +53460,38 @@ if (require.main === module) {
 // src/server.ts
 var import_functions = __toESM(require_functions());
 var PROD_RETRIEVAL_THRESHOLD = 0.35;
+function truncate(s, n) {
+  return s.length <= n ? s : s.slice(0, n - 1) + "\u2026";
+}
+function buildInteractive(state) {
+  for (const tc of [...state.toolCalls].reverse()) {
+    const out = tc.output;
+    if (tc.tool === "search_travel_packages") {
+      const pkgs = out?.["packages"] ?? [];
+      if (pkgs.length >= 2) {
+        return { list: {
+          header: "Our holiday packages",
+          button: "View packages",
+          items: pkgs.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.title, 24), description: truncate(`${p.pricePerPerson} \xB7 ${p.durationDays} days`, 72) }))
+        } };
+      }
+    }
+    if (tc.tool === "search_product_catalog") {
+      const prods = out?.["products"] ?? [];
+      if (prods.length >= 2) {
+        return { list: {
+          header: "Our products",
+          button: "View products",
+          items: prods.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.name, 24), description: truncate(p.price, 72) }))
+        } };
+      }
+    }
+  }
+  if (!state.handoffId && !state.policyDecision?.shouldHandoff && state.intent === "unknown") {
+    return { buttons: [{ id: "browse-offers", title: "\u{1F9F3} Browse offers" }, { id: "talk-human", title: "\u{1F4AC} Talk to a human" }] };
+  }
+  return {};
+}
 function buildServer(env = process.env) {
   const supabaseUrl = env["NEXT_PUBLIC_SUPABASE_URL"];
   const serviceKey = env["SUPABASE_SERVICE_ROLE_KEY"];
@@ -53447,19 +53530,24 @@ function buildServer(env = process.env) {
   const twilioToken = env["TWILIO_AUTH_TOKEN"];
   const twilioNumber = env["TWILIO_WHATSAPP_NUMBER"];
   const twilioAdapter = twilioSid && twilioToken && twilioNumber ? new TwilioWhatsAppAdapter({ accountSid: twilioSid, authToken: twilioToken, fromNumber: twilioNumber }) : null;
+  const providerOverride = (env["WHATSAPP_PROVIDER"] ?? "").toLowerCase();
+  const canMeta = !!(accessToken && phoneNumberId);
+  const canTwilio = !!twilioAdapter;
+  const choice = mockRequested ? "mock" : providerOverride === "meta" && canMeta ? "meta" : providerOverride === "twilio" && canTwilio ? "twilio" : providerOverride === "mock" ? "mock" : canMeta ? "meta" : canTwilio ? "twilio" : "mock";
+  const metaAdapter = canMeta ? new MetaCloudApiAdapter({ accessToken, phoneNumberId, verifyToken }) : null;
   let adapter;
   let activeProvider;
-  if (!mockRequested && twilioAdapter) {
-    logger.info("Twilio WhatsApp adapter active", { fromNumber: twilioNumber });
+  if (choice === "meta") {
+    logger.info("Primary WhatsApp adapter: Meta Cloud API", { phoneNumberId, twilioAlsoActive: canTwilio });
+    adapter = metaAdapter;
+    activeProvider = "meta";
+  } else if (choice === "twilio") {
+    logger.info("Primary WhatsApp adapter: Twilio", { fromNumber: twilioNumber, metaAlsoActive: canMeta });
     adapter = twilioAdapter;
     activeProvider = "twilio";
-  } else if (!mockRequested && accessToken && phoneNumberId) {
-    logger.info("Meta WhatsApp Cloud API adapter active", { phoneNumberId });
-    adapter = new MetaCloudApiAdapter({ accessToken, phoneNumberId, verifyToken });
-    activeProvider = "meta";
   } else {
     if (!mockRequested) {
-      logger.warn("No WhatsApp provider credentials set (Twilio or Meta) \u2014 sends recorded locally until configured.");
+      logger.warn("No WhatsApp provider credentials set (Meta or Twilio) \u2014 sends recorded locally until configured.");
     }
     adapter = new MockWhatsAppAdapter(verifyToken);
     activeProvider = "mock";
@@ -53485,7 +53573,7 @@ function buildServer(env = process.env) {
       businessName: org.name
     };
   }
-  async function handleInbound(orgId, msg) {
+  async function handleInbound(orgId, msg, replyAdapter = adapter) {
     if (!msg.text || !msg.contactId || !msg.conversationId) {
       logger.info("Skipping non-text inbound message", { providerMessageId: msg.providerMessageId, type: msg.type });
       return;
@@ -53500,10 +53588,13 @@ function buildServer(env = process.env) {
         traceId: msg.providerMessageId
       }, agentDeps(org));
       if (state.finalResponse) {
-        const result = await adapter.sendMessage(orgId, {
+        const rich = buildInteractive(state);
+        const result = await replyAdapter.sendMessage(orgId, {
           to: msg.from,
-          type: "text",
+          type: rich.list || rich.buttons ? "interactive" : "text",
           text: state.finalResponse,
+          list: rich.list,
+          buttons: rich.buttons,
           idempotencyKey: `reply:${msg.providerMessageId}`
         });
         if (result.success && result.providerMessageId) {
@@ -53519,7 +53610,7 @@ function buildServer(env = process.env) {
       await idempotencyService.markProcessed(msg.providerMessageId, orgId, errorMsg);
     }
   }
-  async function ingestInboundMessages(messages) {
+  async function ingestInboundMessages(messages, replyAdapter) {
     for (const msg of messages) {
       const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
       if (!acquired) {
@@ -53535,7 +53626,7 @@ function buildServer(env = process.env) {
         contactId: stored.contactId,
         conversationId: stored.conversationId,
         metadata: msg.metadata
-      });
+      }, replyAdapter);
     }
   }
   function isInternalAuthorised(req) {
@@ -53575,7 +53666,7 @@ function buildServer(env = process.env) {
         return;
       }
       res.status(200).type("text/xml").send("<Response></Response>");
-      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form));
+      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form), twilioAdapter);
       try {
         (0, import_functions.waitUntil)(work);
       } catch {
@@ -53749,7 +53840,8 @@ function buildServer(env = process.env) {
     defaultOrgId,
     appSecret: env["META_APP_SECRET"] || void 0,
     corsOrigins: (env["CORS_ORIGINS"] ?? "*").split(",").map((s) => s.trim()),
-    onInboundMessage: handleInbound,
+    // The createApp /webhook route is the Meta channel — reply via Meta.
+    onInboundMessage: (orgId, msg) => handleInbound(orgId, msg, metaAdapter ?? adapter),
     registerRoutes,
     backgroundTask: (work) => {
       try {

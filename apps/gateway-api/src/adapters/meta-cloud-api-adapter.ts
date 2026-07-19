@@ -146,51 +146,77 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
     }
 
     const url = `https://graph.facebook.com/v21.0/${this.phoneNumberId}/messages`;
-    let payload: Record<string, unknown> = {
+    const base: Record<string, unknown> = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: message.to,
     };
+    const body = message.text ?? ' ';
+    let payload: Record<string, unknown>;
 
-    if (message.type === 'text') {
+    if (message.list) {
+      // Interactive list message (up to 10 rows)
       payload = {
-        ...payload,
-        type: 'text',
-        text: {
-          body: message.text,
+        ...base,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          ...(message.list.header ? { header: { type: 'text', text: message.list.header.slice(0, 60) } } : {}),
+          body: { text: body.slice(0, 1024) },
+          action: {
+            button: message.list.button.slice(0, 20),
+            sections: [{
+              rows: message.list.items.map((it) => ({
+                id: it.id.slice(0, 200),
+                title: it.title.slice(0, 24),
+                ...(it.description ? { description: it.description.slice(0, 72) } : {}),
+              })),
+            }],
+          },
+        },
+      };
+    } else if (message.buttons && message.buttons.length > 0) {
+      // Interactive reply buttons (up to 3)
+      payload = {
+        ...base,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: body.slice(0, 1024) },
+          action: {
+            buttons: message.buttons.slice(0, 3).map((b) => ({
+              type: 'reply',
+              reply: { id: b.id.slice(0, 256), title: b.title.slice(0, 20) },
+            })),
+          },
+        },
+      };
+    } else if (message.cta) {
+      // Call-to-action URL button (e.g. payment link)
+      payload = {
+        ...base,
+        type: 'interactive',
+        interactive: {
+          type: 'cta_url',
+          body: { text: body.slice(0, 1024) },
+          action: { name: 'cta_url', parameters: { display_text: message.cta.label.slice(0, 20), url: message.cta.url } },
         },
       };
     } else if (message.type === 'template') {
       const parameters = message.templateParams
-        ? Object.entries(message.templateParams).map(([_, val]) => ({
-            type: 'text',
-            text: val,
-          }))
+        ? Object.entries(message.templateParams).map(([_, val]) => ({ type: 'text', text: val }))
         : [];
-
       payload = {
-        ...payload,
+        ...base,
         type: 'template',
         template: {
           name: message.templateKey,
-          language: {
-            code: 'en',
-          },
-          components: parameters.length > 0
-            ? [
-                {
-                  type: 'body',
-                  parameters,
-                },
-              ]
-            : [],
+          language: { code: 'en' },
+          components: parameters.length > 0 ? [{ type: 'body', parameters }] : [],
         },
       };
     } else {
-      return {
-        success: false,
-        error: `Unsupported message type: ${message.type}`,
-      };
+      payload = { ...base, type: 'text', text: { body } };
     }
 
     try {

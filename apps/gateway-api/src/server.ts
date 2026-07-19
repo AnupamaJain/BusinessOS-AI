@@ -5,7 +5,8 @@ import { createApp, type InboundCallbackMessage } from './app';
 import { MockWhatsAppAdapter } from './adapters/mock-whatsapp-adapter';
 import { MetaCloudApiAdapter } from './adapters/meta-cloud-api-adapter';
 import { TwilioWhatsAppAdapter } from './adapters/twilio-whatsapp-adapter';
-import type { WhatsAppAdapter, InboundMessage } from './adapters/types';
+import type { WhatsAppAdapter, InboundMessage, InteractiveList, ReplyButton } from './adapters/types';
+import type { AgentState } from '@business-os-ai/agent-core';
 import { SupabaseIdempotencyService, SupabaseMessageService } from './services/supabase-services';
 import { createServiceClient, type SupabaseClient } from '@business-os-ai/database';
 import { SupabaseBusinessStore } from '@business-os-ai/mcp-business-tools';
@@ -22,6 +23,46 @@ import { waitUntil } from '@vercel/functions';
 
 /** Real-embedding similarity threshold for grounding decisions. */
 const PROD_RETRIEVAL_THRESHOLD = 0.35;
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+/**
+ * Promotes an agent reply to a rich interactive message when the conversation
+ * warrants it — a tappable list of the real catalogue results the agent found,
+ * or quick-action buttons on an opening/unclear message.
+ */
+function buildInteractive(state: AgentState): { list?: InteractiveList; buttons?: ReplyButton[] } {
+  for (const tc of [...state.toolCalls].reverse()) {
+    const out = tc.output as Record<string, unknown> | undefined;
+    if (tc.tool === 'search_travel_packages') {
+      const pkgs = (out?.['packages'] as Array<{ sku: string; title: string; pricePerPerson: string; durationDays: number }> | undefined) ?? [];
+      if (pkgs.length >= 2) {
+        return { list: {
+          header: 'Our holiday packages',
+          button: 'View packages',
+          items: pkgs.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.title, 24), description: truncate(`${p.pricePerPerson} · ${p.durationDays} days`, 72) })),
+        } };
+      }
+    }
+    if (tc.tool === 'search_product_catalog') {
+      const prods = (out?.['products'] as Array<{ sku: string; name: string; price: string }> | undefined) ?? [];
+      if (prods.length >= 2) {
+        return { list: {
+          header: 'Our products',
+          button: 'View products',
+          items: prods.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.name, 24), description: truncate(p.price, 72) })),
+        } };
+      }
+    }
+  }
+  // Opening / unclear message → quick-action buttons
+  if (!state.handoffId && !state.policyDecision?.shouldHandoff && state.intent === 'unknown') {
+    return { buttons: [{ id: 'browse-offers', title: '🧳 Browse offers' }, { id: 'talk-human', title: '💬 Talk to a human' }] };
+  }
+  return {};
+}
 
 export interface ServerContext {
   app: express.Express;
@@ -86,19 +127,35 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     ? new TwilioWhatsAppAdapter({ accountSid: twilioSid, authToken: twilioToken, fromNumber: twilioNumber })
     : null;
 
-  let adapter: WhatsAppAdapter;
+  // Optional explicit override: WHATSAPP_PROVIDER = meta | twilio | mock
+  const providerOverride = (env['WHATSAPP_PROVIDER'] ?? '').toLowerCase();
+  const canMeta = !!(accessToken && phoneNumberId);
+  const canTwilio = !!twilioAdapter;
+  const choice = mockRequested ? 'mock'
+    : providerOverride === 'meta' && canMeta ? 'meta'
+    : providerOverride === 'twilio' && canTwilio ? 'twilio'
+    : providerOverride === 'mock' ? 'mock'
+    : canMeta ? 'meta'          // default preference: Meta (native interactive UI)
+    : canTwilio ? 'twilio'
+    : 'mock';
+
+  // Build every configured adapter — the platform runs Meta and Twilio
+  // simultaneously, replying to each inbound message on the channel it arrived on.
+  const metaAdapter = canMeta ? new MetaCloudApiAdapter({ accessToken: accessToken!, phoneNumberId: phoneNumberId!, verifyToken }) : null;
+
+  let adapter: WhatsAppAdapter;   // primary — used for /webhook (Meta) verification, /internal/messages, scheduler
   let activeProvider: 'twilio' | 'meta' | 'mock';
-  if (!mockRequested && twilioAdapter) {
-    logger.info('Twilio WhatsApp adapter active', { fromNumber: twilioNumber });
-    adapter = twilioAdapter;
-    activeProvider = 'twilio';
-  } else if (!mockRequested && accessToken && phoneNumberId) {
-    logger.info('Meta WhatsApp Cloud API adapter active', { phoneNumberId });
-    adapter = new MetaCloudApiAdapter({ accessToken, phoneNumberId, verifyToken });
+  if (choice === 'meta') {
+    logger.info('Primary WhatsApp adapter: Meta Cloud API', { phoneNumberId, twilioAlsoActive: canTwilio });
+    adapter = metaAdapter!;
     activeProvider = 'meta';
+  } else if (choice === 'twilio') {
+    logger.info('Primary WhatsApp adapter: Twilio', { fromNumber: twilioNumber, metaAlsoActive: canMeta });
+    adapter = twilioAdapter!;
+    activeProvider = 'twilio';
   } else {
     if (!mockRequested) {
-      logger.warn('No WhatsApp provider credentials set (Twilio or Meta) — sends recorded locally until configured.');
+      logger.warn('No WhatsApp provider credentials set (Meta or Twilio) — sends recorded locally until configured.');
     }
     adapter = new MockWhatsAppAdapter(verifyToken);
     activeProvider = 'mock';
@@ -130,7 +187,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   }
 
   // ── Inbound message → agent graph → WhatsApp reply ──
-  async function handleInbound(orgId: string, msg: InboundCallbackMessage): Promise<void> {
+  // replyAdapter is the channel the message arrived on, so Meta and Twilio
+  // conversations each get answered on their own channel.
+  async function handleInbound(orgId: string, msg: InboundCallbackMessage, replyAdapter: WhatsAppAdapter = adapter): Promise<void> {
     if (!msg.text || !msg.contactId || !msg.conversationId) {
       logger.info('Skipping non-text inbound message', { providerMessageId: msg.providerMessageId, type: msg.type });
       return;
@@ -147,10 +206,13 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }, agentDeps(org));
 
       if (state.finalResponse) {
-        const result = await adapter.sendMessage(orgId, {
+        const rich = buildInteractive(state);
+        const result = await replyAdapter.sendMessage(orgId, {
           to: msg.from,
-          type: 'text',
+          type: rich.list || rich.buttons ? 'interactive' : 'text',
           text: state.finalResponse,
+          list: rich.list,
+          buttons: rich.buttons,
           idempotencyKey: `reply:${msg.providerMessageId}`,
         });
         if (result.success && result.providerMessageId) {
@@ -168,8 +230,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
-  // ── Shared inbound pipeline: dedup → persist → agent (used by Twilio route) ──
-  async function ingestInboundMessages(messages: InboundMessage[]): Promise<void> {
+  // ── Shared inbound pipeline: dedup → persist → agent ──
+  // replyAdapter routes the answer back on the channel the message arrived on.
+  async function ingestInboundMessages(messages: InboundMessage[], replyAdapter: WhatsAppAdapter): Promise<void> {
     for (const msg of messages) {
       const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
       if (!acquired) {
@@ -185,7 +248,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         contactId: stored.contactId,
         conversationId: stored.conversationId,
         metadata: msg.metadata,
-      });
+      }, replyAdapter);
     }
   }
 
@@ -242,7 +305,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       // Empty TwiML ack — the agent reply is sent asynchronously via the API.
       res.status(200).type('text/xml').send('<Response></Response>');
 
-      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form));
+      // Twilio conversations are always answered back through Twilio.
+      const work = ingestInboundMessages(twilioAdapter.parseInboundEvent(form), twilioAdapter);
       try {
         waitUntil(work);
       } catch {
@@ -433,7 +497,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     defaultOrgId,
     appSecret: env['META_APP_SECRET'] || undefined,
     corsOrigins: (env['CORS_ORIGINS'] ?? '*').split(',').map((s) => s.trim()),
-    onInboundMessage: handleInbound,
+    // The createApp /webhook route is the Meta channel — reply via Meta.
+    onInboundMessage: (orgId, msg) => handleInbound(orgId, msg, metaAdapter ?? adapter),
     registerRoutes,
     backgroundTask: (work) => {
       try {

@@ -69,15 +69,20 @@ export class TwilioWhatsAppAdapter implements WhatsAppAdapter {
   }
 
   async sendMessage(organizationId: string, message: OutboundMessage): Promise<SendResult> {
-    if (!message.text) {
-      return { success: false, error: 'Twilio adapter supports text messages only in this path.' };
+    // The Twilio Sandbox and unregistered senders don't render native
+    // interactive UI, so buttons/list/cta are flattened into readable text
+    // (the customer replies naturally; the NL agent handles the choice).
+    // A registered sender can later map these to Content templates.
+    const bodyText = renderTwilioBody(message);
+    if (!bodyText) {
+      return { success: false, error: 'Twilio adapter: empty message body.' };
     }
 
     const url = `https://api.twilio.com/2010-04-01/Accounts/${this.accountSid}/Messages.json`;
     const params = new URLSearchParams({
       From: `whatsapp:${this.fromNumber}`,
       To: `whatsapp:${message.to.replace(/^whatsapp:/, '')}`,
-      Body: message.text,
+      Body: bodyText,
     });
     const auth = Buffer.from(`${this.accountSid}:${this.authToken}`).toString('base64');
 
@@ -112,6 +117,11 @@ export class TwilioWhatsAppAdapter implements WhatsAppAdapter {
    * @param params The POST form parameters (as a flat string map).
    * @param signature The X-Twilio-Signature header value.
    */
+  /** Exposed for tests. */
+  static renderBody(message: OutboundMessage): string {
+    return renderTwilioBody(message);
+  }
+
   verifySignature(url: string, params: Record<string, string>, signature: string | undefined): boolean {
     if (!signature) return false;
     // Twilio: URL + each POST param (sorted by key) concatenated as key+value, HMAC-SHA1, base64.
@@ -127,4 +137,31 @@ export class TwilioWhatsAppAdapter implements WhatsAppAdapter {
       return false;
     }
   }
+}
+
+/**
+ * Flattens a rich outbound message into WhatsApp-friendly text for providers
+ * without native interactive rendering (Twilio sandbox / unregistered senders).
+ */
+function renderTwilioBody(message: OutboundMessage): string {
+  const parts: string[] = [];
+  if (message.text) parts.push(message.text.trim());
+
+  if (message.list) {
+    const lines: string[] = [];
+    if (message.list.header) lines.push(`*${message.list.header}*`);
+    message.list.items.forEach((it, i) => {
+      lines.push(`${i + 1}. *${it.title}*${it.description ? ` — ${it.description}` : ''}`);
+    });
+    lines.push(`\n_Reply with the name or number to choose._`);
+    parts.push(lines.join('\n'));
+  } else if (message.buttons && message.buttons.length > 0) {
+    parts.push(message.buttons.map((b) => `▸ ${b.title}`).join('\n'));
+  }
+
+  if (message.cta) {
+    parts.push(`${message.cta.label}: ${message.cta.url}`);
+  }
+
+  return parts.filter(Boolean).join('\n\n');
 }
