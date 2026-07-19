@@ -814,6 +814,40 @@ export function LandingPage({ onLaunchApp, onStartOnboarding }: LandingPageProps
           </p>
         </div>
 
+        {/* Five building blocks */}
+        <div style={{ marginBottom: '56px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1.5px', fontFamily: 'monospace' }}>
+              The foundation
+            </div>
+            <h3 style={{ fontSize: '24px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', color: '#fff', marginTop: '10px', letterSpacing: '-0.5px' }}>
+              Five building blocks under every conversation.
+            </h3>
+          </div>
+          <div className="building-blocks-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '14px' }}>
+            {[
+              { icon: '🪪', title: 'Identity', desc: 'Every customer is matched to a verified contact with consent on record — so the business always knows who it’s talking to.' },
+              { icon: '🤝', title: 'Relationships', desc: 'Past chats, orders, and preferences travel into every new message. Context compounds instead of resetting.' },
+              { icon: '💬', title: 'Messaging', desc: 'People already talk on WhatsApp. The whole business runs in that same thread — nothing new to install.' },
+              { icon: '🛒', title: 'Commerce', desc: 'Browse, choose, and pay without leaving the chat. Catalogue, quote, and payment link arrive inline.' },
+              { icon: '🧠', title: 'Models', desc: 'An AI that reasons — grounded in your catalogue and policies, and honest enough to hand off to a human.' },
+            ].map((b) => (
+              <div key={b.title} style={{
+                backgroundColor: '#0e131d', borderRadius: '14px', padding: '20px 18px 22px',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                display: 'flex', flexDirection: 'column', gap: '12px',
+              }}>
+                <span style={{
+                  width: '38px', height: '38px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '18px', backgroundColor: 'rgba(0, 242, 254, 0.1)', border: '1px solid rgba(0, 242, 254, 0.25)',
+                }}>{b.icon}</span>
+                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', letterSpacing: '-0.3px' }}>{b.title}</h4>
+                <p style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.5, margin: 0 }}>{b.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Journey Flow Steps (overview ribbon) */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', overflowX: 'auto', paddingBottom: '20px', marginBottom: '20px' }}>
           {JOURNEY_STAGES.map((item, index, arr) => (

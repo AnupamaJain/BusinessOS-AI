@@ -589,3 +589,11 @@ body {
   }
   .journey-stage-row > div { order: initial !important; }
 }
+
+/* Five building blocks — reflow on narrow screens */
+@media (max-width: 940px) {
+  .building-blocks-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+@media (max-width: 520px) {
+  .building-blocks-grid { grid-template-columns: 1fr !important; }
+}
