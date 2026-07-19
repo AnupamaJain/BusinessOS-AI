@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { randomUUID } from 'crypto';
-import { ToolDataStore, getCustomerContext, upsertQualifiedLead, createHumanHandoff, searchProductCatalog, requestFollowupSchedule, getOrderStatus } from '../tools';
+import { ToolDataStore, getCustomerContext, upsertQualifiedLead, createHumanHandoff, searchProductCatalog, requestFollowupSchedule, getOrderStatus, searchTravelPackages, createTravelBooking } from '../tools';
 import { GetCustomerContextInput, UpsertQualifiedLeadInput, CreateHumanHandoffInput, SearchProductCatalogInput, RequestFollowupScheduleInput, GetOrderStatusInput } from '../schemas';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';
@@ -177,6 +177,37 @@ describe('MCP Tool Schema Validation', () => {
   it('rejects invalid UpsertQualifiedLeadInput', () => {
     const result = UpsertQualifiedLeadInput.safeParse({ organizationId: 'not-uuid', contactId: CONTACT_A, conversationId: CONV_A, serviceInterest: '', qualificationSummary: '', score: 200, idempotencyKey: '' });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('Travel MCP Tools', () => {
+  let store: ToolDataStore;
+  beforeEach(() => { store = new ToolDataStore(); seedStore(store); });
+
+  it('searches holiday packages by destination filter', () => {
+    const resAll = searchTravelPackages(store, { organizationId: ORG_A });
+    expect(resAll.packages.length).toBe(3);
+
+    const resBali = searchTravelPackages(store, { organizationId: ORG_A, destination: 'Bali' });
+    expect(resBali.packages.length).toBe(1);
+    expect(resBali.packages[0]?.sku).toBe('TRV-BALI-001');
+  });
+
+  it('creates travel booking and logs audit event', () => {
+    const res = createTravelBooking(store, {
+      organizationId: ORG_A,
+      contactId: CONTACT_A,
+      packageSku: 'TRV-BALI-001',
+      travelDate: '2026-10-15',
+      travelerCount: 2,
+      idempotencyKey: 'bk-test-01'
+    });
+
+    expect(res.bookingNumber).toContain('BK-');
+    expect(res.status).toBe('confirmed');
+
+    const audit = store.auditEvents.find(e => e.action === 'travel_booking_created');
+    expect(audit).toBeDefined();
   });
 
   it('validates CreateHumanHandoffInput', () => {

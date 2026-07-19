@@ -6,6 +6,8 @@ import type {
   UpsertQualifiedLeadInput, CreateHumanHandoffInput,
   SearchProductCatalogInput, RequestFollowupScheduleInput,
   GetOrderStatusInput, GetOrderStatusOutput,
+  SearchTravelPackagesInput, SearchTravelPackagesOutput,
+  CreateTravelBookingInput, CreateTravelBookingOutput,
 } from './schemas';
 
 // ─── In-memory store for MVP ────────────────────────────────────────
@@ -243,5 +245,69 @@ export function getOrderStatus(store: ToolDataStore, input: GetOrderStatusInput)
       items: order.items,
       estimatedDelivery: order.estimatedDelivery,
     },
+  };
+}
+
+export function searchTravelPackages(_store: ToolDataStore, input: SearchTravelPackagesInput): SearchTravelPackagesOutput {
+  const travelPackages = [
+    {
+      sku: 'TRV-BALI-001',
+      title: 'Bali Honeymoon & Romance Escapes (5N/6D)',
+      destination: 'Bali',
+      durationDays: 6,
+      pricePerPerson: '₹49,999',
+      inclusions: ['4-Star Villa with Private Pool', 'Daily Breakfast', 'Candlelight Dinner', 'Nusa Penida Tour']
+    },
+    {
+      sku: 'TRV-EUR-002',
+      title: 'Europe Grand Express - Paris, Swiss & Rome (7N/8D)',
+      destination: 'Europe',
+      durationDays: 8,
+      pricePerPerson: '₹1,29,999',
+      inclusions: ['4-Star Hotels with Breakfast', 'High-Speed Rail Passes', 'Eiffel Tower Access', 'Mount Titlis Cable Car']
+    },
+    {
+      sku: 'TRV-GOA-003',
+      title: 'Goa Beach & Adventure Rush (3N/4D)',
+      destination: 'Goa',
+      durationDays: 4,
+      pricePerPerson: '₹14,999',
+      inclusions: ['Beachfront Resort', 'Water Sports Combo', 'Sunset Cruise', 'Daily Breakfast']
+    }
+  ];
+
+  let filtered = travelPackages;
+  if (input.destination) {
+    filtered = filtered.filter(p => p.destination.toLowerCase().includes(input.destination!.toLowerCase()));
+  }
+
+  return { packages: filtered };
+}
+
+export function createTravelBooking(store: ToolDataStore, input: CreateTravelBookingInput): CreateTravelBookingOutput {
+  const contact = store.contacts.find(c => c.id === input.contactId && c.organizationId === input.organizationId);
+  if (!contact) {
+    throw new TenantAccessError('Contact not found in organization.');
+  }
+
+  const bookingId = randomUUID();
+  const bookingNumber = `BK-${Math.floor(10000 + Math.random() * 90000)}`;
+
+  store.auditEvents.push({
+    id: randomUUID(),
+    organizationId: input.organizationId,
+    action: 'travel_booking_created',
+    entityType: 'booking',
+    entityId: bookingId,
+    actorType: 'agent',
+    details: { packageSku: input.packageSku, travelerCount: input.travelerCount, travelDate: input.travelDate },
+    createdAt: new Date().toISOString()
+  });
+
+  return {
+    bookingId,
+    bookingNumber,
+    status: 'confirmed',
+    totalAmount: input.packageSku === 'TRV-BALI-001' ? '₹99,998' : '₹1,49,999'
   };
 }

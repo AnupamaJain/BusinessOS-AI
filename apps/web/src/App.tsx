@@ -124,6 +124,78 @@ const KB_DOCS = [
   { name: 'Shipping Policy (shipping-policy.md)', chunks: 4, type: 'Policy' }
 ];
 
+const TRAVEL_CONVERSATIONS = [
+  {
+    id: 'conv-trv-1',
+    name: 'Aarav Mehta',
+    phone: '+91 98111 22233',
+    priority: 'high',
+    reason: 'human_request',
+    summary: 'Requested custom honeymoon package itinerary for Bali in October.',
+    messages: [
+      { direction: 'inbound', content: 'Hi! Planning a honeymoon trip to Bali in October for 6 days. Budget around 1 Lakh.', time: '10:15 AM' },
+      { direction: 'audit', content: '🤖 Agent Delegated: travel-planner (Sales Specialist)', time: '10:15 AM' },
+      { direction: 'outbound', content: "Congratulations! 🎉 For Bali in October, I recommend our 'Bali Honeymoon & Romance Escapes' (5N/6D, ₹49,999/person). Includes 4-Star Private Pool Villa, Nusa Penida tour, and candlelight dinner. Would you like me to book or connect you with an agent?", time: '10:16 AM' },
+      { direction: 'inbound', content: 'Can you transfer me to a human travel agent to customize flight options?', time: '10:18 AM' },
+      { direction: 'audit', content: '🚨 Policy Gate Escalate: Human Agent Requested', time: '10:18 AM' },
+      { direction: 'audit', content: '🔄 Handoff Ticket Created [Priority: High]', time: '10:18 AM' },
+      { direction: 'outbound', content: "I'm connecting you with our senior travel planner Aarav. They'll have full context of your Bali inquiry. Please hang tight!", time: '10:18 AM' }
+    ]
+  },
+  {
+    id: 'conv-trv-2',
+    name: 'Sneha Reddy',
+    phone: '+91 97777 88899',
+    priority: 'medium',
+    reason: 'visa_policy_inquiry',
+    summary: 'Inquired about Schengen visa appointment requirements for Europe trip.',
+    messages: [
+      { direction: 'inbound', content: 'What is the visa policy for the Europe Grand Express tour?', time: '11:30 AM' },
+      { direction: 'audit', content: '🔍 RAG Match: visa-and-cancellation-policy.md (Schengen Visa Coverage)', time: '11:30 AM' },
+      { direction: 'outbound', content: "Schengen Visa for Europe requires an appointment at least 45 days prior. You must also have travel insurance covering €30,000 medical emergency. Would you like our visa team to assist with slot booking?", time: '11:31 AM' }
+    ]
+  }
+];
+
+const TRAVEL_LEADS = [
+  { name: 'Aarav Mehta', phone: '+91 98111 22233', stage: 'qualified', interest: 'Bali Honeymoon Escapes (TRV-BALI-001)', score: 85, status: 'escalated' },
+  { name: 'Sneha Reddy', phone: '+91 97777 88899', stage: 'qualified', interest: 'Europe Grand Express (TRV-EUR-002)', score: 75, status: 'contacted' },
+  { name: 'Vikram Singh', phone: '+91 96666 55544', stage: 'won', interest: 'Goa Beach & Adventure (TRV-GOA-003)', score: 90, status: 'booked' }
+];
+
+const TRAVEL_CATALOG = [
+  { 
+    sku: 'TRV-BALI-001', 
+    name: 'Bali Honeymoon & Romance Escapes (5N/6D)', 
+    price: '₹49,999 / person', 
+    skinType: 'Bali, Indonesia', 
+    description: '4-Star Private Pool Villa in Seminyak & Ubud, Daily Breakfast, Romantic Candlelight Dinner, Airport Transfers, Nusa Penida Day Trip.', 
+    suitableFor: 'Honeymooners, Couples, Apr-Oct' 
+  },
+  { 
+    sku: 'TRV-EUR-002', 
+    name: 'Europe Grand Express - Paris, Swiss & Rome (7N/8D)', 
+    price: '₹1,29,999 / person', 
+    skinType: 'Paris, Lucerne, Rome', 
+    description: '4-Star Hotels with Breakfast, High-Speed Eurail Pass, Eiffel Tower Priority Access, Mount Titlis Cable Car excursion.', 
+    suitableFor: 'Families, Group Tours, May-Sep' 
+  },
+  { 
+    sku: 'TRV-GOA-003', 
+    name: 'Goa Beach & Adventure Rush (3N/4D)', 
+    price: '₹14,999 / person', 
+    skinType: 'North & South Goa', 
+    description: 'Beachfront Resort in Calangute, Water Sports Combo (Parasailing, Jet Ski), Mandovi Sunset Cruise, Daily Breakfast.', 
+    suitableFor: 'Weekend Getaways, Oct-Mar' 
+  }
+];
+
+const TRAVEL_KB_DOCS = [
+  { name: 'Holiday Packages Catalog (travel-packages.md)', chunks: 6, type: 'Catalog' },
+  { name: 'Visa & Cancellation Terms (visa-and-cancellation-policy.md)', chunks: 4, type: 'Policy' },
+  { name: 'Destination Highlights (destinations.md)', chunks: 5, type: 'Guide' }
+];
+
 const EVAL_SUMMARY = {
   total: 30,
   passed: 30,
@@ -163,11 +235,16 @@ export default function App() {
   const [teamEmail, setTeamEmail] = useState('');
   const [invitedEmails, setInvitedEmails] = useState<string[]>([]);
 
-  const currentConv = conversations.find(c => c.id === selectedConvId) || conversations[0]!;
+  const activeCatalog = selectedVertical === 'travel' ? TRAVEL_CATALOG : CATALOG;
+  const activeLeads = selectedVertical === 'travel' ? TRAVEL_LEADS : LEADS;
+  const activeKbDocs = selectedVertical === 'travel' ? TRAVEL_KB_DOCS : KB_DOCS;
+  const activeConversations = selectedVertical === 'travel' ? TRAVEL_CONVERSATIONS : conversations;
+
+  const currentConv = activeConversations.find(c => c.id === selectedConvId) || activeConversations[0]!;
 
   const handleSendMessage = () => {
     if (!replyText.trim()) return;
-    const updated = conversations.map(c => {
+    const updated = activeConversations.map(c => {
       if (c.id === selectedConvId) {
         return {
           ...c,
@@ -184,7 +261,7 @@ export default function App() {
   };
 
   const handleResolveTicket = () => {
-    const updated = conversations.map(c => {
+    const updated = activeConversations.map(c => {
       if (c.id === selectedConvId) {
         return {
           ...c,
@@ -212,7 +289,7 @@ export default function App() {
     alert('Campaign Follow-up automated trigger successfully scheduled!');
   };
 
-  const filteredCatalog = CATALOG.filter(p => 
+  const filteredCatalog = activeCatalog.filter(p => 
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     p.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -575,7 +652,7 @@ export default function App() {
               <div className="chat-list-pane">
                 <div className="pane-header">Handoff Requests</div>
                 <div className="chat-items">
-                  {conversations.map(c => (
+                  {activeConversations.map(c => (
                     <div 
                       key={c.id} 
                       className={`chat-item ${c.id === selectedConvId ? 'active' : ''}`}
@@ -658,7 +735,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {LEADS.map((l, i) => (
+                  {activeLeads.map((l, i) => (
                     <tr key={i}>
                       <td>{l.name}</td>
                       <td>{l.phone}</td>
@@ -908,7 +985,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {KB_DOCS.map((doc, idx) => (
+                  {activeKbDocs.map((doc, idx) => (
                     <tr key={idx}>
                       <td><code>{doc.name}</code></td>
                       <td>Markdown (.md)</td>

@@ -128,3 +128,41 @@ export const GetOrderStatusOutput = z.object({
   }).optional(),
 });
 export type GetOrderStatusOutput = z.infer<typeof GetOrderStatusOutput>;
+
+export const SearchTravelPackagesInput = z.object({
+  organizationId: z.string().uuid(),
+  destination: z.string().optional(),
+  maxBudgetPerPerson: z.number().optional(),
+  durationDays: z.number().optional(),
+});
+export type SearchTravelPackagesInput = z.infer<typeof SearchTravelPackagesInput>;
+
+export const SearchTravelPackagesOutput = z.object({
+  packages: z.array(z.object({
+    sku: z.string(),
+    title: z.string(),
+    destination: z.string(),
+    durationDays: z.number(),
+    pricePerPerson: z.string(),
+    inclusions: z.array(z.string()),
+  })),
+});
+export type SearchTravelPackagesOutput = z.infer<typeof SearchTravelPackagesOutput>;
+
+export const CreateTravelBookingInput = z.object({
+  organizationId: z.string().uuid(),
+  contactId: z.string().uuid(),
+  packageSku: z.string(),
+  travelDate: z.string(),
+  travelerCount: z.number().min(1).default(1),
+  idempotencyKey: z.string(),
+});
+export type CreateTravelBookingInput = z.infer<typeof CreateTravelBookingInput>;
+
+export const CreateTravelBookingOutput = z.object({
+  bookingId: z.string(),
+  bookingNumber: z.string(),
+  status: z.string(),
+  totalAmount: z.string(),
+});
+export type CreateTravelBookingOutput = z.infer<typeof CreateTravelBookingOutput>;
