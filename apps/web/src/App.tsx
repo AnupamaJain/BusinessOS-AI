@@ -189,9 +189,9 @@ function LoginScreen({
             marginBottom: '12px',
           }}
         >
-          <ShieldCheck size={28} style={{ color: 'var(--color-primary)' }} />
+          <img src="/logo-mark.svg" alt="SaarthiOne" width={40} height={40} style={{ borderRadius: '10px' }} />
           <span className="brand-logo" style={{ fontSize: '24px' }}>
-            Operator Sign In
+            Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span>
           </span>
         </div>
         <p
@@ -560,9 +560,9 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               marginBottom: '32px',
             }}
           >
-            <ShieldCheck size={32} style={{ color: 'var(--color-primary)' }} />
+            <img src="/logo-mark.svg" alt="SaarthiOne" width={44} height={44} style={{ borderRadius: '11px' }} />
             <span className="brand-logo" style={{ fontSize: '28px' }}>
-              {org ? `${org.name.toUpperCase()} ONBOARDING` : 'BUSINESSOS AI ONBOARDING'}
+              Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span> <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Onboarding</span>
             </span>
           </div>
 
@@ -984,10 +984,15 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           onClick={() => setViewState('landing')}
           style={{ cursor: 'pointer' }}
         >
-          <ShieldCheck className="nav-icon" style={{ color: 'var(--color-primary)' }} />
-          <span className="brand-logo" style={{ letterSpacing: '-0.5px' }}>
-            {orgQuery.loading && !org ? 'Loading…' : org?.name ?? 'BusinessOS AI'}
-          </span>
+          <img src="/logo-mark.svg" alt="SaarthiOne" width={30} height={30} style={{ borderRadius: '8px', flexShrink: 0 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
+            <span className="brand-logo" style={{ letterSpacing: '-0.5px' }}>
+              Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span>
+            </span>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {orgQuery.loading && !org ? 'Loading…' : org?.name ?? ''}
+            </span>
+          </div>
         </div>
 
         <nav className="nav-links">

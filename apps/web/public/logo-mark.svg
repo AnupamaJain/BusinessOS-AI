@@ -1,0 +1,29 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SaarthiOne">
+  <defs>
+    <linearGradient id="soGrad" x1="96" y1="96" x2="416" y2="416" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00F2FE"/>
+      <stop offset="1" stop-color="#2B6CFF"/>
+    </linearGradient>
+    <linearGradient id="soGrad2" x1="160" y1="140" x2="360" y2="372" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7CF9FF"/>
+      <stop offset="1" stop-color="#4FACFE"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded tile -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#0B1220"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#soGrad)" opacity="0.10"/>
+  <rect x="17.5" y="17.5" width="477" height="477" rx="110.5" stroke="url(#soGrad)" stroke-opacity="0.5" stroke-width="3"/>
+  <!-- guide ring (charioteer's wheel) -->
+  <circle cx="256" cy="256" r="150" stroke="url(#soGrad)" stroke-width="20" fill="none" stroke-opacity="0.28"/>
+  <!-- forward-steering "S" path / needle -->
+  <path d="M330 150
+           C255 150 205 196 205 248
+           C205 300 307 300 307 346
+           C307 386 262 396 205 372"
+        stroke="url(#soGrad2)" stroke-width="34" stroke-linecap="round" fill="none"/>
+  <!-- guiding node (the 'One' pole star) -->
+  <circle cx="256" cy="256" r="30" fill="url(#soGrad2)"/>
+  <circle cx="256" cy="256" r="30" fill="#fff" opacity="0.12"/>
+  <!-- forward chevron -->
+  <path d="M356 210 L392 256 L356 302" stroke="url(#soGrad)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
