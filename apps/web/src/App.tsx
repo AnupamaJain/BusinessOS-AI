@@ -11,7 +11,8 @@ import {
   FileText,
   Copy,
   Clock,
-  Settings
+  Settings,
+  Globe
 } from 'lucide-react';
 
 /* ─── Mock CRM & Data Stores ──────────────────────────────────────── */
@@ -196,6 +197,8 @@ const TRAVEL_KB_DOCS = [
   { name: 'Destination Highlights (destinations.md)', chunks: 5, type: 'Guide' }
 ];
 
+import { LandingPage } from './LandingPage';
+
 const EVAL_SUMMARY = {
   total: 30,
   passed: 30,
@@ -209,6 +212,7 @@ const EVAL_SUMMARY = {
 };
 
 export default function App() {
+  const [viewState, setViewState] = useState<'landing' | 'onboarding' | 'dashboard'>('landing');
   const [activeTab, setActiveTab] = useState<'inbox' | 'crm' | 'scheduler' | 'compliance' | 'kb'>('inbox');
   const [conversations, setConversations] = useState(INITIAL_CONVERSATIONS);
   const [selectedConvId, setSelectedConvId] = useState('conv-1');
@@ -294,7 +298,23 @@ export default function App() {
     p.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  if (!isOnboarded) {
+  if (viewState === 'landing') {
+    return (
+      <LandingPage 
+        onLaunchApp={() => {
+          setIsOnboarded(true);
+          setViewState('dashboard');
+        }}
+        onStartOnboarding={() => {
+          setIsOnboarded(false);
+          setOnboardingStep(1);
+          setViewState('onboarding');
+        }}
+      />
+    );
+  }
+
+  if (viewState === 'onboarding' || !isOnboarded) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '40px', backgroundColor: 'var(--bg-primary)' }}>
         <div className="report-card" style={{ maxWidth: '600px', width: '100%', border: '1px solid var(--border-glow)', boxShadow: '0 0 30px rgba(0, 242, 254, 0.1)' }}>
@@ -510,7 +530,10 @@ export default function App() {
                 <button className="btn btn-secondary" onClick={() => setOnboardingStep(3)}>Back</button>
                 <button 
                   className="btn btn-primary" 
-                  onClick={() => setIsOnboarded(true)}
+                  onClick={() => {
+                    setIsOnboarded(true);
+                    setViewState('dashboard');
+                  }}
                 >
                   Complete Onboarding & Launch Dashboard
                 </button>
@@ -526,9 +549,9 @@ export default function App() {
     <div className="dashboard-container">
       {/* ─── Sidebar ──────────────────────────────────────────────── */}
       <aside className="sidebar">
-        <div className="brand-section">
+        <div className="brand-section" onClick={() => setViewState('landing')} style={{ cursor: 'pointer' }}>
           <ShieldCheck className="nav-icon" style={{ color: 'var(--color-primary)' }} />
-          <span className="brand-logo">BUSINESSOS AI</span>
+          <span className="brand-logo" style={{ letterSpacing: '-0.5px' }}>Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span></span>
         </div>
         
         <nav className="nav-links">
@@ -575,7 +598,16 @@ export default function App() {
 
         <div 
           className="nav-item" 
-          style={{ marginTop: 'auto', borderLeft: 'none' }}
+          style={{ marginTop: 'auto', borderLeft: 'none', color: 'var(--color-primary)' }}
+          onClick={() => setViewState('landing')}
+        >
+          <Globe className="nav-icon" />
+          <span>Website & Landing</span>
+        </div>
+
+        <div 
+          className="nav-item" 
+          style={{ borderLeft: 'none' }}
           onClick={() => {
             if (confirm('Relaunch the Onboarding Wizard?')) {
               setOnboardingStep(1);
@@ -583,6 +615,7 @@ export default function App() {
               setIsKbSeeded(false);
               setInvitedEmails([]);
               setIsOnboarded(false);
+              setViewState('onboarding');
             }
           }}
         >
