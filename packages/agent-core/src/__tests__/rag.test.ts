@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chunkMarkdown, ingestMarkdownDocuments, retrieveRelevantChunks, simulatedChunks } from '../rag';
-import { ToolDataStore } from '@whatsapp-smb/mcp-business-tools';
+import { ToolDataStore } from '@business-os-ai/mcp-business-tools';
 import * as path from 'path';
 import * as fs from 'fs';
 

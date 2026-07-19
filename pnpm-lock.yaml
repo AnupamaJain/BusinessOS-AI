@@ -25,13 +25,13 @@ importers:
 
   apps/gateway-api:
     dependencies:
-      '@whatsapp-smb/config':
+      '@business-os-ai/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@whatsapp-smb/database':
+      '@business-os-ai/database':
         specifier: workspace:*
         version: link:../../packages/database
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
       express:
@@ -59,22 +59,21 @@ importers:
 
   apps/scheduler-worker:
     dependencies:
-      '@whatsapp-smb/database':
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@business-os-ai/database':
         specifier: workspace:*
         version: link:../../packages/database
-      '@whatsapp-smb/mcp-business-tools':
+      '@business-os-ai/mcp-business-tools':
         specifier: workspace:*
         version: link:../../packages/mcp-business-tools
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
-    devDependencies:
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -112,22 +111,53 @@ importers:
 
   packages/agent-core:
     dependencies:
-      '@whatsapp-smb/mcp-business-tools':
+      '@business-os-ai/crm':
+        specifier: workspace:*
+        version: link:../crm
+      '@business-os-ai/llm-gateway':
+        specifier: workspace:*
+        version: link:../llm-gateway
+      '@business-os-ai/mcp-business-tools':
         specifier: workspace:*
         version: link:../mcp-business-tools
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      '@business-os-ai/verticals':
+        specifier: workspace:*
+        version: link:../verticals
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
+  packages/auth:
+    dependencies:
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
       zod:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
-        specifier: workspace:*
-        version: link:../config
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -151,24 +181,49 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
 
-  packages/database:
+  packages/crm:
     dependencies:
-      '@supabase/supabase-js':
-        specifier: ^2.49.0
-        version: 2.110.7
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/database':
+        specifier: workspace:*
+        version: link:../database
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
       zod:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
+  packages/database:
+    dependencies:
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      '@supabase/supabase-js':
+        specifier: ^2.49.0
+        version: 2.110.7
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
         specifier: workspace:*
         version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -178,25 +233,25 @@ importers:
 
   packages/evaluation:
     dependencies:
-      '@whatsapp-smb/agent-core':
+      '@business-os-ai/agent-core':
         specifier: workspace:*
         version: link:../agent-core
-      '@whatsapp-smb/database':
+      '@business-os-ai/database':
         specifier: workspace:*
         version: link:../database
-      '@whatsapp-smb/mcp-business-tools':
+      '@business-os-ai/mcp-business-tools':
         specifier: workspace:*
         version: link:../mcp-business-tools
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
-        specifier: workspace:*
-        version: link:../config
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -206,24 +261,46 @@ importers:
 
   packages/integrations: {}
 
-  packages/mcp-business-tools:
+  packages/llm-gateway:
     dependencies:
-      '@whatsapp-smb/database':
-        specifier: workspace:*
-        version: link:../database
-      '@whatsapp-smb/shared-types':
+      '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
       zod:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
+  packages/mcp-business-tools:
+    dependencies:
+      '@business-os-ai/database':
+        specifier: workspace:*
+        version: link:../database
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
         specifier: workspace:*
         version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -237,12 +314,34 @@ importers:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
+      '@business-os-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
-      '@whatsapp-smb/config':
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)
+
+  packages/verticals:
+    dependencies:
+      '@business-os-ai/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@business-os-ai/config':
         specifier: workspace:*
         version: link:../config
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

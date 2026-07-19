@@ -1,5 +1,5 @@
 import type { InboundMessage } from '../adapters/types';
-import { logger } from '@whatsapp-smb/shared-types';
+import { logger } from '@business-os-ai/shared-types';
 
 /**
  * Message persistence service.

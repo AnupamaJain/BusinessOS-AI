@@ -2,7 +2,7 @@ import express from 'express';
 import type { WhatsAppAdapter, OutboundMessage } from './adapters/types';
 import { IdempotencyService } from './services/idempotency-service';
 import { MessageService } from './services/message-service';
-import { logger } from '@whatsapp-smb/shared-types';
+import { logger } from '@business-os-ai/shared-types';
 import { z } from 'zod';
 
 /**

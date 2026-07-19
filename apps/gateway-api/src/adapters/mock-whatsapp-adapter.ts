@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { WhatsAppAdapter, InboundMessage, OutboundMessage, SendResult } from './types';
-import { logger } from '@whatsapp-smb/shared-types';
+import { logger } from '@business-os-ai/shared-types';
 import { randomUUID } from 'crypto';
 
 /**

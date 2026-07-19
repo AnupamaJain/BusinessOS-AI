@@ -5,7 +5,7 @@ import {
   getUserOrganizationIds,
   assertTenantMatch,
 } from '../rls-helpers';
-import { TenantAccessError } from '@whatsapp-smb/shared-types';
+import { TenantAccessError } from '@business-os-ai/shared-types';
 
 // ─── Mock Supabase client ────────────────────────────────────────────
 

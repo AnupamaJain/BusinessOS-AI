@@ -1,4 +1,4 @@
-import type { IntentType } from '@whatsapp-smb/shared-types';
+import type { IntentType } from '@business-os-ai/shared-types';
 import type { AgentState } from './state';
 
 /**

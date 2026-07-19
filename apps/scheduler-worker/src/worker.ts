@@ -1,5 +1,5 @@
-import { logger } from '@whatsapp-smb/shared-types';
-import type { ToolDataStore } from '@whatsapp-smb/mcp-business-tools';
+import { logger } from '@business-os-ai/shared-types';
+import type { ToolDataStore } from '@business-os-ai/mcp-business-tools';
 import { randomUUID } from 'crypto';
 
 export class SchedulerWorker {

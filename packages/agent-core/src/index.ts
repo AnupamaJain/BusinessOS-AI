@@ -6,3 +6,4 @@ export { executeAgentGraph } from './graph';
 export { chunkMarkdown, ingestMarkdownDocuments, retrieveRelevantChunks, simulatedChunks } from './rag';
 export { MockEmbeddingProvider } from './mock-embedding';
 export type { EmbeddingProvider } from './rag';
+export { CoordinatorAgent } from './agents/coordinator';

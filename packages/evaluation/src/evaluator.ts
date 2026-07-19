@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { executeAgentGraph, ingestMarkdownDocuments, simulatedChunks } from '@whatsapp-smb/agent-core';
-import { ToolDataStore } from '@whatsapp-smb/mcp-business-tools';
+import { executeAgentGraph, ingestMarkdownDocuments, simulatedChunks } from '@business-os-ai/agent-core';
+import { ToolDataStore } from '@business-os-ai/mcp-business-tools';
 
 export interface EvalTestCase {
   id: string;

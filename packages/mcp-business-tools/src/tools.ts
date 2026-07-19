@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { logger, TenantAccessError, ConsentRequiredError } from '@whatsapp-smb/shared-types';
-import { assertTenantMatch } from '@whatsapp-smb/database';
+import { logger, TenantAccessError, ConsentRequiredError } from '@business-os-ai/shared-types';
+import { assertTenantMatch } from '@business-os-ai/database';
 import type {
   GetCustomerContextInput, GetCustomerContextOutput,
   UpsertQualifiedLeadInput, CreateHumanHandoffInput,

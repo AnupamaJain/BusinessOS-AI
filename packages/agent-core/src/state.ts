@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IntentType } from '@whatsapp-smb/shared-types';
+import { IntentType } from '@business-os-ai/shared-types';
 
 /**
  * LangGraph agent state.

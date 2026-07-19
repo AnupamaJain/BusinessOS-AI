@@ -1,8 +1,8 @@
 import type { AgentState } from './state';
 import { createInitialState } from './state';
 import { classifyIntent, evaluatePolicy } from './policy';
-import { ToolDataStore, getCustomerContext, upsertQualifiedLead, createHumanHandoff, searchProductCatalog, getOrderStatus } from '@whatsapp-smb/mcp-business-tools';
-import { logger } from '@whatsapp-smb/shared-types';
+import { ToolDataStore, getCustomerContext, upsertQualifiedLead, createHumanHandoff, searchProductCatalog, getOrderStatus } from '@business-os-ai/mcp-business-tools';
+import { logger } from '@business-os-ai/shared-types';
 import { retrieveRelevantChunks } from './rag';
 
 /**

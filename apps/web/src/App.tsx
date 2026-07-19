@@ -155,7 +155,7 @@ export default function App() {
   // Onboarding state
   const [isOnboarded, setIsOnboarded] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
-  const [selectedVertical, setSelectedVertical] = useState('d2c-skincare');
+  const [selectedVertical, setSelectedVertical] = useState('travel');
   const [isWabaConnected, setIsWabaConnected] = useState(false);
   const [wabaConnecting, setWabaConnecting] = useState(false);
   const [isKbSeeded, setIsKbSeeded] = useState(false);
@@ -224,7 +224,7 @@ export default function App() {
           {/* Brand Section */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', justifyContent: 'center', marginBottom: '32px' }}>
             <ShieldCheck size={32} style={{ color: 'var(--color-primary)' }} />
-            <span className="brand-logo" style={{ fontSize: '28px' }}>GLOWROOT ONBOARDING</span>
+            <span className="brand-logo" style={{ fontSize: '28px' }}>BUSINESSOS AI ONBOARDING</span>
           </div>
 
           {/* Steps indicator */}
@@ -265,6 +265,20 @@ export default function App() {
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div 
+                  onClick={() => setSelectedVertical('travel')}
+                  style={{ 
+                    padding: '16px', 
+                    borderRadius: '12px', 
+                    backgroundColor: selectedVertical === 'travel' ? 'rgba(0, 242, 254, 0.05)' : 'var(--bg-tertiary)', 
+                    border: selectedVertical === 'travel' ? '2px solid var(--color-primary)' : '1px solid var(--border-muted)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--color-primary)', marginBottom: '4px' }}>Travel & Tourism (Recommended)</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>AI Travel Planner, Bali/Europe/Goa holiday package quotes, flight & hotel inquiries, and visa guidelines.</div>
+                </div>
+
+                <div 
                   onClick={() => setSelectedVertical('d2c-skincare')}
                   style={{ 
                     padding: '16px', 
@@ -274,23 +288,8 @@ export default function App() {
                     cursor: 'pointer'
                   }}
                 >
-                  <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--color-primary)', marginBottom: '4px' }}>D2C Skincare & Personal Care (Recommended)</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Contains GlowRoot product guides, return windows, medical exclusions, and lead qualification timers.</div>
-                </div>
-
-                <div 
-                  onClick={() => setSelectedVertical('salon-wellness')}
-                  style={{ 
-                    padding: '16px', 
-                    borderRadius: '12px', 
-                    backgroundColor: selectedVertical === 'salon-wellness' ? 'rgba(0, 242, 254, 0.05)' : 'var(--bg-tertiary)', 
-                    border: selectedVertical === 'salon-wellness' ? '2px solid var(--color-primary)' : '1px solid var(--border-muted)',
-                    cursor: 'pointer',
-                    opacity: 0.6
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>Salon & Wellness (Coming Soon)</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Calendar bookings, service slots, staff handoff triggers, and reschedule automations.</div>
+                  <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>D2C Skincare & Personal Care</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>GlowRoot skincare catalog, return policies, medical exclusions, and automated follow-ups.</div>
                 </div>
               </div>
 
@@ -452,7 +451,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand-section">
           <ShieldCheck className="nav-icon" style={{ color: 'var(--color-primary)' }} />
-          <span className="brand-logo">GLOWROOT AI</span>
+          <span className="brand-logo">BUSINESSOS AI</span>
         </div>
         
         <nav className="nav-links">
@@ -525,7 +524,9 @@ export default function App() {
             {activeTab === 'compliance' && 'AI Quality & Audit Regression'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
           </h1>
-          <span className="tenant-badge">Tenant ID: GlowRoot Skincare</span>
+          <span className="tenant-badge">
+            {selectedVertical === 'travel' ? 'Tenant ID: GlowTravel Agencies (Travel)' : 'Tenant ID: GlowRoot Skincare (D2C)'}
+          </span>
         </header>
 
         {/* ─── Tab View: Operator Inbox ───────────────────────────── */}

@@ -1,5 +1,5 @@
 {
-  "name": "@whatsapp-smb/gateway-api",
+  "name": "@business-os-ai/gateway-api",
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
@@ -13,9 +13,9 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
-    "@whatsapp-smb/shared-types": "workspace:*",
-    "@whatsapp-smb/database": "workspace:*",
-    "@whatsapp-smb/config": "workspace:*",
+    "@business-os-ai/shared-types": "workspace:*",
+    "@business-os-ai/database": "workspace:*",
+    "@business-os-ai/config": "workspace:*",
     "express": "^5.1.0",
     "zod": "^3.23.0"
   },

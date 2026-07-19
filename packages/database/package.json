@@ -1,5 +1,5 @@
 {
-  "name": "@whatsapp-smb/database",
+  "name": "@business-os-ai/database",
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
@@ -12,12 +12,12 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.0",
-    "@whatsapp-smb/shared-types": "workspace:*",
+    "@business-os-ai/shared-types": "workspace:*",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "@whatsapp-smb/config": "workspace:*",
+    "@business-os-ai/config": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   }

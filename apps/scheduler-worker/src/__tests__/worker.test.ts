@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
-import { ToolDataStore } from '@whatsapp-smb/mcp-business-tools';
+import { ToolDataStore } from '@business-os-ai/mcp-business-tools';
 import { SchedulerWorker } from '../worker';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';

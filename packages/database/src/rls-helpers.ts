@@ -1,4 +1,4 @@
-import { TenantAccessError } from '@whatsapp-smb/shared-types';
+import { TenantAccessError } from '@business-os-ai/shared-types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**

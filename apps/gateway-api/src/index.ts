@@ -4,7 +4,7 @@ import { MockWhatsAppAdapter } from './adapters/mock-whatsapp-adapter';
 import { MetaCloudApiAdapter } from './adapters/meta-cloud-api-adapter';
 import { IdempotencyService } from './services/idempotency-service';
 import { MessageService } from './services/message-service';
-import { logger } from '@whatsapp-smb/shared-types';
+import { logger } from '@business-os-ai/shared-types';
 
 const PORT = parseInt(process.env['PORT'] ?? '3001', 10);
 const VERIFY_TOKEN = process.env['META_VERIFY_TOKEN'] ?? 'test-verify-token';

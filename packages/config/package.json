@@ -1,5 +1,5 @@
 {
-  "name": "@whatsapp-smb/config",
+  "name": "@business-os-ai/config",
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
