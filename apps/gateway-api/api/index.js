@@ -51898,9 +51898,14 @@ var PRICING2 = [
   ["gpt-4.1-mini", 0.4, 1.6],
   ["gpt-4.1", 2, 8],
   ["gemini-2.5-flash", 0.3, 2.5],
-  ["gemini-2.5-pro", 1.25, 10]
+  ["gemini-2.5-pro", 1.25, 10],
+  ["gemini-2.0-flash", 0.1, 0.4],
+  ["gemini-1.5-flash", 0.075, 0.3],
+  ["llama-3.3-70b", 0.59, 0.79],
+  ["llama-3.1-8b", 0.05, 0.08]
 ];
 function estimateCost2(model, promptTokens, completionTokens) {
+  if (model.includes(":free")) return 0;
   const match = PRICING2.find(([key]) => model.includes(key));
   const [, inRate, outRate] = match ?? ["", 2, 8];
   return (promptTokens * inRate + completionTokens * outRate) / 1e6;
@@ -51978,13 +51983,28 @@ function createGatewayFromEnv(env = process.env, options) {
   if (env["ANTHROPIC_API_KEY"]) {
     gateway.registerProvider(new AnthropicProvider(env["ANTHROPIC_API_KEY"]));
   }
-  if (env["AI_GATEWAY_API_KEY"] || env["VERCEL_OIDC_TOKEN"] || env["VERCEL"]) {
+  if (env["GROQ_API_KEY"]) {
     gateway.registerProvider(new OpenAICompatibleProvider({
-      name: "gateway",
-      baseUrl: env["AI_GATEWAY_BASE_URL"] ?? VERCEL_AI_GATEWAY_URL,
-      // Re-read each call: on Vercel, OIDC tokens rotate and are refreshed in env.
-      getToken: () => process.env["AI_GATEWAY_API_KEY"] ?? process.env["VERCEL_OIDC_TOKEN"] ?? env["AI_GATEWAY_API_KEY"] ?? env["VERCEL_OIDC_TOKEN"],
-      defaultModel: env["AI_GATEWAY_MODEL"] ?? "anthropic/claude-sonnet-4.5"
+      name: "groq",
+      baseUrl: "https://api.groq.com/openai/v1",
+      getToken: () => process.env["GROQ_API_KEY"] ?? env["GROQ_API_KEY"],
+      defaultModel: env["GROQ_MODEL"] ?? "llama-3.3-70b-versatile"
+    }));
+  }
+  if (env["GOOGLE_API_KEY"] || env["GEMINI_API_KEY"]) {
+    gateway.registerProvider(new OpenAICompatibleProvider({
+      name: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      getToken: () => process.env["GOOGLE_API_KEY"] ?? process.env["GEMINI_API_KEY"] ?? env["GOOGLE_API_KEY"] ?? env["GEMINI_API_KEY"],
+      defaultModel: env["GOOGLE_MODEL"] ?? "gemini-2.0-flash"
+    }));
+  }
+  if (env["OPENROUTER_API_KEY"]) {
+    gateway.registerProvider(new OpenAICompatibleProvider({
+      name: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      getToken: () => process.env["OPENROUTER_API_KEY"] ?? env["OPENROUTER_API_KEY"],
+      defaultModel: env["OPENROUTER_MODEL"] ?? "meta-llama/llama-3.3-70b-instruct:free"
     }));
   }
   if (env["OPENAI_API_KEY"]) {
@@ -51995,12 +52015,20 @@ function createGatewayFromEnv(env = process.env, options) {
       defaultModel: "gpt-4o-mini"
     }));
   }
+  if (env["AI_GATEWAY_API_KEY"] || env["VERCEL"] && env["ENABLE_AI_GATEWAY"] === "true") {
+    gateway.registerProvider(new OpenAICompatibleProvider({
+      name: "gateway",
+      baseUrl: env["AI_GATEWAY_BASE_URL"] ?? VERCEL_AI_GATEWAY_URL,
+      getToken: () => process.env["AI_GATEWAY_API_KEY"] ?? process.env["VERCEL_OIDC_TOKEN"] ?? env["AI_GATEWAY_API_KEY"] ?? env["VERCEL_OIDC_TOKEN"],
+      defaultModel: env["AI_GATEWAY_MODEL"] ?? "anthropic/claude-sonnet-4.5"
+    }));
+  }
   if (gateway.realProviderNames.length === 0) {
     if (options?.allowMockFallback) {
-      logger.warn("LLM gateway: no real provider credentials found \u2014 mock provider only. Set ANTHROPIC_API_KEY or AI_GATEWAY_API_KEY.");
+      logger.warn("LLM gateway: no real provider credentials found \u2014 mock provider only. Set GROQ_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY.");
     } else {
       throw new Error(
-        "No LLM provider credential configured. Set ANTHROPIC_API_KEY, AI_GATEWAY_API_KEY, or OPENAI_API_KEY (on Vercel, OIDC is used automatically)."
+        "No LLM provider credential configured. Set GROQ_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
       );
     }
   } else {
@@ -52741,19 +52769,53 @@ var OpenAICompatibleEmbeddingProvider = class {
     return embedding;
   }
 };
-function createEmbeddingProviderFromEnv(env = process.env) {
-  if (env["AI_GATEWAY_API_KEY"] || env["VERCEL_OIDC_TOKEN"] || env["VERCEL"]) {
-    return new OpenAICompatibleEmbeddingProvider({
-      baseUrl: env["AI_GATEWAY_BASE_URL"] ?? "https://ai-gateway.vercel.sh/v1",
-      getToken: () => process.env["AI_GATEWAY_API_KEY"] ?? process.env["VERCEL_OIDC_TOKEN"] ?? env["AI_GATEWAY_API_KEY"] ?? env["VERCEL_OIDC_TOKEN"],
-      model: env["EMBEDDING_MODEL"] ?? "openai/text-embedding-3-small"
-    });
+var EMBEDDING_DIMS = 1536;
+var GoogleEmbeddingProvider = class {
+  constructor(config) {
+    this.config = config;
   }
+  async getEmbedding(text) {
+    const key = this.config.getToken();
+    if (!key) throw new Error("No Google API key available for embeddings.");
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.config.model}:embedContent?key=${key}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: `models/${this.config.model}`,
+        content: { parts: [{ text }] },
+        outputDimensionality: EMBEDDING_DIMS
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Google embedding API error ${response.status}: ${errText.slice(0, 300)}`);
+    }
+    const data = await response.json();
+    const values = data.embedding?.values;
+    if (!values || values.length === 0) throw new Error("Google embedding API returned no vector.");
+    return values;
+  }
+};
+function createEmbeddingProviderFromEnv(env = process.env) {
   if (env["OPENAI_API_KEY"]) {
     return new OpenAICompatibleEmbeddingProvider({
       baseUrl: "https://api.openai.com/v1",
       getToken: () => process.env["OPENAI_API_KEY"] ?? env["OPENAI_API_KEY"],
       model: "text-embedding-3-small"
+    });
+  }
+  if (env["AI_GATEWAY_API_KEY"]) {
+    return new OpenAICompatibleEmbeddingProvider({
+      baseUrl: env["AI_GATEWAY_BASE_URL"] ?? "https://ai-gateway.vercel.sh/v1",
+      getToken: () => process.env["AI_GATEWAY_API_KEY"] ?? env["AI_GATEWAY_API_KEY"],
+      model: env["EMBEDDING_MODEL"] ?? "openai/text-embedding-3-small"
+    });
+  }
+  if (env["GOOGLE_API_KEY"] || env["GEMINI_API_KEY"]) {
+    return new GoogleEmbeddingProvider({
+      getToken: () => process.env["GOOGLE_API_KEY"] ?? process.env["GEMINI_API_KEY"] ?? env["GOOGLE_API_KEY"] ?? env["GEMINI_API_KEY"],
+      model: env["GOOGLE_EMBEDDING_MODEL"] ?? "gemini-embedding-001"
     });
   }
   return null;

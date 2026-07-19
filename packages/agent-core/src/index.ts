@@ -7,7 +7,7 @@ export type { AgentGraphDeps } from './graph';
 export { chunkMarkdown, ingestMarkdownDocuments, ingestMarkdownContent, retrieveRelevantChunks, simulatedChunks } from './rag';
 export { MockEmbeddingProvider } from './mock-embedding';
 export type { EmbeddingProvider } from './rag';
-export { OpenAICompatibleEmbeddingProvider, createEmbeddingProviderFromEnv } from './embeddings';
+export { OpenAICompatibleEmbeddingProvider, GoogleEmbeddingProvider, createEmbeddingProviderFromEnv } from './embeddings';
 export { InMemoryVectorStore, SupabaseVectorStore, cosineSimilarity } from './vector-store';
 export type { VectorStore, ChunkRecord, RetrievedChunk } from './vector-store';
 export { CoordinatorAgent } from './agents/coordinator';

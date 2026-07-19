@@ -11,9 +11,15 @@ const PRICING: Array<[string, number, number]> = [
   ['gpt-4.1', 2, 8],
   ['gemini-2.5-flash', 0.3, 2.5],
   ['gemini-2.5-pro', 1.25, 10],
+  ['gemini-2.0-flash', 0.1, 0.4],
+  ['gemini-1.5-flash', 0.075, 0.3],
+  ['llama-3.3-70b', 0.59, 0.79],
+  ['llama-3.1-8b', 0.05, 0.08],
 ];
 
 function estimateCost(model: string, promptTokens: number, completionTokens: number): number {
+  // Free-tier / OpenRouter free models cost nothing.
+  if (model.includes(':free')) return 0;
   const match = PRICING.find(([key]) => model.includes(key));
   const [, inRate, outRate] = match ?? ['', 2, 8];
   return (promptTokens * inRate + completionTokens * outRate) / 1_000_000;

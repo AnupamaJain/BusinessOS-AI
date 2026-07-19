@@ -10,7 +10,8 @@ Last updated: 2026-07-19
 | Operator dashboard | https://saarthione.vercel.app | ✅ Live (Vercel, project `business-os-web`) |
 | Database (Postgres + pgvector + Auth) | Supabase project `business-os-ai`, ref `vhszjxrqgmfiiooshjqf`, region Mumbai (ap-south-1) | ✅ Live, 30+ tables, RLS enabled, seeded |
 | Scheduler | Vercel Cron → `GET /internal/scheduler/run`, daily 09:30 UTC | ✅ Live (Hobby plan allows daily only — see below) |
-| LLM (Vercel AI Gateway via OIDC) | `anthropic/claude-sonnet-4.5` + `openai/text-embedding-3-small` | ⚠️ One click away — see step 1 |
+| LLM (free tier) | Groq `llama-3.3-70b-versatile` (+ Google/OpenRouter failover) | ✅ Live — real AI replies |
+| Embeddings / RAG | Google `gemini-embedding-001` (1536-dim) | ✅ Live — KB ingested |
 | WhatsApp (Meta Cloud API) | Adapter fully implemented incl. HMAC verification | ⚠️ Needs your Meta credentials — see step 2 |
 | Payments (Razorpay payment links + webhook) | `POST /webhooks/razorpay` | ⚠️ Needs your Razorpay keys — see step 3 |
 
