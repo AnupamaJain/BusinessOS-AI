@@ -18,8 +18,8 @@ const MetaInboundMessageSchema = z.object({
     button_reply: z.object({ id: z.string(), title: z.string() }).optional(),
     list_reply: z.object({ id: z.string(), title: z.string() }).optional(),
   }).optional(),
-  image: z.object({ id: z.string().optional(), caption: z.string().optional() }).optional(),
-  document: z.object({ id: z.string().optional(), caption: z.string().optional(), filename: z.string().optional() }).optional(),
+  image: z.object({ id: z.string().optional(), mime_type: z.string().optional(), caption: z.string().optional() }).optional(),
+  document: z.object({ id: z.string().optional(), mime_type: z.string().optional(), caption: z.string().optional(), filename: z.string().optional() }).optional(),
   reaction: z.object({ message_id: z.string().optional(), emoji: z.string().optional() }).optional(),
 });
 
@@ -125,6 +125,9 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
               displayPhoneNumber: value.metadata?.display_phone_number,
               senderName,
               rawType: msg.type,
+              channel: 'meta',
+              mediaId: msg.image?.id ?? msg.document?.id,
+              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type,
             },
           });
         }

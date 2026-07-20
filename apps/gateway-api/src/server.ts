@@ -18,6 +18,9 @@ import {
 } from '@business-os-ai/agent-core';
 import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/auth';
 import { RazorpayPaymentService, buildQuotationHtml } from '@business-os-ai/commerce';
+import {
+  createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
+} from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
 import { waitUntil } from '@vercel/functions';
@@ -177,6 +180,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   }
 
   const publicBaseUrl = (env['PUBLIC_GATEWAY_URL'] ?? 'https://saarthione-api.vercel.app').replace(/\/$/, '');
+  const emailService = createEmailServiceFromEnv(env);
+  const ocrService = createOcrServiceFromEnv(env);
 
   function agentDeps(orgId: string, org: { name: string; vertical?: string }): AgentGraphDeps {
     return {
@@ -197,7 +202,24 @@ export function buildServer(env: Record<string, string | undefined> = process.en
             quote_number: number, amount, valid_until: validUntil, status: 'sent',
           }).select('id').single();
           if (error || !data) return null;
-          return { url: `${publicBaseUrl}/doc/quote/${data.id}`, number };
+          const url = `${publicBaseUrl}/doc/quote/${data.id}`;
+
+          // Email the quotation too, when the customer has an email on file.
+          try {
+            const { data: contact } = await db.from('contacts').select('name, email').eq('id', contactId).maybeSingle();
+            if (contact?.email && emailService.isConfigured) {
+              const mail = buildQuotationEmail({
+                businessName: org.name, customerName: contact.name ?? undefined,
+                quotationNumber: number, viewUrl: url, amountText: `₹${amount.toLocaleString('en-IN')}`,
+              });
+              const sent = await emailService.send({ to: contact.email, subject: mail.subject, html: mail.html });
+              if (sent.sent) logger.info('Quotation email sent', { to: contact.email, number });
+            }
+          } catch (err) {
+            logger.warn('Quotation email failed', { error: err instanceof Error ? err.message : String(err) });
+          }
+
+          return { url, number };
         } catch {
           return null;
         }
@@ -208,9 +230,70 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   // ── Inbound message → agent graph → WhatsApp reply ──
   // replyAdapter is the channel the message arrived on, so Meta and Twilio
   // conversations each get answered on their own channel.
+  // Downloads a WhatsApp media file (Meta) and returns base64 + mime type.
+  async function downloadMetaMedia(mediaId: string): Promise<{ base64: string; mime: string } | null> {
+    if (!accessToken) return null;
+    try {
+      const metaRes = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!metaRes.ok) return null;
+      const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
+      if (!meta.url) return null;
+      const bin = await fetch(meta.url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!bin.ok) return null;
+      const buf = Buffer.from(await bin.arrayBuffer());
+      return { base64: buf.toString('base64'), mime: meta.mime_type ?? 'image/jpeg' };
+    } catch {
+      return null;
+    }
+  }
+
   async function handleInbound(orgId: string, msg: InboundCallbackMessage, replyAdapter: WhatsAppAdapter = adapter): Promise<void> {
-    if (!msg.text || !msg.contactId || !msg.conversationId) {
+    if (!msg.contactId || !msg.conversationId) {
+      logger.info('Skipping message without contact/conversation', { providerMessageId: msg.providerMessageId });
+      return;
+    }
+
+    // ── Document / OCR extraction: customer sent an image or document ──
+    if ((msg.type === 'image' || msg.type === 'document') && ocrService.isConfigured) {
+      try {
+        const meta = (msg.metadata ?? {}) as Record<string, unknown>;
+        let image: { imageBase64?: string; mimeType?: string } | null = null;
+        if (meta['channel'] === 'meta' && typeof meta['mediaId'] === 'string') {
+          const dl = await downloadMetaMedia(meta['mediaId']);
+          if (dl) image = { imageBase64: dl.base64, mimeType: dl.mime };
+        }
+        if (image) {
+          const result = await ocrService.extractPassport(image);
+          let reply: string;
+          if (result.ok && result.data) {
+            const d = result.data;
+            const fields = [
+              d['full_name'] && `• Name: ${d['full_name']}`,
+              d['passport_number'] && `• Passport: ${d['passport_number']}`,
+              d['nationality'] && `• Nationality: ${d['nationality']}`,
+              d['date_of_birth'] && `• DOB: ${d['date_of_birth']}`,
+              d['expiry_date'] && `• Expiry: ${d['expiry_date']}`,
+            ].filter(Boolean);
+            reply = fields.length > 0
+              ? `📄 Thanks! I read your document:\n${fields.join('\n')}\n\nIs this correct? I'll attach it to your booking for visa processing.`
+              : `📄 I received your document but couldn't read all the details clearly. Could you resend a clearer photo, or our team can help.`;
+            await store.insertAuditEvent({ id: randomUUID(), organizationId: orgId, action: 'document_extracted', entityType: 'contact', entityId: msg.contactId, actorType: 'agent', details: { fields: d, providerMessageId: msg.providerMessageId }, createdAt: new Date().toISOString() });
+          } else {
+            reply = '📄 I received your document — our team will review it shortly.';
+          }
+          const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: 'text', text: reply, idempotencyKey: `ocr:${msg.providerMessageId}` });
+          if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, msg.from, reply, r.providerMessageId, msg.conversationId);
+        }
+      } catch (err) {
+        logger.error('OCR handling failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+      await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+      return;
+    }
+
+    if (!msg.text) {
       logger.info('Skipping non-text inbound message', { providerMessageId: msg.providerMessageId, type: msg.type });
+      await idempotencyService.markProcessed(msg.providerMessageId, orgId);
       return;
     }
 

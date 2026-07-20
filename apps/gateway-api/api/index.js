@@ -18512,8 +18512,8 @@ var require_escape_html = __commonJS({
   "../../node_modules/.pnpm/escape-html@1.0.3/node_modules/escape-html/index.js"(exports2, module2) {
     "use strict";
     var matchHtmlRegExp = /["'&<>]/;
-    module2.exports = escapeHtml;
-    function escapeHtml(string) {
+    module2.exports = escapeHtml3;
+    function escapeHtml3(string) {
       var str = "" + string;
       var match = matchHtmlRegExp.exec(str);
       if (!match) {
@@ -18644,13 +18644,13 @@ var require_finalhandler = __commonJS({
     "use strict";
     var debug = require_src()("finalhandler");
     var encodeUrl = require_encodeurl();
-    var escapeHtml = require_escape_html();
+    var escapeHtml3 = require_escape_html();
     var onFinished = require_on_finished();
     var parseUrl = require_parseurl();
     var statuses = require_statuses();
     var isFinished = onFinished.isFinished;
     function createHtmlDocument(message) {
-      var body = escapeHtml(message).replaceAll("\n", "<br>").replaceAll("  ", " &nbsp;");
+      var body = escapeHtml3(message).replaceAll("\n", "<br>").replaceAll("  ", " &nbsp;");
       return '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>' + body + "</pre>\n</body>\n</html>\n";
     }
     module2.exports = finalhandler;
@@ -22650,7 +22650,7 @@ var require_send = __commonJS({
     var createError = require_http_errors();
     var debug = require_src()("send");
     var encodeUrl = require_encodeurl();
-    var escapeHtml = require_escape_html();
+    var escapeHtml3 = require_escape_html();
     var etag = require_etag();
     var fresh = require_fresh();
     var fs = require("fs");
@@ -22703,7 +22703,7 @@ var require_send = __commonJS({
       }
       var res = this.res;
       var msg = statuses.message[status] || String(status);
-      var doc = createHtmlDocument("Error", escapeHtml(msg));
+      var doc = createHtmlDocument("Error", escapeHtml3(msg));
       clearHeaders(res);
       if (err && err.headers) {
         setHeaders(res, err.headers);
@@ -22803,7 +22803,7 @@ var require_send = __commonJS({
         return;
       }
       var loc = encodeUrl(collapseLeadingSlashes(this.path + "/"));
-      var doc = createHtmlDocument("Redirecting", "Redirecting to " + escapeHtml(loc));
+      var doc = createHtmlDocument("Redirecting", "Redirecting to " + escapeHtml3(loc));
       res.statusCode = 301;
       res.setHeader("Content-Type", "text/html; charset=UTF-8");
       res.setHeader("Content-Length", Buffer.byteLength(doc));
@@ -23207,7 +23207,7 @@ var require_response = __commonJS({
     var createError = require_http_errors();
     var deprecate = require_depd()("express");
     var encodeUrl = require_encodeurl();
-    var escapeHtml = require_escape_html();
+    var escapeHtml3 = require_escape_html();
     var http = require("node:http");
     var onFinished = require_on_finished();
     var mime = require_mime_types();
@@ -23546,7 +23546,7 @@ var require_response = __commonJS({
           body = statuses.message[status] + ". Redirecting to " + address;
         },
         html: function() {
-          var u = escapeHtml(address);
+          var u = escapeHtml3(address);
           body = "<p>" + statuses.message[status] + ". Redirecting to " + u + "</p>";
         },
         default: function() {
@@ -23674,7 +23674,7 @@ var require_serve_static = __commonJS({
   "../../node_modules/.pnpm/serve-static@2.2.1/node_modules/serve-static/index.js"(exports2, module2) {
     "use strict";
     var encodeUrl = require_encodeurl();
-    var escapeHtml = require_escape_html();
+    var escapeHtml3 = require_escape_html();
     var parseUrl = require_parseurl();
     var resolve2 = require("path").resolve;
     var send = require_send();
@@ -23760,7 +23760,7 @@ var require_serve_static = __commonJS({
         originalUrl.path = null;
         originalUrl.pathname = collapseLeadingSlashes(originalUrl.pathname + "/");
         var loc = encodeUrl(url.format(originalUrl));
-        var doc = createHtmlDocument("Redirecting", "Redirecting to " + escapeHtml(loc));
+        var doc = createHtmlDocument("Redirecting", "Redirecting to " + escapeHtml3(loc));
         res.statusCode = 301;
         res.setHeader("Content-Type", "text/html; charset=UTF-8");
         res.setHeader("Content-Length", Buffer.byteLength(doc));
@@ -38190,7 +38190,7 @@ module.exports = __toCommonJS(vercel_exports);
 
 // src/server.ts
 var import_express2 = __toESM(require_express2());
-var import_crypto8 = require("crypto");
+var import_crypto9 = require("crypto");
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -42815,8 +42815,8 @@ var MetaInboundMessageSchema = external_exports.object({
     button_reply: external_exports.object({ id: external_exports.string(), title: external_exports.string() }).optional(),
     list_reply: external_exports.object({ id: external_exports.string(), title: external_exports.string() }).optional()
   }).optional(),
-  image: external_exports.object({ id: external_exports.string().optional(), caption: external_exports.string().optional() }).optional(),
-  document: external_exports.object({ id: external_exports.string().optional(), caption: external_exports.string().optional(), filename: external_exports.string().optional() }).optional(),
+  image: external_exports.object({ id: external_exports.string().optional(), mime_type: external_exports.string().optional(), caption: external_exports.string().optional() }).optional(),
+  document: external_exports.object({ id: external_exports.string().optional(), mime_type: external_exports.string().optional(), caption: external_exports.string().optional(), filename: external_exports.string().optional() }).optional(),
   reaction: external_exports.object({ message_id: external_exports.string().optional(), emoji: external_exports.string().optional() }).optional()
 });
 var MetaWebhookBodySchema2 = external_exports.object({
@@ -42900,7 +42900,10 @@ var MetaCloudApiAdapter = class {
               phoneNumberId: value.metadata?.phone_number_id,
               displayPhoneNumber: value.metadata?.display_phone_number,
               senderName,
-              rawType: msg.type
+              rawType: msg.type,
+              channel: "meta",
+              mediaId: msg.image?.id ?? msg.document?.id,
+              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type
             }
           });
         }
@@ -51318,7 +51321,7 @@ var SupabaseBusinessStore = class {
     const { data: hotRows, error: hotErr } = await this.db.from("leads").select("service_interest, score, contact_id, updated_at, stage, contacts(name)").eq("organization_id", organizationId).gte("score", 70).in("stage", activeStages).order("score", { ascending: false }).limit(10);
     if (hotErr) this.fail("getBusinessSummary.hot", hotErr);
     const hot = hotRows ?? [];
-    const { data: staleRows, error: staleErr } = await this.db.from("leads").select("service_interest, contact_id, updated_at, stage, contacts(name)").eq("organization_id", organizationId).in("stage", activeStages).lt("updated_at", staleCutoff).order("updated_at", { ascending: true }).limit(10);
+    const { data: staleRows, error: staleErr } = await this.db.from("leads").select("service_interest, contact_id, updated_at, stage, contacts(name, phone_number)").eq("organization_id", organizationId).in("stage", activeStages).lt("updated_at", staleCutoff).order("updated_at", { ascending: true }).limit(10);
     if (staleErr) this.fail("getBusinessSummary.stale", staleErr);
     const stale = staleRows ?? [];
     const { count: pendingPayments } = await this.db.from("orders").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("status", "pending_payment");
@@ -51327,6 +51330,7 @@ var SupabaseBusinessStore = class {
     const pipeline = [...bookings ?? [], ...orders ?? []].reduce((sum, r) => sum + Number(r.total_amount ?? 0), 0);
     const pipelineText = pipeline > 0 ? `\u20B9${pipeline.toLocaleString("en-IN")}` : "\u2014";
     const nameOf = (r) => r.contacts?.name ?? void 0;
+    const phoneOf = (r) => r.contacts?.phone_number ?? void 0;
     return {
       todayEnquiries,
       hotLeads: hot.length,
@@ -51335,7 +51339,7 @@ var SupabaseBusinessStore = class {
       staleLeads: stale.length,
       pipelineText,
       topHotLeads: hot.slice(0, 5).map((r) => ({ name: nameOf(r), serviceInterest: r.service_interest, score: r.score ?? void 0 })),
-      staleContacts: stale.map((r) => ({ contactId: r.contact_id, name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at }))
+      staleContacts: stale.map((r) => ({ contactId: r.contact_id, phone: phoneOf(r), name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at }))
     };
   }
   // ─── Contacts & consent ───────────────────────────────────────────
@@ -52288,6 +52292,9 @@ function classifyIntent(message) {
   return "unknown";
 }
 
+// ../../packages/agent-core/src/graph.ts
+var import_crypto6 = require("crypto");
+
 // ../../packages/agent-core/src/mock-embedding.ts
 var MockEmbeddingProvider = class {
   async getEmbedding(text) {
@@ -52684,6 +52691,30 @@ When are you planning to travel, and for how many people?`;
         idempotencyKey: `lead:${state.conversationId}:${state.traceId}`
       });
       state.toolCalls.push({ tool: "upsert_qualified_lead", input: { serviceInterest: state.inboundMessage }, output: leadResult });
+      const wantsQuote = /\b(quote|quotation|book|price|cost|confirm|proceed|interested)\b/i.test(state.inboundMessage);
+      if (wantsQuote && deps.createQuotation) {
+        try {
+          const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+          const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
+          const priceNum = Number(String(first.pricePerPerson).replace(/[^\d]/g, "")) || 0;
+          const quote = await deps.createQuotation({
+            contactId: state.contactId,
+            conversationId: state.conversationId,
+            packageSku: first.sku,
+            title: first.title,
+            pricePerPerson: priceNum,
+            travellers
+          });
+          if (quote) {
+            state.proposedResponse += `
+
+\u{1F4C4} Here's your detailed quotation (${quote.number}): ${quote.url}`;
+            state.toolCalls.push({ tool: "create_quotation", input: { packageSku: first.sku, travellers }, output: quote });
+          }
+        } catch (err) {
+          state.errors.push("Failed to generate quotation");
+        }
+      }
     } else {
       state.proposedResponse = "I'd love to help plan your trip! Could you tell me your preferred destination, travel dates, and budget per person? I'll find the best packages for you.";
     }
@@ -52793,6 +52824,21 @@ Estimated Delivery: ${result.order.estimatedDelivery}` : ""}`;
   return state;
 }
 async function nodeBookingFlow(store, state, deps) {
+  try {
+    await store.insertAuditEvent({
+      id: (0, import_crypto6.randomUUID)(),
+      organizationId: state.organizationId,
+      action: "callback_requested",
+      entityType: "conversation",
+      entityId: state.conversationId,
+      actorType: "agent",
+      details: { request: state.inboundMessage.slice(0, 300) },
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    state.toolCalls.push({ tool: "record_callback_request", input: {} });
+  } catch {
+    state.errors.push("Failed to record callback request");
+  }
   if (deps.vertical === "travel" && hasRealLLM(deps)) {
     const packages = await searchTravelPackages(store, { organizationId: state.organizationId });
     const llmReply = await composeReplyWithLLM(
@@ -53157,6 +53203,9 @@ Owner asks: ${message}` }
   }
   return lines.join("\n");
 }
+function isOwnerConfirmation(message) {
+  return /^\s*(yes|yep|yeah|do it|go ahead|follow up|please do|sure)\b/i.test(message);
+}
 
 // ../../packages/auth/src/types.ts
 var SessionClaimsSchema = external_exports.object({
@@ -53233,7 +53282,7 @@ var CreateOrderInputSchema = external_exports.object({
 });
 
 // ../../packages/commerce/src/razorpay.ts
-var import_crypto6 = require("crypto");
+var import_crypto7 = require("crypto");
 var RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
 var MIN_EXPIRY_MINUTES = 15;
 var DEFAULT_EXPIRY_MINUTES = 60;
@@ -53346,13 +53395,13 @@ var RazorpayPaymentService = class {
     if (!this.webhookSecret) {
       return false;
     }
-    const expected = (0, import_crypto6.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
+    const expected = (0, import_crypto7.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
     const expectedBuffer = Buffer.from(expected, "utf8");
     const signatureBuffer = Buffer.from(signature, "utf8");
     if (expectedBuffer.length !== signatureBuffer.length) {
       return false;
     }
-    return (0, import_crypto6.timingSafeEqual)(expectedBuffer, signatureBuffer);
+    return (0, import_crypto7.timingSafeEqual)(expectedBuffer, signatureBuffer);
   }
   async handleWebhookEvent(event) {
     const parsed = RazorpayWebhookEventSchema.safeParse(event);
@@ -53408,11 +53457,561 @@ var RazorpayPaymentService = class {
   }
 };
 
+// ../../packages/commerce/src/documents.ts
+function escapeHtml(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function formatMoney(value, currency) {
+  if (currency === "INR") {
+    return `\u20B9${value.toLocaleString("en-IN")}`;
+  }
+  return `${currency} ${value}`;
+}
+function computeLines(items) {
+  const lines = items.map((item) => ({
+    title: item.title,
+    description: item.description,
+    quantity: item.quantity,
+    unitPrice: item.unitPrice,
+    amount: item.quantity * item.unitPrice
+  }));
+  const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
+  return { lines, subtotal };
+}
+var BASE_STYLES = `
+  :root {
+    --navy: #0B1220;
+    --cyan: #00F2FE;
+    --ink: #1a2233;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --paper: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #f1f5f9;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 800px;
+    margin: 24px auto;
+    background: var(--paper);
+    box-shadow: 0 10px 30px rgba(11, 18, 32, 0.12);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .header {
+    background: var(--navy);
+    color: #ffffff;
+    padding: 28px 40px;
+    border-bottom: 4px solid var(--cyan);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+  }
+  .header .brand { font-size: 22px; font-weight: 700; letter-spacing: 0.2px; }
+  .header .brand .accent { color: var(--cyan); }
+  .header .doc-meta { text-align: right; }
+  .header .doc-type {
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-size: 13px;
+    color: var(--cyan);
+    font-weight: 600;
+  }
+  .header .doc-number { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  .body { padding: 32px 40px; }
+  .customer { margin-bottom: 24px; }
+  .customer h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin: 0 0 6px;
+  }
+  .customer .name { font-size: 16px; font-weight: 600; }
+  .customer .phone { color: var(--muted); font-size: 14px; }
+  table.items {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 20px;
+  }
+  table.items thead th {
+    background: #f8fafc;
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--line);
+  }
+  table.items tbody td {
+    padding: 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    font-size: 14px;
+  }
+  table.items .item-title { font-weight: 600; }
+  table.items .item-desc { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+    white-space: nowrap;
+  }
+  .totals { margin-left: auto; width: 320px; max-width: 100%; }
+  .totals .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  .totals .row.grand {
+    border-top: 2px solid var(--navy);
+    margin-top: 4px;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--navy);
+  }
+  .totals .row .label { color: var(--muted); }
+  .totals .row.grand .label { color: var(--navy); }
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .badge.paid { background: #dcfce7; color: #166534; }
+  .badge.unpaid { background: #fee2e2; color: #991b1b; }
+  .badge.partially_paid { background: #fef9c3; color: #854d0e; }
+  .footer {
+    padding: 24px 40px 36px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .footer .meta { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; }
+  .footer .meta .label { text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+  .footer .notes { white-space: pre-wrap; color: var(--ink); }
+  @media print {
+    body { background: #ffffff; }
+    .page { box-shadow: none; margin: 0; max-width: none; border-radius: 0; }
+    @page { size: A4; margin: 12mm; }
+  }
+`;
+function renderItemsTable(lines, currency) {
+  const rows = lines.map((line) => {
+    const desc = line.description ? `<div class="item-desc">${escapeHtml(line.description)}</div>` : "";
+    return `        <tr>
+          <td><div class="item-title">${escapeHtml(line.title)}</div>${desc}</td>
+          <td class="num">${line.quantity}</td>
+          <td class="num">${formatMoney(line.unitPrice, currency)}</td>
+          <td class="num">${formatMoney(line.amount, currency)}</td>
+        </tr>`;
+  }).join("\n");
+  return `      <table class="items">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th class="num">Qty</th>
+            <th class="num">Unit Price</th>
+            <th class="num">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+${rows}
+        </tbody>
+      </table>`;
+}
+function renderCustomer(name, phone) {
+  if (!name && !phone) {
+    return "";
+  }
+  const nameLine = name ? `<div class="name">${escapeHtml(name)}</div>` : "";
+  const phoneLine = phone ? `<div class="phone">${escapeHtml(phone)}</div>` : "";
+  return `      <div class="customer">
+        <h2>Billed To</h2>
+        ${nameLine}
+        ${phoneLine}
+      </div>`;
+}
+function renderHeader(businessName, docType, number) {
+  return `    <div class="header">
+      <div class="brand">${escapeHtml(businessName)}</div>
+      <div class="doc-meta">
+        <div class="doc-type">${escapeHtml(docType)}</div>
+        <div class="doc-number">${escapeHtml(number)}</div>
+      </div>
+    </div>`;
+}
+function renderNotes(notes) {
+  if (!notes) {
+    return "";
+  }
+  return `<div class="notes">${escapeHtml(notes)}</div>`;
+}
+function wrapDocument(title, inner) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <style>${BASE_STYLES}</style>
+</head>
+<body>
+  <div class="page">
+${inner}
+  </div>
+</body>
+</html>`;
+}
+function buildQuotationHtml(doc) {
+  const currency = doc.currency ?? "INR";
+  const { lines, subtotal } = computeLines(doc.items);
+  const total = subtotal;
+  const header = renderHeader(doc.businessName, "Quotation", doc.number);
+  const customer = renderCustomer(doc.customerName, doc.customerPhone);
+  const table = renderItemsTable(lines, currency);
+  const totals = `      <div class="totals">
+        <div class="row"><span class="label">Subtotal</span><span class="num">${formatMoney(subtotal, currency)}</span></div>
+        <div class="row grand"><span class="label">Total</span><span class="num">${formatMoney(total, currency)}</span></div>
+      </div>`;
+  const validUntil = doc.validUntil ? `        <div><div class="label">Valid Until</div>${escapeHtml(doc.validUntil)}</div>` : "";
+  const footer = `    <div class="footer">
+      <div class="meta">
+        <div><div class="label">Issued</div>${escapeHtml(doc.issuedAt)}</div>
+${validUntil}
+      </div>
+      ${renderNotes(doc.notes)}
+    </div>`;
+  const inner = `${header}
+    <div class="body">
+${customer}
+${table}
+${totals}
+    </div>
+${footer}`;
+  return wrapDocument(`Quotation ${doc.number}`, inner);
+}
+
+// ../../packages/integrations/src/email.ts
+var RESEND_ENDPOINT = "https://api.resend.com/emails";
+var DEFAULT_FROM_NAME = "SaarthiOne";
+function escapeHtml2(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+var EmailService = class {
+  apiKey;
+  fromEmail;
+  fromName;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.fromEmail = config.fromEmail;
+    this.fromName = config.fromName ?? DEFAULT_FROM_NAME;
+  }
+  /** True when an API key is present and email can actually be sent. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async send(params) {
+    if (!this.apiKey) {
+      return {
+        sent: false,
+        skipped: true,
+        error: "RESEND_API_KEY not configured"
+      };
+    }
+    const from = `${this.fromName} <${this.fromEmail}>`;
+    const body = {
+      from,
+      to: [params.to],
+      subject: params.subject,
+      html: params.html
+    };
+    if (params.replyTo) {
+      body.reply_to = params.replyTo;
+    }
+    let response;
+    try {
+      response = await fetch(RESEND_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { sent: false, error: err.message };
+    }
+    if (response.status === 200 || response.status === 201) {
+      try {
+        const data = await response.json();
+        return { sent: true, id: data.id };
+      } catch {
+        return { sent: true };
+      }
+    }
+    let error = `Resend responded with status ${response.status}`;
+    try {
+      const text = await response.text();
+      if (text) error = text;
+    } catch {
+    }
+    return { sent: false, error };
+  }
+};
+function createEmailServiceFromEnv(env = process.env) {
+  return new EmailService({
+    apiKey: env.RESEND_API_KEY,
+    fromEmail: env.EMAIL_FROM ?? "onboarding@resend.dev",
+    fromName: env.EMAIL_FROM_NAME ?? DEFAULT_FROM_NAME
+  });
+}
+var NAVY = "#0B1220";
+var CYAN = "#00F2FE";
+var INK = "#1a2233";
+var MUTED = "#5b6472";
+var BORDER = "#e5e8ee";
+var BG = "#f4f6fa";
+function shell(businessName, heading, inner) {
+  const safeBusiness = escapeHtml2(businessName);
+  const safeHeading = escapeHtml2(heading);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="x-apple-disable-message-reformatting" />
+<title>${safeHeading}</title>
+</head>
+<body style="margin:0;padding:0;background:${BG};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BG};padding:24px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid ${BORDER};font-family:Arial,Helvetica,sans-serif;">
+<tr>
+<td style="background:${NAVY};padding:28px 32px;border-bottom:4px solid ${CYAN};">
+<div style="color:${CYAN};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;">${safeBusiness}</div>
+<div style="color:#ffffff;font-size:22px;font-weight:bold;margin-top:6px;">${safeHeading}</div>
+</td>
+</tr>
+<tr>
+<td style="padding:32px;color:${INK};font-size:15px;line-height:1.6;">
+${inner}
+</td>
+</tr>
+<tr>
+<td style="padding:20px 32px;background:#fafbfd;border-top:1px solid ${BORDER};color:${MUTED};font-size:12px;line-height:1.5;">
+Sent by ${safeBusiness} via SaarthiOne. Please do not reply directly to this automated message.
+</td>
+</tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+function greeting(customerName) {
+  return `<p style="margin:0 0 16px;">Hi ${escapeHtml2(customerName)},</p>`;
+}
+function refRow(label, value) {
+  return `<tr>
+<td style="padding:8px 0;color:${MUTED};font-size:13px;">${escapeHtml2(label)}</td>
+<td style="padding:8px 0;color:${INK};font-size:14px;font-weight:bold;text-align:right;">${escapeHtml2(value)}</td>
+</tr>`;
+}
+function ctaButton(url, label) {
+  const safeUrl = escapeHtml2(url);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0;">
+<tr><td style="border-radius:8px;background:${NAVY};">
+<a href="${safeUrl}" style="display:inline-block;padding:12px 28px;color:${CYAN};font-size:15px;font-weight:bold;text-decoration:none;border-radius:8px;border:1px solid ${CYAN};">${escapeHtml2(label)}</a>
+</td></tr>
+</table>`;
+}
+function buildQuotationEmail(params) {
+  const { businessName, customerName, quotationNumber, viewUrl, amountText } = params;
+  const rows = [refRow("Quotation number", quotationNumber)];
+  if (amountText) rows.push(refRow("Total", amountText));
+  const inner = `${greeting(customerName)}
+<p style="margin:0 0 20px;">Thank you for your interest. Please find your quotation below.</p>
+<div style="background:${BG};border:1px solid ${BORDER};border-radius:10px;padding:16px 20px;margin:0 0 20px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows.join("")}</table>
+</div>
+${ctaButton(viewUrl, "View Quotation")}
+<p style="margin:16px 0 0;color:${MUTED};">This quotation is valid subject to the terms shared. Let us know if you would like to proceed.</p>`;
+  return {
+    subject: `Your quotation ${quotationNumber} from ${businessName}`,
+    html: shell(businessName, "Your Quotation", inner)
+  };
+}
+
+// ../../packages/integrations/src/ocr.ts
+var DEFAULT_MODEL = "gemini-2.0-flash";
+var GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+function buildPrompt(fields, documentHint) {
+  const docType = documentHint ? `a ${documentHint}` : "the attached document";
+  const fieldList = fields.map((f) => `"${f}"`).join(", ");
+  return [
+    `You are a precise document data extraction engine.`,
+    `The attached image is ${docType}.`,
+    `Extract EXACTLY these fields: ${fieldList}.`,
+    `Return a single flat JSON object whose keys are exactly those field names.`,
+    `Use the value found in the document as a string.`,
+    `If a field is not present or not legible, set its value to null.`,
+    `Do not add extra keys, commentary, or markdown fences \u2014 output only the JSON object.`
+  ].join(" ");
+}
+function parseModelJson(text) {
+  const trimmed = text.trim();
+  const candidates = [trimmed];
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence && fence[1]) candidates.push(fence[1].trim());
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    candidates.push(trimmed.slice(first, last + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+var OcrService = class {
+  apiKey;
+  model;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? DEFAULT_MODEL;
+  }
+  /** True when an API key is present and extraction can actually run. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async extract(params) {
+    if (!this.apiKey) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "GOOGLE_API_KEY not configured"
+      };
+    }
+    let base64 = params.imageBase64;
+    let mimeType = params.mimeType ?? "image/jpeg";
+    if (params.imageUrl) {
+      try {
+        const imgRes = await fetch(params.imageUrl);
+        if (!imgRes.ok) {
+          return {
+            ok: false,
+            error: `Failed to fetch image (status ${imgRes.status})`
+          };
+        }
+        const contentType = imgRes.headers.get("content-type");
+        if (contentType) mimeType = contentType.split(";")[0].trim();
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        base64 = buffer.toString("base64");
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    if (!base64) {
+      return { ok: false, error: "No image provided (imageBase64 or imageUrl required)" };
+    }
+    const url = `${GEMINI_BASE}/${this.model}:generateContent?key=${this.apiKey}`;
+    const body = {
+      contents: [
+        {
+          parts: [
+            { text: buildPrompt(params.fields, params.documentHint) },
+            { inline_data: { mime_type: mimeType, data: base64 } }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0,
+        response_mime_type: "application/json"
+      }
+    };
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Gemini responded with status ${response.status}`;
+      try {
+        const text2 = await response.text();
+        if (text2) error = text2;
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const text = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    const data = parseModelJson(text);
+    if (data) {
+      return { ok: true, data };
+    }
+    return { ok: true, raw: text };
+  }
+  extractPassport(image) {
+    return this.extract({
+      ...image,
+      documentHint: "passport",
+      fields: [
+        "full_name",
+        "passport_number",
+        "nationality",
+        "date_of_birth",
+        "expiry_date"
+      ]
+    });
+  }
+  extractIdCard(image) {
+    return this.extract({
+      ...image,
+      documentHint: "ID card",
+      fields: ["full_name", "id_number", "date_of_birth"]
+    });
+  }
+};
+function createOcrServiceFromEnv(env = process.env) {
+  return new OcrService({
+    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY
+  });
+}
+
 // ../scheduler-worker/src/index.ts
 var path = __toESM(require("path"));
 
 // ../scheduler-worker/src/worker.ts
-var import_crypto7 = require("crypto");
+var import_crypto8 = require("crypto");
 var SchedulerWorker = class {
   constructor(store, options = {}) {
     this.store = store;
@@ -53499,7 +54098,7 @@ var SchedulerWorker = class {
   }
   async logAudit(organizationId, action, entityType, entityId, details) {
     await this.store.insertAuditEvent({
-      id: (0, import_crypto7.randomUUID)(),
+      id: (0, import_crypto8.randomUUID)(),
       organizationId,
       action,
       entityType,
@@ -53679,19 +54278,117 @@ function buildServer(env = process.env) {
     orgCache.set(orgId, ctx);
     return ctx;
   }
-  function agentDeps(org) {
+  const publicBaseUrl = (env["PUBLIC_GATEWAY_URL"] ?? "https://saarthione-api.vercel.app").replace(/\/$/, "");
+  const emailService = createEmailServiceFromEnv(env);
+  const ocrService = createOcrServiceFromEnv(env);
+  function agentDeps(orgId, org) {
     return {
       llm,
       embedder: embedder ?? void 0,
       vectorStore: embedder ? vectorStore : void 0,
       retrievalThreshold: embedder ? PROD_RETRIEVAL_THRESHOLD : void 0,
       vertical: org.vertical,
-      businessName: org.name
+      businessName: org.name,
+      createQuotation: async ({ contactId, packageSku, pricePerPerson, travellers }) => {
+        try {
+          const { data: pkg } = await db.from("packages").select("id").eq("organization_id", orgId).eq("sku", packageSku).maybeSingle();
+          const amount = pricePerPerson * travellers;
+          const number = `QT-${Math.floor(1e5 + Math.random() * 9e5)}`;
+          const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1e3).toISOString();
+          const { data, error } = await db.from("quotes").insert({
+            organization_id: orgId,
+            contact_id: contactId,
+            package_id: pkg?.id ?? null,
+            quote_number: number,
+            amount,
+            valid_until: validUntil,
+            status: "sent"
+          }).select("id").single();
+          if (error || !data) return null;
+          const url = `${publicBaseUrl}/doc/quote/${data.id}`;
+          try {
+            const { data: contact } = await db.from("contacts").select("name, email").eq("id", contactId).maybeSingle();
+            if (contact?.email && emailService.isConfigured) {
+              const mail = buildQuotationEmail({
+                businessName: org.name,
+                customerName: contact.name ?? void 0,
+                quotationNumber: number,
+                viewUrl: url,
+                amountText: `\u20B9${amount.toLocaleString("en-IN")}`
+              });
+              const sent = await emailService.send({ to: contact.email, subject: mail.subject, html: mail.html });
+              if (sent.sent) logger.info("Quotation email sent", { to: contact.email, number });
+            }
+          } catch (err) {
+            logger.warn("Quotation email failed", { error: err instanceof Error ? err.message : String(err) });
+          }
+          return { url, number };
+        } catch {
+          return null;
+        }
+      }
     };
   }
+  async function downloadMetaMedia(mediaId) {
+    if (!accessToken) return null;
+    try {
+      const metaRes = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!metaRes.ok) return null;
+      const meta = await metaRes.json();
+      if (!meta.url) return null;
+      const bin = await fetch(meta.url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!bin.ok) return null;
+      const buf = Buffer.from(await bin.arrayBuffer());
+      return { base64: buf.toString("base64"), mime: meta.mime_type ?? "image/jpeg" };
+    } catch {
+      return null;
+    }
+  }
   async function handleInbound(orgId, msg, replyAdapter = adapter) {
-    if (!msg.text || !msg.contactId || !msg.conversationId) {
+    if (!msg.contactId || !msg.conversationId) {
+      logger.info("Skipping message without contact/conversation", { providerMessageId: msg.providerMessageId });
+      return;
+    }
+    if ((msg.type === "image" || msg.type === "document") && ocrService.isConfigured) {
+      try {
+        const meta = msg.metadata ?? {};
+        let image = null;
+        if (meta["channel"] === "meta" && typeof meta["mediaId"] === "string") {
+          const dl = await downloadMetaMedia(meta["mediaId"]);
+          if (dl) image = { imageBase64: dl.base64, mimeType: dl.mime };
+        }
+        if (image) {
+          const result = await ocrService.extractPassport(image);
+          let reply;
+          if (result.ok && result.data) {
+            const d = result.data;
+            const fields = [
+              d["full_name"] && `\u2022 Name: ${d["full_name"]}`,
+              d["passport_number"] && `\u2022 Passport: ${d["passport_number"]}`,
+              d["nationality"] && `\u2022 Nationality: ${d["nationality"]}`,
+              d["date_of_birth"] && `\u2022 DOB: ${d["date_of_birth"]}`,
+              d["expiry_date"] && `\u2022 Expiry: ${d["expiry_date"]}`
+            ].filter(Boolean);
+            reply = fields.length > 0 ? `\u{1F4C4} Thanks! I read your document:
+${fields.join("\n")}
+
+Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C4} I received your document but couldn't read all the details clearly. Could you resend a clearer photo, or our team can help.`;
+            await store.insertAuditEvent({ id: (0, import_crypto9.randomUUID)(), organizationId: orgId, action: "document_extracted", entityType: "contact", entityId: msg.contactId, actorType: "agent", details: { fields: d, providerMessageId: msg.providerMessageId }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+          } else {
+            reply = "\u{1F4C4} I received your document \u2014 our team will review it shortly.";
+          }
+          const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: "text", text: reply, idempotencyKey: `ocr:${msg.providerMessageId}` });
+          if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, msg.from, reply, r.providerMessageId, msg.conversationId);
+        }
+      } catch (err) {
+        logger.error("OCR handling failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+      await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+      return;
+    }
+    if (!msg.text) {
       logger.info("Skipping non-text inbound message", { providerMessageId: msg.providerMessageId, type: msg.type });
+      await idempotencyService.markProcessed(msg.providerMessageId, orgId);
       return;
     }
     try {
@@ -53703,7 +54400,23 @@ function buildServer(env = process.env) {
       if (ownerNumbers.includes(fromNorm) || keywordHit) {
         const ownerQuestion = msg.text.replace(ownerKeyword, "").trim() || "Give me today\u2019s business summary.";
         const summary = await store.getBusinessSummary(orgId, /* @__PURE__ */ new Date());
-        const reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+        let reply;
+        if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
+          let sent = 0;
+          const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+          for (const c of summary.staleContacts.slice(0, 10)) {
+            if (!c.phone) continue;
+            const re = `Hi ${c.name ?? "there"}! \u{1F44B} Just checking in on your ${c.serviceInterest} enquiry \u2014 are you still interested? I\u2019d be happy to help you take the next step.`;
+            const r = await adapter.sendMessage(orgId, { to: c.phone, type: "text", text: re, idempotencyKey: `reengage:${c.contactId}:${today}` });
+            if (r.success) {
+              sent++;
+              if (r.providerMessageId) await messageService.persistOutbound(orgId, c.phone, re, r.providerMessageId);
+            }
+          }
+          reply = sent > 0 ? `\u2705 Done \u2014 I followed up with ${sent} customer${sent === 1 ? "" : "s"} who\u2019d gone quiet. I\u2019ll let you know as they reply.` : `I tried, but couldn\u2019t reach the cold leads right now (they may need a template outside the 24-hour window). I\u2019ll retry via the scheduler.`;
+        } else {
+          reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+        }
         const result = await replyAdapter.sendMessage(orgId, {
           to: msg.from,
           type: "text",
@@ -53722,7 +54435,7 @@ function buildServer(env = process.env) {
         conversationId: msg.conversationId,
         inboundMessage: msg.text,
         traceId: msg.providerMessageId
-      }, agentDeps(org));
+      }, agentDeps(orgId, org));
       if (state.finalResponse) {
         const rich = buildInteractive(state);
         const isRich = !!(rich.list || rich.buttons);
@@ -53798,6 +54511,36 @@ function buildServer(env = process.env) {
     supabase: db
   }) : null;
   const registerRoutes = (app3) => {
+    app3.get("/doc/quote/:id", async (req, res) => {
+      try {
+        const { data: quote } = await db.from("quotes").select("id, organization_id, contact_id, package_id, quote_number, amount, valid_until, created_at").eq("id", req.params.id).maybeSingle();
+        if (!quote) {
+          res.status(404).type("html").send("<h1>Quotation not found</h1>");
+          return;
+        }
+        const [{ data: org }, { data: contact }, { data: pkg }] = await Promise.all([
+          db.from("organizations").select("name").eq("id", quote.organization_id).maybeSingle(),
+          db.from("contacts").select("name, phone_number").eq("id", quote.contact_id).maybeSingle(),
+          quote.package_id ? db.from("packages").select("title, price_per_person").eq("id", quote.package_id).maybeSingle() : Promise.resolve({ data: null })
+        ]);
+        const unit = Number(pkg?.price_per_person ?? quote.amount);
+        const qty = unit > 0 ? Math.max(1, Math.round(Number(quote.amount) / unit)) : 1;
+        const html = buildQuotationHtml({
+          number: quote.quote_number,
+          businessName: org?.name ?? "SaarthiOne",
+          customerName: contact?.name ?? void 0,
+          customerPhone: contact?.phone_number ?? void 0,
+          currency: "INR",
+          issuedAt: quote.created_at,
+          validUntil: quote.valid_until,
+          items: [{ title: pkg?.title ?? "Holiday package", quantity: qty, unitPrice: unit }],
+          notes: "Thank you for your interest! This quotation is valid until the date shown above."
+        });
+        res.status(200).type("html").send(html);
+      } catch (err) {
+        res.status(500).type("html").send("<h1>Could not load quotation</h1>");
+      }
+    });
     app3.post("/webhooks/twilio", import_express2.default.urlencoded({ extended: false }), (req, res) => {
       if (!twilioAdapter) {
         res.status(503).type("text/xml").send("<Response></Response>");
@@ -53866,12 +54609,12 @@ function buildServer(env = process.env) {
         to: contact.phone,
         type: "text",
         text: parsed.data.text,
-        idempotencyKey: `operator:${(0, import_crypto8.randomUUID)()}`
+        idempotencyKey: `operator:${(0, import_crypto9.randomUUID)()}`
       });
       if (result.success && result.providerMessageId) {
         await messageService.persistOutbound(operator.organizationId, contact.phone, parsed.data.text, result.providerMessageId, conversation.id);
         await store.insertAuditEvent({
-          id: (0, import_crypto8.randomUUID)(),
+          id: (0, import_crypto9.randomUUID)(),
           organizationId: operator.organizationId,
           action: "operator_message_sent",
           entityType: "message",
