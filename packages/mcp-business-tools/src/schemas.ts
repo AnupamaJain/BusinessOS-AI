@@ -166,3 +166,86 @@ export const CreateTravelBookingOutput = z.object({
   totalAmount: z.string(),
 });
 export type CreateTravelBookingOutput = z.infer<typeof CreateTravelBookingOutput>;
+
+// ─── Cab (intercity) vertical ──────────────────────────────────────
+
+export const SearchCabRoutesInput = z.object({
+  organizationId: z.string().uuid(),
+  fromCity: z.string().optional(),
+  toCity: z.string().optional(),
+  vehicleClass: z.enum(['sedan', 'suv', 'tempo']).optional(),
+});
+export type SearchCabRoutesInput = z.infer<typeof SearchCabRoutesInput>;
+
+export const SearchCabRoutesOutput = z.object({
+  routes: z.array(z.object({
+    sku: z.string(),
+    title: z.string(),
+    fromCity: z.string(),
+    toCity: z.string(),
+    vehicleClass: z.string(),
+    seats: z.number(),
+    fare: z.string(),
+    estimatedHours: z.number(),
+    inclusions: z.array(z.string()),
+  })),
+});
+export type SearchCabRoutesOutput = z.infer<typeof SearchCabRoutesOutput>;
+
+export const CreateCabBookingInput = z.object({
+  organizationId: z.string().uuid(),
+  contactId: z.string().uuid(),
+  packageSku: z.string(),
+  pickupDate: z.string(),
+  idempotencyKey: z.string(),
+});
+export type CreateCabBookingInput = z.infer<typeof CreateCabBookingInput>;
+
+export const CreateCabBookingOutput = z.object({
+  bookingId: z.string(),
+  bookingNumber: z.string(),
+  status: z.string(),
+  totalAmount: z.string(),
+});
+export type CreateCabBookingOutput = z.infer<typeof CreateCabBookingOutput>;
+
+// ─── Home services (maid) vertical ─────────────────────────────────
+
+export const SearchServicePlansInput = z.object({
+  organizationId: z.string().uuid(),
+  service: z.enum(['cleaning', 'cooking', 'full-time', 'babysitting']).optional(),
+  planType: z.enum(['one-time', 'monthly']).optional(),
+});
+export type SearchServicePlansInput = z.infer<typeof SearchServicePlansInput>;
+
+export const SearchServicePlansOutput = z.object({
+  plans: z.array(z.object({
+    sku: z.string(),
+    title: z.string(),
+    service: z.string(),
+    planType: z.string(),
+    hoursPerVisit: z.number(),
+    visitsPerMonth: z.number(),
+    area: z.string(),
+    price: z.string(),
+    inclusions: z.array(z.string()),
+  })),
+});
+export type SearchServicePlansOutput = z.infer<typeof SearchServicePlansOutput>;
+
+export const CreateServiceBookingInput = z.object({
+  organizationId: z.string().uuid(),
+  contactId: z.string().uuid(),
+  packageSku: z.string(),
+  startDate: z.string(),
+  idempotencyKey: z.string(),
+});
+export type CreateServiceBookingInput = z.infer<typeof CreateServiceBookingInput>;
+
+export const CreateServiceBookingOutput = z.object({
+  bookingId: z.string(),
+  bookingNumber: z.string(),
+  status: z.string(),
+  totalAmount: z.string(),
+});
+export type CreateServiceBookingOutput = z.infer<typeof CreateServiceBookingOutput>;

@@ -238,11 +238,35 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
-  /** Persist an error to the durable sink for observability/alerting. */
-  async function recordError(source: string, message: string, ctx?: Record<string, unknown>, orgId?: string): Promise<void> {
+  const alertEmail = env['ALERT_EMAIL'];
+
+  /**
+   * Fire an ops alert email, de-duplicated across instances: only one email is
+   * sent per (key, hour) window even if every serverless instance trips it.
+   */
+  async function alertOps(key: string, subject: string, body: string): Promise<void> {
+    if (!alertEmail || !emailService.isConfigured) return;
+    const windowKey = new Date().toISOString().slice(0, 13); // hourly bucket
     try {
-      await db.from('error_events').insert({ organization_id: orgId ?? null, source, severity: 'error', message: message.slice(0, 2000), context: ctx ?? {} });
+      const { data: claimed } = await db.rpc('claim_alert', { p_key: key, p_window_key: windowKey });
+      if (claimed !== true) return; // another instance already alerted this window
+      await emailService.send({
+        to: alertEmail,
+        subject: `🚨 SaarthiOne alert: ${subject}`,
+        html: `<h3>${subject}</h3><pre style="white-space:pre-wrap;font-family:monospace;font-size:13px">${body.slice(0, 4000).replace(/</g, '&lt;')}</pre><p style="color:#888">Throttled to one email per hour per alert key.</p>`,
+      });
+    } catch { /* alerting is best-effort */ }
+  }
+
+  /** Persist an error to the durable sink; alert on high-severity sources. */
+  async function recordError(source: string, message: string, ctx?: Record<string, unknown>, orgId?: string, severity: 'warn' | 'error' | 'critical' = 'error'): Promise<void> {
+    try {
+      await db.from('error_events').insert({ organization_id: orgId ?? null, source, severity, message: message.slice(0, 2000), context: ctx ?? {} });
     } catch { /* never let logging break the request */ }
+    // Page a human for the failure classes that mean "the product is down".
+    if (severity === 'critical' || source === 'agent_runtime' || source === 'whatsapp_send' || source === 'token_expired') {
+      await alertOps(`${source}:${orgId ?? 'platform'}`, `${source} (${orgId ?? 'platform'})`, `${message}\n\ncontext: ${JSON.stringify(ctx ?? {}, null, 2)}`);
+    }
   }
 
   // Organization context cache (name/vertical for prompts)

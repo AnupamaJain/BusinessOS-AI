@@ -448,7 +448,7 @@ export class SupabaseBusinessStore implements BusinessStore {
 
   async searchPackages(organizationId: string, filters?: { destination?: string; maxBudgetPerPerson?: number; durationDays?: number }): Promise<PackageRecord[]> {
     const { data, error } = await this.db.from('packages')
-      .select('sku, title, duration_days, price_per_person, currency, inclusions, destinations(name)')
+      .select('sku, title, duration_days, price_per_person, currency, inclusions, metadata, destinations(name)')
       .eq('organization_id', organizationId).eq('status', 'active').limit(100);
     if (error) this.fail('searchPackages', error);
 
@@ -460,6 +460,7 @@ export class SupabaseBusinessStore implements BusinessStore {
           sku: p.sku, title: p.title, destination,
           durationDays: p.duration_days, pricePerPerson: Number(p.price_per_person),
           currency: p.currency, inclusions: (p.inclusions as string[]) ?? [], organizationId,
+          metadata: (p.metadata as Record<string, unknown>) ?? {},
         };
       })
       .filter((p) => {
@@ -481,10 +482,29 @@ export class SupabaseBusinessStore implements BusinessStore {
       package_id: pkg?.id ?? null, booking_number: bookingNumber,
       travel_date: new Date(booking.travelDate).toISOString(),
       traveler_count: booking.travelerCount, total_amount: booking.totalAmount,
-      currency: 'INR', status: 'confirmed',
+      currency: 'INR', status: 'confirmed', metadata: booking.metadata ?? {},
     }).select('id').single();
     if (error || !data) this.fail('insertBooking', error);
 
-    return { ...booking, id: data.id, bookingNumber, status: 'confirmed' };
+    return { ...booking, id: data.id, bookingNumber, status: 'confirmed', metadata: booking.metadata ?? {} };
+  }
+
+  async getPackagesByType(organizationId: string, type: string): Promise<PackageRecord[]> {
+    const { data, error } = await this.db.from('packages')
+      .select('sku, title, duration_days, price_per_person, currency, inclusions, metadata, destinations(name)')
+      .eq('organization_id', organizationId).eq('status', 'active')
+      .filter('metadata->>type', 'eq', type).limit(100);
+    if (error) this.fail('getPackagesByType', error);
+
+    return (data ?? []).map((p) => {
+      const destination = (p.destinations as unknown as { name: string } | null)?.name
+        ?? p.title.split(' ')[0] ?? '';
+      return {
+        sku: p.sku, title: p.title, destination,
+        durationDays: p.duration_days, pricePerPerson: Number(p.price_per_person),
+        currency: p.currency, inclusions: (p.inclusions as string[]) ?? [], organizationId,
+        metadata: (p.metadata as Record<string, unknown>) ?? {},
+      };
+    });
   }
 }

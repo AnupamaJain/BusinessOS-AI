@@ -8,6 +8,10 @@ import type {
   GetOrderStatusInput, GetOrderStatusOutput,
   SearchTravelPackagesInput, SearchTravelPackagesOutput,
   CreateTravelBookingInput, CreateTravelBookingOutput,
+  SearchCabRoutesInput, SearchCabRoutesOutput,
+  CreateCabBookingInput, CreateCabBookingOutput,
+  SearchServicePlansInput, SearchServicePlansOutput,
+  CreateServiceBookingInput, CreateServiceBookingOutput,
 } from './schemas';
 import type {
   BusinessStore, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
@@ -208,6 +212,12 @@ export class ToolDataStore implements BusinessStore {
     };
     this.bookings.push(record);
     return record;
+  }
+
+  async getPackagesByType(organizationId: string, type: string) {
+    return this.packages.filter(
+      (p) => p.organizationId === organizationId && (p.metadata as { type?: string } | undefined)?.type === type,
+    );
   }
 }
 
@@ -451,5 +461,151 @@ export async function createTravelBooking(store: BusinessStore, input: CreateTra
     bookingNumber: booking.bookingNumber,
     status: booking.status,
     totalAmount: `₹${totalAmount.toLocaleString('en-IN')}`,
+  };
+}
+
+// ─── Cab (intercity) vertical ───────────────────────────────────────
+
+export async function searchCabRoutes(store: BusinessStore, input: SearchCabRoutesInput): Promise<SearchCabRoutesOutput> {
+  const packages = await store.getPackagesByType(input.organizationId, 'cab-route');
+  const routes = packages
+    .filter((p) => {
+      const meta = (p.metadata ?? {}) as { fromCity?: string; toCity?: string; vehicleClass?: string };
+      if (input.fromCity && (meta.fromCity ?? '').toLowerCase() !== input.fromCity.toLowerCase()) return false;
+      if (input.toCity && (meta.toCity ?? '').toLowerCase() !== input.toCity.toLowerCase()) return false;
+      if (input.vehicleClass && (meta.vehicleClass ?? '').toLowerCase() !== input.vehicleClass.toLowerCase()) return false;
+      return true;
+    })
+    .map((p) => {
+      const meta = (p.metadata ?? {}) as { fromCity?: string; toCity?: string; vehicleClass?: string; seats?: number; estimatedHours?: number };
+      return {
+        sku: p.sku,
+        title: p.title,
+        fromCity: meta.fromCity ?? '',
+        toCity: meta.toCity ?? '',
+        vehicleClass: meta.vehicleClass ?? '',
+        seats: meta.seats ?? 0,
+        fare: `₹${p.pricePerPerson.toLocaleString('en-IN')}`,
+        estimatedHours: meta.estimatedHours ?? 0,
+        inclusions: p.inclusions,
+      };
+    });
+  return { routes };
+}
+
+export async function createCabBooking(store: BusinessStore, input: CreateCabBookingInput): Promise<CreateCabBookingOutput> {
+  const contact = await store.findContactById(input.organizationId, input.contactId);
+  if (!contact) throw new TenantAccessError('Contact not found in organization.');
+
+  const packages = await store.getPackagesByType(input.organizationId, 'cab-route');
+  const pkg = packages.find((p) => p.sku === input.packageSku);
+  const meta = (pkg?.metadata ?? {}) as { fromCity?: string; toCity?: string; vehicleClass?: string };
+  const fare = pkg ? pkg.pricePerPerson : 0;
+
+  const booking = await store.insertBooking({
+    organizationId: input.organizationId,
+    contactId: input.contactId,
+    packageSku: input.packageSku,
+    travelDate: input.pickupDate,
+    travelerCount: 1,
+    totalAmount: fare,
+    metadata: {
+      type: 'cab-route',
+      fromCity: meta.fromCity,
+      toCity: meta.toCity,
+      vehicleClass: meta.vehicleClass,
+      pickupDate: input.pickupDate,
+      fare,
+    },
+  });
+
+  await store.insertAuditEvent({
+    id: randomUUID(),
+    organizationId: input.organizationId,
+    action: 'cab_booking_created',
+    entityType: 'booking',
+    entityId: booking.id,
+    actorType: 'agent',
+    details: { packageSku: input.packageSku, pickupDate: input.pickupDate },
+    createdAt: new Date().toISOString(),
+  });
+
+  return {
+    bookingId: booking.id,
+    bookingNumber: booking.bookingNumber,
+    status: booking.status,
+    totalAmount: `₹${fare.toLocaleString('en-IN')}`,
+  };
+}
+
+// ─── Home services (maid) vertical ──────────────────────────────────
+
+export async function searchServicePlans(store: BusinessStore, input: SearchServicePlansInput): Promise<SearchServicePlansOutput> {
+  const packages = await store.getPackagesByType(input.organizationId, 'home-service');
+  const plans = packages
+    .filter((p) => {
+      const meta = (p.metadata ?? {}) as { service?: string; planType?: string };
+      if (input.service && (meta.service ?? '').toLowerCase() !== input.service.toLowerCase()) return false;
+      if (input.planType && (meta.planType ?? '').toLowerCase() !== input.planType.toLowerCase()) return false;
+      return true;
+    })
+    .map((p) => {
+      const meta = (p.metadata ?? {}) as { service?: string; planType?: string; hoursPerVisit?: number; visitsPerMonth?: number; area?: string };
+      return {
+        sku: p.sku,
+        title: p.title,
+        service: meta.service ?? '',
+        planType: meta.planType ?? '',
+        hoursPerVisit: meta.hoursPerVisit ?? 0,
+        visitsPerMonth: meta.visitsPerMonth ?? 0,
+        area: meta.area ?? '',
+        price: `₹${p.pricePerPerson.toLocaleString('en-IN')}`,
+        inclusions: p.inclusions,
+      };
+    });
+  return { plans };
+}
+
+export async function createServiceBooking(store: BusinessStore, input: CreateServiceBookingInput): Promise<CreateServiceBookingOutput> {
+  const contact = await store.findContactById(input.organizationId, input.contactId);
+  if (!contact) throw new TenantAccessError('Contact not found in organization.');
+
+  const packages = await store.getPackagesByType(input.organizationId, 'home-service');
+  const pkg = packages.find((p) => p.sku === input.packageSku);
+  const meta = (pkg?.metadata ?? {}) as { service?: string; planType?: string; area?: string };
+  const price = pkg ? pkg.pricePerPerson : 0;
+
+  const booking = await store.insertBooking({
+    organizationId: input.organizationId,
+    contactId: input.contactId,
+    packageSku: input.packageSku,
+    travelDate: input.startDate,
+    travelerCount: 1,
+    totalAmount: price,
+    metadata: {
+      type: 'home-service',
+      service: meta.service,
+      planType: meta.planType,
+      area: meta.area,
+      startDate: input.startDate,
+    },
+  });
+
+  await store.insertAuditEvent({
+    id: randomUUID(),
+    organizationId: input.organizationId,
+    action: 'service_booking_created',
+    entityType: 'booking',
+    entityId: booking.id,
+    actorType: 'agent',
+    details: { packageSku: input.packageSku, startDate: input.startDate },
+    createdAt: new Date().toISOString(),
+  });
+
+  return {
+    bookingId: booking.id,
+    bookingNumber: booking.bookingNumber,
+    status: booking.status,
+    totalAmount: `₹${price.toLocaleString('en-IN')}`,
   };
 }

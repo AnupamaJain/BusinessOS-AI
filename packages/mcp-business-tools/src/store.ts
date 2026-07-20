@@ -18,8 +18,8 @@ export interface ConversationRecord { id: string; organizationId: string; status
 export interface ProductRecord { sku: string; name: string; price: string; skinType: string; description: string; suitableFor: string; organizationId: string; }
 export interface TemplateRecord { templateKey: string; organizationId: string; status: string; name?: string; content?: string; }
 export interface OrderRecord { id: string; organizationId: string; contactId: string; orderNumber: string; status: string; totalAmount: string; items: string; estimatedDelivery: string; }
-export interface PackageRecord { sku: string; title: string; destination: string; durationDays: number; pricePerPerson: number; currency: string; inclusions: string[]; organizationId: string; }
-export interface BookingRecord { id: string; organizationId: string; contactId: string; bookingNumber: string; packageSku: string; travelDate: string; travelerCount: number; totalAmount: number; status: string; }
+export interface PackageRecord { sku: string; title: string; destination: string; durationDays: number; pricePerPerson: number; currency: string; inclusions: string[]; organizationId: string; metadata?: Record<string, unknown>; }
+export interface BookingRecord { id: string; organizationId: string; contactId: string; bookingNumber: string; packageSku: string; travelDate: string; travelerCount: number; totalAmount: number; status: string; metadata?: Record<string, unknown>; }
 
 /** Live business snapshot for the owner-facing assistant. */
 export interface BusinessSummary {
@@ -94,4 +94,7 @@ export interface BusinessStore {
   // Travel
   searchPackages(organizationId: string, filters?: { destination?: string; maxBudgetPerPerson?: number; durationDays?: number }): Promise<PackageRecord[]>;
   insertBooking(booking: Omit<BookingRecord, 'id' | 'bookingNumber' | 'status'>): Promise<BookingRecord>;
+
+  // Generic verticals (cab, home-services, …) — packages selected by metadata->>'type'
+  getPackagesByType(organizationId: string, type: string): Promise<PackageRecord[]>;
 }

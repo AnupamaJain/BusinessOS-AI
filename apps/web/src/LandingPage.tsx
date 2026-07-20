@@ -2,8 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Sparkles, ArrowRight, Check, Plus, ShieldCheck, Lock, UserCheck, FileText, Zap, Clock,
   Compass, Utensils, Stethoscope, Scissors, GraduationCap, ShoppingBag, Briefcase, Loader,
+  Car, Home,
 } from 'lucide-react';
 import { joinWaitlist } from './lib/api';
+import { PrivacyPolicy, TermsOfService } from './LegalContent';
 
 interface LandingPageProps {
   onLaunchApp: () => void;
@@ -134,6 +136,8 @@ const VERTICALS = [
   { icon: <GraduationCap size={22} />, name: 'Education' },
   { icon: <ShoppingBag size={22} />, name: 'Retail' },
   { icon: <Briefcase size={22} />, name: 'Services' },
+  { icon: <Car size={22} />, name: 'Cab & travel' },
+  { icon: <Home size={22} />, name: 'Home services' },
 ];
 
 const SECURITY = [
@@ -175,6 +179,12 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
   const [wlState, setWlState] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
   const [wlError, setWlError] = useState<string | null>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [legal, setLegal] = useState<null | 'privacy' | 'terms'>(null);
+
+  const openLegal = (page: 'privacy' | 'terms') => {
+    setLegal(page);
+    window.scrollTo({ top: 0 });
+  };
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
 
@@ -193,13 +203,16 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
   const ghostBtn: React.CSSProperties = { padding: '14px 24px', borderRadius: '12px', backgroundColor: 'transparent', color: C.text, border: `1px solid ${C.lineSoft}`, fontWeight: 600, fontSize: '15px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '9px' };
   const sectionPad: React.CSSProperties = { maxWidth: `${MAXW}px`, margin: '0 auto', padding: '96px 32px' };
 
+  if (legal === 'privacy') return <PrivacyPolicy onBack={() => setLegal(null)} />;
+  if (legal === 'terms') return <TermsOfService onBack={() => setLegal(null)} />;
+
   return (
     <div style={{ backgroundColor: C.bg, color: C.text, minHeight: '100vh', fontFamily: 'Inter, sans-serif', overflowX: 'hidden' }}>
 
       {/* ─── Nav ─── */}
       <nav className="lp-nav" style={{ position: 'sticky', top: 0, zIndex: 100, backdropFilter: 'blur(16px)', backgroundColor: 'rgba(7,10,15,0.82)', borderBottom: `1px solid ${C.line}`, padding: '15px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '11px', cursor: 'pointer' }} onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-          <img src="/logo-mark.svg" alt="SaarthiOne" width={32} height={32} style={{ borderRadius: '9px' }} />
+          <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={32} height={32} style={{ borderRadius: '9px' }} />
           <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '21px', letterSpacing: '-0.5px' }}>Saarthi<span style={{ color: C.cyan }}>One</span></span>
         </div>
         <div className="lp-nav-links">
@@ -517,7 +530,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
         <div style={{ maxWidth: `${MAXW}px`, margin: '0 auto', display: 'flex', justifyContent: 'space-between', gap: '32px', flexWrap: 'wrap' }}>
           <div style={{ maxWidth: '300px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-              <img src="/logo-mark.svg" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
+              <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
               <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '18px' }}>Saarthi<span style={{ color: C.cyan }}>One</span></span>
             </div>
             <p style={{ color: C.faint, fontSize: '13.5px', lineHeight: 1.6 }}>The AI teammate that runs your business on WhatsApp — from first hello to paid booking.</p>
@@ -526,7 +539,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
             {[
               { h: 'Product', links: [['How it works', () => scrollTo('how')], ['Security', () => scrollTo('security')], ['Pricing', () => scrollTo('pricing')], ['Sign in', onLaunchApp]] as [string, () => void][] },
               { h: 'Company', links: [['FAQ', () => scrollTo('faq')], ['Get started', onLaunchApp], ['Contact', () => scrollTo('waitlist')]] as [string, () => void][] },
-              { h: 'Legal', links: [['Privacy', () => scrollTo('faq')], ['Terms', () => scrollTo('faq')]] as [string, () => void][] },
+              { h: 'Legal', links: [['Privacy', () => openLegal('privacy')], ['Terms', () => openLegal('terms')]] as [string, () => void][] },
             ].map((col) => (
               <div key={col.h}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: C.text, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '14px' }}>{col.h}</div>
