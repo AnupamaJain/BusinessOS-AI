@@ -18,6 +18,8 @@ import {
   BarChart3,
   Plus,
   CreditCard,
+  Check,
+  X,
 } from 'lucide-react';
 import { LandingPage } from './LandingPage';
 import { useAuth } from './hooks/useAuth';
@@ -49,6 +51,7 @@ import {
   resolveHandoff,
   sendOperatorMessage,
   startCheckout,
+  updateOrganizationVertical,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import {
@@ -462,6 +465,9 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [selectedVertical, setSelectedVertical] = useState('travel');
   const [teamEmail, setTeamEmail] = useState('');
   const [invitedEmails, setInvitedEmails] = useState<string[]>([]);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [completingOnboarding, setCompletingOnboarding] = useState(false);
+  const [onboardingIsNarrow, setOnboardingIsNarrow] = useState(false);
 
   // WhatsApp Embedded Signup (onboarding Step 2)
   const [waConnecting, setWaConnecting] = useState(false);
@@ -473,7 +479,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const embeddedSignupEnabled = Boolean(metaAppId) && Boolean(metaConfigId);
 
   const gatewayUrl = import.meta.env.VITE_GATEWAY_URL;
-  const webhookUrl = `${gatewayUrl}/webhook`;
+  const webhookUrl = gatewayUrl ? `${gatewayUrl}/webhook` : 'https://<your-gateway-domain>/webhook';
 
   async function handleConnectWhatsapp(): Promise<void> {
     if (!embeddedSignupEnabled) return;
@@ -498,6 +504,36 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     } finally {
       setWaConnecting(false);
     }
+  }
+
+  /* Responsive breakpoint for the onboarding wizard (drives compact layout) */
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 480px)');
+    const update = () => setOnboardingIsNarrow(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+
+  function handleAddInvite(): void {
+    const email = teamEmail.trim();
+    if (!email) {
+      setInviteError('Enter an email address to invite.');
+      return;
+    }
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRe.test(email)) {
+      setInviteError('Enter a valid email address.');
+      return;
+    }
+    if (invitedEmails.some((e) => e.toLowerCase() === email.toLowerCase())) {
+      setInviteError('That email has already been invited.');
+      return;
+    }
+    setInvitedEmails([...invitedEmails, email]);
+    setTeamEmail('');
+    setInviteError(null);
   }
 
   const inDashboard = viewState === 'dashboard';
@@ -566,6 +602,20 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
 
   const selectedContactId = currentConv?.contact_id ?? null;
   const orgId = org?.id ?? null;
+
+  async function handleCompleteOnboarding(): Promise<void> {
+    setCompletingOnboarding(true);
+    try {
+      // Best-effort persistence of the chosen vertical; never block the user.
+      if (orgId) {
+        await updateOrganizationVertical(orgId, selectedVertical);
+      }
+    } finally {
+      setCompletingOnboarding(false);
+      setViewState('dashboard');
+    }
+  }
+
   const timelineQuery = usePolling<TimelineEvent[]>(
     () =>
       selectedContactId && orgId
@@ -752,7 +802,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           alignItems: 'center',
           justifyContent: 'center',
           minHeight: '100vh',
-          padding: '40px',
+          padding: onboardingIsNarrow ? '20px 12px' : '40px',
           backgroundColor: 'var(--bg-primary)',
         }}
       >
@@ -801,49 +851,63 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 zIndex: 0,
               }}
             />
-            {[1, 2, 3, 4].map((step) => (
-              <div
-                key={step}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  zIndex: 1,
-                  gap: '8px',
-                }}
-              >
+            {[1, 2, 3, 4].map((step) => {
+              const stepLabels: Record<number, string> = {
+                1: 'Select Vertical',
+                2: 'WhatsApp Webhook',
+                3: 'Knowledge Base',
+                4: 'Team Invites',
+              };
+              const done = onboardingStep > step;
+              const active = onboardingStep === step;
+              return (
                 <div
+                  key={step}
                   style={{
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    backgroundColor:
-                      onboardingStep >= step ? 'var(--color-primary)' : 'var(--bg-tertiary)',
-                    color: onboardingStep >= step ? '#000' : 'var(--text-muted)',
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: 'bold',
-                    border: onboardingStep === step ? '2px solid var(--text-main)' : 'none',
-                    boxShadow: onboardingStep >= step ? '0 0 10px rgba(0, 242, 254, 0.3)' : 'none',
+                    zIndex: 1,
+                    gap: '8px',
+                    flex: '0 1 auto',
+                    minWidth: 0,
                   }}
                 >
-                  {step}
+                  <div
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      flexShrink: 0,
+                      borderRadius: '50%',
+                      backgroundColor:
+                        onboardingStep >= step ? 'var(--color-primary)' : 'var(--bg-tertiary)',
+                      color: onboardingStep >= step ? '#000' : 'var(--text-muted)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 'bold',
+                      border: active ? '2px solid var(--text-main)' : 'none',
+                      boxShadow: onboardingStep >= step ? '0 0 10px rgba(0, 242, 254, 0.3)' : 'none',
+                    }}
+                  >
+                    {done ? <Check size={16} strokeWidth={3} /> : step}
+                  </div>
+                  {!onboardingIsNarrow && (
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        textAlign: 'center',
+                        lineHeight: 1.2,
+                        color: onboardingStep >= step ? 'var(--text-main)' : 'var(--text-muted)',
+                      }}
+                    >
+                      {stepLabels[step]}
+                    </span>
+                  )}
                 </div>
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    color: onboardingStep >= step ? 'var(--text-main)' : 'var(--text-muted)',
-                  }}
-                >
-                  {step === 1 && 'Select Vertical'}
-                  {step === 2 && 'WhatsApp Webhook'}
-                  {step === 3 && 'Knowledge Base'}
-                  {step === 4 && 'Team Invites'}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Step Content */}
@@ -865,68 +929,122 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </p>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div
-                  onClick={() => setSelectedVertical('travel')}
-                  style={{
-                    padding: '16px',
-                    borderRadius: '12px',
-                    backgroundColor:
-                      selectedVertical === 'travel' ? 'rgba(0, 242, 254, 0.05)' : 'var(--bg-tertiary)',
-                    border:
-                      selectedVertical === 'travel'
-                        ? '2px solid var(--color-primary)'
-                        : '1px solid var(--border-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div
-                    style={{
-                      fontWeight: 600,
-                      fontSize: '15px',
-                      color: 'var(--color-primary)',
-                      marginBottom: '4px',
-                    }}
-                  >
-                    Travel & Tourism (Recommended)
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    AI Travel Planner, holiday package quotes, flight & hotel inquiries, and visa
-                    guidelines.
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => setSelectedVertical('d2c-skincare')}
-                  style={{
-                    padding: '16px',
-                    borderRadius: '12px',
-                    backgroundColor:
-                      selectedVertical === 'd2c-skincare'
-                        ? 'rgba(0, 242, 254, 0.05)'
-                        : 'var(--bg-tertiary)',
-                    border:
-                      selectedVertical === 'd2c-skincare'
-                        ? '2px solid var(--color-primary)'
-                        : '1px solid var(--border-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>
-                    D2C Skincare & Personal Care
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    Skincare catalog, return policies, medical exclusions, and automated follow-ups.
-                  </div>
-                </div>
+                {[
+                  {
+                    id: 'travel',
+                    title: 'Travel & Tourism',
+                    recommended: true,
+                    desc: 'AI Travel Planner, holiday package quotes, flight & hotel inquiries, and visa guidelines.',
+                  },
+                  {
+                    id: 'd2c-skincare',
+                    title: 'D2C Skincare & Personal Care',
+                    recommended: false,
+                    desc: 'Skincare catalog, return policies, medical exclusions, and automated follow-ups.',
+                  },
+                  {
+                    id: 'custom',
+                    title: 'Other / General Business',
+                    recommended: false,
+                    desc: 'Start with a blank template — configure intents and knowledge later.',
+                  },
+                ].map((v) => {
+                  const selected = selectedVertical === v.id;
+                  return (
+                    <div
+                      key={v.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={selected}
+                      onClick={() => setSelectedVertical(v.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedVertical(v.id);
+                        }
+                      }}
+                      style={{
+                        position: 'relative',
+                        padding: '16px',
+                        paddingRight: '44px',
+                        borderRadius: '12px',
+                        backgroundColor: selected
+                          ? 'rgba(0, 242, 254, 0.08)'
+                          : 'var(--bg-tertiary)',
+                        border: selected
+                          ? '2px solid var(--color-primary)'
+                          : '1px solid var(--border-muted)',
+                        boxShadow: selected ? '0 0 12px rgba(0, 242, 254, 0.15)' : 'none',
+                        cursor: 'pointer',
+                        transition: 'border-color 0.15s, background-color 0.15s',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontWeight: 600,
+                          fontSize: '15px',
+                          color: selected ? 'var(--color-primary)' : 'var(--text-main)',
+                          marginBottom: '4px',
+                        }}
+                      >
+                        {v.title}
+                        {v.recommended && (
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.04em',
+                              color: 'var(--color-primary)',
+                              border: '1px solid var(--color-primary)',
+                              borderRadius: '6px',
+                              padding: '1px 6px',
+                            }}
+                          >
+                            Recommended
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{v.desc}</div>
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '16px',
+                          right: '16px',
+                          width: '20px',
+                          height: '20px',
+                          borderRadius: '50%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: selected ? 'var(--color-primary)' : 'transparent',
+                          border: selected
+                            ? '2px solid var(--color-primary)'
+                            : '2px solid var(--border-muted)',
+                          color: '#000',
+                        }}
+                      >
+                        {selected && <Check size={12} strokeWidth={3} />}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
-              <button
-                className="btn btn-primary"
-                style={{ marginTop: '32px', float: 'right' }}
-                onClick={() => setOnboardingStep(2)}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  marginTop: '32px',
+                }}
               >
-                Next: Connect WhatsApp Webhook
-              </button>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(2)}>
+                  Next: Connect WhatsApp Webhook
+                </button>
+              </div>
             </div>
           )}
 
@@ -1197,23 +1315,36 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!teamEmail.trim()) return;
-                  setInvitedEmails([...invitedEmails, teamEmail]);
-                  setTeamEmail('');
+                  handleAddInvite();
                 }}
-                style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}
+                style={{ display: 'flex', gap: '12px', marginBottom: inviteError ? '8px' : '20px' }}
               >
                 <input
                   type="email"
                   placeholder="operator@mybusiness.com"
                   className="chat-input"
                   value={teamEmail}
-                  onChange={(e) => setTeamEmail(e.target.value)}
+                  onChange={(e) => {
+                    setTeamEmail(e.target.value);
+                    if (inviteError) setInviteError(null);
+                  }}
                 />
                 <button type="submit" className="btn btn-secondary">
                   Invite
                 </button>
               </form>
+
+              {inviteError && (
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--color-danger)',
+                    marginBottom: '20px',
+                  }}
+                >
+                  {inviteError}
+                </div>
+              )}
 
               {invitedEmails.length > 0 && (
                 <div
@@ -1229,7 +1360,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   </div>
                   {invitedEmails.map((email, idx) => (
                     <div
-                      key={idx}
+                      key={email}
                       style={{
                         padding: '8px 12px',
                         backgroundColor: 'var(--bg-tertiary)',
@@ -1237,24 +1368,67 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                         border: '1px solid var(--border-muted)',
                         fontSize: '12px',
                         display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
                         justifyContent: 'space-between',
                       }}
                     >
-                      <span>{email}</span>
-                      <span style={{ color: 'var(--color-warning)', fontWeight: 600 }}>
-                        Pending admin approval
-                      </span>
+                      <span style={{ wordBreak: 'break-all' }}>{email}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                        <span style={{ color: 'var(--color-warning)', fontWeight: 600 }}>
+                          Pending admin approval
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${email}`}
+                          title="Remove invite"
+                          onClick={() =>
+                            setInvitedEmails(invitedEmails.filter((_, i) => i !== idx))
+                          }
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '22px',
+                            height: '22px',
+                            borderRadius: '50%',
+                            background: 'transparent',
+                            border: '1px solid var(--border-muted)',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            padding: 0,
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(3)}>
+                <button
+                  className="btn btn-secondary"
+                  disabled={completingOnboarding}
+                  onClick={() => setOnboardingStep(3)}
+                >
                   Back
                 </button>
-                <button className="btn btn-primary" onClick={() => setViewState('dashboard')}>
-                  Complete Onboarding & Launch Dashboard
+                <button
+                  className="btn btn-primary"
+                  disabled={completingOnboarding}
+                  style={{
+                    opacity: completingOnboarding ? 0.6 : 1,
+                    cursor: completingOnboarding ? 'not-allowed' : 'pointer',
+                  }}
+                  onClick={() => {
+                    void handleCompleteOnboarding();
+                  }}
+                >
+                  {completingOnboarding
+                    ? 'Saving…'
+                    : 'Complete Onboarding & Launch Dashboard'}
                 </button>
               </div>
             </div>

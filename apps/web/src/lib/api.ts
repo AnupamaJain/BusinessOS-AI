@@ -84,6 +84,27 @@ export async function fetchOrganization(): Promise<Organization | null> {
   };
 }
 
+/**
+ * Persist the chosen onboarding vertical to the organization.
+ * Best-effort: RLS may block the update, so any error is swallowed into a
+ * returned message string (null on success). Never throws.
+ */
+export async function updateOrganizationVertical(
+  organizationId: string,
+  vertical: string
+): Promise<string | null> {
+  try {
+    const { error } = await supabase
+      .from('organizations')
+      .update({ vertical })
+      .eq('id', organizationId);
+    if (error) return error.message;
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : 'Failed to update organization vertical';
+  }
+}
+
 /* ─── Inbox: conversations, messages, handoffs ────────────────────── */
 
 export async function fetchConversations(): Promise<ConversationListItem[]> {
