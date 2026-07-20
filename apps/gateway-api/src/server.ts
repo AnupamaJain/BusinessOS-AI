@@ -1157,13 +1157,13 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     // Vercel provides the OIDC token via request header; surface it for the
     // AI Gateway providers which read process.env at call time.
     preMiddleware: (req, res, next) => {
+      void (async () => {
       const oidc = req.headers['x-vercel-oidc-token'];
       if (typeof oidc === 'string' && oidc.length > 0) {
         process.env['VERCEL_OIDC_TOKEN'] = oidc;
       }
-      // Best-effort per-instance rate limit (60 req / 10s per IP) — a coarse
-      // abuse guard; Vercel's platform firewall handles volumetric DDoS.
       const ip = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+      // 1) Fast per-instance pre-filter (60 req / 10s per IP) — cheap, no I/O.
       const now = Date.now();
       const win = rateWindows.get(ip);
       if (!win || now > win.reset) {
@@ -1172,7 +1172,17 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         res.status(429).json({ error: 'Too many requests' });
         return;
       }
+      // 2) Shared, cross-instance limit for state-changing requests (300/min per
+      // IP across ALL serverless instances) — the in-memory guard alone can't
+      // see a burst spread across instances. Fails open if the RPC is down.
+      if (req.method === 'POST' && !req.path.startsWith('/webhook')) {
+        try {
+          const { data: allowed } = await db.rpc('check_rate_limit', { p_key: `ip:${ip}`, p_max: 300, p_window_seconds: 60 });
+          if (allowed === false) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+        } catch { /* fail open — never block real traffic on a limiter outage */ }
+      }
       next();
+      })();
     },
   });
 
