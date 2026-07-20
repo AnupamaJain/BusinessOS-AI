@@ -142,8 +142,14 @@ export function classifyIntent(message: string): IntentType {
   // Support question (shipping/returns/hours)
   if (['shipping', 'delivery time', 'returns', 'exchange', 'policy', 'hours', 'contact', 'support', 'address', 'phone number'].some((k) => lower.includes(k))) return 'support_question';
 
-  // Sales enquiry
-  if (['buy', 'purchase', 'price', 'cost', 'interested in', 'i need', 'looking for', 'recommend', 'suggest', 'which product', 'best for', 'how much is'].some((k) => lower.includes(k))) return 'sales_enquiry';
+  // Sales enquiry (incl. cab-intercity & home-services vertical phrasings)
+  if ([
+    'buy', 'purchase', 'price', 'cost', 'interested in', 'i need', 'looking for', 'recommend', 'suggest', 'which product', 'best for', 'how much is',
+    // Cab (intercity)
+    'cab', 'taxi', 'outstation', 'intercity',
+    // Home services (maid/cook/cleaning)
+    'maid', 'cook', 'cooking', 'cleaning', 'cleaner', 'housekeeping', 'househelp', 'babysitter', 'nanny', 'deep clean', 'full-time maid',
+  ].some((k) => lower.includes(k))) return 'sales_enquiry';
 
   // Order status
   if (['order status', 'where is my order', 'tracking', 'package', 'delivery status', 'when will i receive', 'owner of order', 'order'].some((k) => lower.includes(k))) return 'order_status';

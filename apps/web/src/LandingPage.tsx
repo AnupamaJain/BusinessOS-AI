@@ -212,7 +212,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
       {/* ─── Nav ─── */}
       <nav className="lp-nav" style={{ position: 'sticky', top: 0, zIndex: 100, backdropFilter: 'blur(16px)', backgroundColor: 'rgba(7,10,15,0.82)', borderBottom: `1px solid ${C.line}`, padding: '15px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '11px', cursor: 'pointer' }} onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-          <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={32} height={32} style={{ borderRadius: '9px' }} />
+          <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={32} height={32} style={{ borderRadius: '9px' }} />
           <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '21px', letterSpacing: '-0.5px' }}>Saarthi<span style={{ color: C.cyan }}>One</span></span>
         </div>
         <div className="lp-nav-links">
@@ -530,7 +530,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
         <div style={{ maxWidth: `${MAXW}px`, margin: '0 auto', display: 'flex', justifyContent: 'space-between', gap: '32px', flexWrap: 'wrap' }}>
           <div style={{ maxWidth: '300px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-              <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
+              <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
               <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '18px' }}>Saarthi<span style={{ color: C.cyan }}>One</span></span>
             </div>
             <p style={{ color: C.faint, fontSize: '13.5px', lineHeight: 1.6 }}>The AI teammate that runs your business on WhatsApp — from first hello to paid booking.</p>

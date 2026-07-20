@@ -86,8 +86,19 @@ const CAB_KEYWORD_RE = /\b(cab|taxi|ride|car|outstation|intercity|pick\s?up|pick
 const HOME_SERVICE_KEYWORD_RE = /\b(maid|cook|cooking|cleaning|cleaner|housekeeping|househelp|babysitter|nanny|deep\s?clean|full[-\s]?time\s?maid)\b/i;
 /** "City A to City B" phrasing — a soft cab signal, grounded against the catalogue before use. */
 const CITY_PAIR_RE = /\b([a-z]+)\s+to\s+([a-z]+)\b/i;
-/** Vehicle-class words the customer may mention. */
-const VEHICLE_CLASSES = ['sedan', 'suv', 'hatchback', 'tempo', 'innova', 'ertiga'];
+/** Vehicle-class words the customer may mention (mirrors SearchCabRoutesInput enum). */
+const VEHICLE_CLASSES = ['sedan', 'suv', 'tempo'] as const;
+type VehicleClass = (typeof VEHICLE_CLASSES)[number];
+type ServiceKind = 'cleaning' | 'cooking' | 'full-time' | 'babysitting';
+
+/** Map free-text service words to the SearchServicePlansInput enum. */
+function parseServiceKind(lower: string): ServiceKind | undefined {
+  if (/\bfull[-\s]?time\b/.test(lower)) return 'full-time';
+  if (/\b(babysitter|nanny|babysitting)\b/.test(lower)) return 'babysitting';
+  if (/\b(cook|cooking)\b/.test(lower)) return 'cooking';
+  if (/\b(clean|cleaning|cleaner|housekeeping|housekeeper|maid|househelp)\b/.test(lower)) return 'cleaning';
+  return undefined;
+}
 
 function hasCabKeyword(deps: AgentGraphDeps, text: string): boolean {
   return deps.vertical === 'cab-intercity' || CAB_KEYWORD_RE.test(text);
@@ -408,7 +419,7 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
     if (cabKeyword || cityPair) {
       const fromCity = cityPair?.[1];
       const toCity = cityPair?.[2];
-      const vehicleClass = VEHICLE_CLASSES.find((v) => lower.includes(v));
+      const vehicleClass: VehicleClass | undefined = VEHICLE_CLASSES.find((v) => lower.includes(v));
       const input = { organizationId: state.organizationId, fromCity, toCity, vehicleClass };
       const searchResult = await searchCabRoutes(store, input);
       // Only commit to the cab branch if it's an explicit cab signal OR the city-pair
@@ -446,10 +457,10 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
 
   // ── Home services (maid/cook/cleaning) sales flow ───────────────
   if (hasHomeServiceSignal(deps, lower)) {
-    const service = ['cooking', 'cook', 'cleaning', 'cleaner', 'housekeeping', 'babysitter', 'nanny'].find((s) => lower.includes(s));
-    const planType = lower.includes('monthly') ? 'monthly' : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? 'one-time' : undefined;
-    const normalizedService = service === 'cook' ? 'cooking' : service === 'cleaner' ? 'cleaning' : service;
-    const input = { organizationId: state.organizationId, service: normalizedService, planType };
+    const service = parseServiceKind(lower);
+    const planType: 'monthly' | 'one-time' | undefined =
+      lower.includes('monthly') ? 'monthly' : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? 'one-time' : undefined;
+    const input = { organizationId: state.organizationId, service, planType };
     const searchResult = await searchServicePlans(store, input);
     state.toolCalls.push({ tool: 'search_service_plans', input, output: searchResult });
 
@@ -665,6 +676,86 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
         return state;
       }
     }
+  }
+
+  // ── Cab (intercity) booking ─────────────────────────────────────
+  const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
+  const matchedCab = cabRoutes.find((r) =>
+    contextText.includes(r.sku.toLowerCase()) ||
+    (!!r.fromCity && !!r.toCity && contextText.includes(r.fromCity.toLowerCase()) && contextText.includes(r.toCity.toLowerCase())) ||
+    r.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isCabBooking = !isTravelBooking && (deps.vertical === 'cab-intercity' || !!matchedCab || hasCabKeyword(deps, contextText));
+  if (isCabBooking) {
+    // 1) Route chosen but no pickup date yet → tappable date picker.
+    if (matchedCab && !hasDate) {
+      offerChoices(state, { list: { header: '📅 When should we pick you up?', button: 'Pick a date', items: upcomingDates() } });
+      state.proposedResponse = `Great — *${matchedCab.title}* (${matchedCab.fare}). 🚕\nWhen should we pick you up? Tap a date below, or type your preferred date. 👇`;
+      return state;
+    }
+    // 2) Route + date → reserve and confirm (with a payment link when available).
+    if (matchedCab && hasDate) {
+      const pickupDate = state.inboundMessage.replace(/^date:/i, '').trim();
+      const booking = deps.createCabBooking
+        ? await deps.createCabBooking({ contactId: state.contactId, packageSku: matchedCab.sku, pickupDate })
+        : null;
+      if (booking?.url) {
+        state.proposedResponse = `Perfect! 🚕 I've reserved *${matchedCab.title}* for ${pickupDate}. Fare: ${booking.amountText} (Booking ${booking.bookingNumber}).\n\n💳 Complete your booking with this secure payment link:\n${booking.url}\n\nOnce you pay, your driver details will be shared. ✨`;
+      } else if (booking) {
+        state.proposedResponse = `All set! 🚕 I've noted your cab *${matchedCab.title}* for ${pickupDate} (Booking ${booking.bookingNumber}), fare ${booking.amountText}. Our team will share your secure payment link and driver details shortly. 😊`;
+      } else {
+        state.proposedResponse = `All set! 🚕 I've noted your request for *${matchedCab.title}* on ${pickupDate}. Our team will confirm and share the payment link shortly. 😊`;
+      }
+      state.toolCalls.push({ tool: 'create_cab_booking', input: { packageSku: matchedCab.sku, pickupDate }, output: booking ?? undefined });
+      return state;
+    }
+    // 3) Wants to book but hasn't chosen a route → offer the route list.
+    if (isConfirming && !matchedCab && cabRoutes.length > 0) {
+      state.toolCalls.push({ tool: 'search_cab_routes', input: {}, output: { routes: cabRoutes } });
+      state.proposedResponse = `Happy to get you booked! 🚕 Which route shall we go with? Tap one below 👇`;
+      return state;
+    }
+    state.proposedResponse = "Happy to book your cab! 😊 Which route (pickup → drop) and pickup date works for you?";
+    return state;
+  }
+
+  // ── Home services (maid/cook/cleaning) booking ──────────────────
+  const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
+  const matchedPlan = servicePlans.find((p) =>
+    contextText.includes(p.sku.toLowerCase()) ||
+    (!!p.service && contextText.includes(p.service.toLowerCase())) ||
+    p.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isServiceBooking = !isTravelBooking && (deps.vertical === 'home-services' || !!matchedPlan || hasHomeServiceSignal(deps, contextText));
+  if (isServiceBooking) {
+    // 1) Plan chosen but no start date yet → tappable date picker.
+    if (matchedPlan && !hasDate) {
+      offerChoices(state, { list: { header: '📅 When would you like to start?', button: 'Pick a date', items: upcomingDates() } });
+      state.proposedResponse = `Great — *${matchedPlan.title}* (${matchedPlan.price}). 🧹\nWhen would you like to start? Tap a date below, or type your preferred date. 👇`;
+      return state;
+    }
+    // 2) Plan + start date → reserve and confirm (with a payment link when available).
+    if (matchedPlan && hasDate) {
+      const startDate = state.inboundMessage.replace(/^date:/i, '').trim();
+      const booking = deps.createServiceBooking
+        ? await deps.createServiceBooking({ contactId: state.contactId, packageSku: matchedPlan.sku, startDate })
+        : null;
+      if (booking?.url) {
+        state.proposedResponse = `Perfect! 🧹 I've booked *${matchedPlan.title}* starting ${startDate}. Amount: ${booking.amountText} (Booking ${booking.bookingNumber}).\n\n💳 Complete your booking with this secure payment link:\n${booking.url}\n\nOnce you pay, we'll confirm your assigned help. ✨`;
+      } else if (booking) {
+        state.proposedResponse = `All set! 🧹 I've noted *${matchedPlan.title}* starting ${startDate} (Booking ${booking.bookingNumber}), amount ${booking.amountText}. Our team will share your secure payment link shortly. 😊`;
+      } else {
+        state.proposedResponse = `All set! 🧹 I've noted your request for *${matchedPlan.title}* starting ${startDate}. Our team will confirm and share the payment link shortly. 😊`;
+      }
+      state.toolCalls.push({ tool: 'create_service_booking', input: { packageSku: matchedPlan.sku, startDate }, output: booking ?? undefined });
+      return state;
+    }
+    // 3) Wants to book but hasn't chosen a plan → offer the plan list.
+    if (isConfirming && !matchedPlan && servicePlans.length > 0) {
+      state.toolCalls.push({ tool: 'search_service_plans', input: {}, output: { plans: servicePlans } });
+      state.proposedResponse = `Happy to get you booked! 🧹 Which plan shall we go with? Tap one below 👇`;
+      return state;
+    }
+    state.proposedResponse = "Happy to book your home help! 😊 Which plan would you like, and when should we start?";
+    return state;
   }
 
   // Appointment-style verticals (salon, clinic): offer a date, then time slots.

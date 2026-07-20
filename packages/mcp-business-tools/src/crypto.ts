@@ -49,3 +49,26 @@ export class SecretBox {
     }
   }
 }
+
+/**
+ * Privacy-preserving display value for a phone number stored at rest.
+ * Preserves a leading `+` and a short country hint, masks the middle, and keeps
+ * only the last 4 digits: `+918770507368` → `+91••••••7368`. This is what the
+ * dashboard (anon key, reads `contacts.phone_number` directly) sees, so a DB
+ * dump never exposes a full, reachable number. Short/edge inputs are handled
+ * safely (never throws, always keeps whatever it can).
+ */
+export function maskPhone(phone: string): string {
+  const raw = (phone ?? '').trim();
+  if (!raw) return raw;
+  const hasPlus = raw.startsWith('+');
+  const digits = raw.replace(/\D/g, '');
+  const prefix = hasPlus ? '+' : '';
+  if (digits.length <= 4) return `${prefix}${digits}`;
+  const last4 = digits.slice(-4);
+  // Country hint: up to 2 leading digits, only when there's room to still mask.
+  const hintLen = digits.length >= 8 ? 2 : 0;
+  const hint = digits.slice(0, hintLen);
+  const maskedCount = Math.max(digits.length - hintLen - 4, 1);
+  return `${prefix}${hint}${'•'.repeat(maskedCount)}${last4}`;
+}

@@ -287,7 +287,7 @@ function LoginScreen({
             marginBottom: '12px',
           }}
         >
-          <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={40} height={40} style={{ borderRadius: '10px' }} />
+          <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={40} height={40} style={{ borderRadius: '10px' }} />
           <span className="brand-logo" style={{ fontSize: '24px' }}>
             Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span>
           </span>
@@ -825,7 +825,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               marginBottom: '32px',
             }}
           >
-            <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={44} height={44} style={{ borderRadius: '11px' }} />
+            <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={44} height={44} style={{ borderRadius: '11px' }} />
             <span className="brand-logo" style={{ fontSize: '28px' }}>
               Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span> <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Onboarding</span>
             </span>
@@ -1449,7 +1449,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           onClick={() => setViewState('landing')}
           style={{ cursor: 'pointer' }}
         >
-          <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={30} height={30} style={{ borderRadius: '8px', flexShrink: 0 }} />
+          <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={30} height={30} style={{ borderRadius: '8px', flexShrink: 0 }} />
           <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
             <span className="brand-logo" style={{ letterSpacing: '-0.5px' }}>
               Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
-import { SecretBox } from './crypto';
+import { SecretBox, maskPhone } from './crypto';
 import type {
   BusinessStore, BusinessSummary, WhatsAppConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,

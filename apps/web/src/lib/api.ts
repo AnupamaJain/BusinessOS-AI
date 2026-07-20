@@ -222,6 +222,73 @@ export async function sendOperatorMessage(
   }
 }
 
+/* ─── Team invites ────────────────────────────────────────────────── */
+
+export interface TeamInvite {
+  id: string;
+  email: string;
+  role: string;
+  status: 'pending' | 'accepted' | 'revoked';
+  created_at: string;
+  accepted_at?: string | null;
+}
+
+/** Invite a teammate by email (gateway sends the email + creates the invite). */
+export async function inviteTeamMember(
+  accessToken: string, email: string, role: 'operator' | 'admin' = 'operator'
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/team/invite`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, role }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || !body.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+export async function fetchTeamInvites(accessToken: string): Promise<TeamInvite[]> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/team/invites`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { invites?: TeamInvite[] };
+    return body.invites ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function revokeTeamInvite(accessToken: string, id: string): Promise<void> {
+  await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/team/invite/revoke`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  }).catch(() => { /* best-effort */ });
+}
+
+/** Accept an invite token (the signed-in user joins the inviting org). */
+export async function acceptTeamInvite(
+  accessToken: string, token: string
+): Promise<{ ok: boolean; organizationId?: string; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/invite/accept`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; organizationId?: string; error?: string };
+    if (!res.ok || !body.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, organizationId: body.organizationId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 /* ─── Onboarding: WhatsApp Embedded Signup ────────────────────────── */
 
 export interface CompleteWhatsappSignupPayload {

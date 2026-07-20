@@ -83,7 +83,7 @@ function LegalShell({ onBack, children }: { onBack: () => void; children: React.
           <ArrowLeft size={16} /> Back to home
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }} onClick={onBack}>
-          <img src="/saarthione-peacock-logo.png" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
+          <img src="/saarthione-peacock-feather-v2.png" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
           <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '19px', letterSpacing: '-0.5px' }}>
             Saarthi<span style={{ color: C.cyan }}>One</span>
           </span>
