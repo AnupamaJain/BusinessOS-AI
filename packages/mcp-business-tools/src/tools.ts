@@ -45,6 +45,28 @@ export class ToolDataStore implements BusinessStore {
     this.orders = []; this.packages = []; this.bookings = [];
   }
 
+  ownerPhoneNumbers: string[] = [];
+
+  async getOwnerPhoneNumbers(_organizationId: string): Promise<string[]> {
+    return this.ownerPhoneNumbers;
+  }
+
+  async getBusinessSummary(organizationId: string, _now: Date): Promise<import('./store').BusinessSummary> {
+    const orgLeads = this.leads.filter((l) => l.organizationId === organizationId);
+    const activeStages = ['new', 'contacted', 'qualified', 'proposal', 'negotiation'];
+    const hot = orgLeads.filter((l) => (l.score ?? 0) >= 70 && activeStages.includes(l.stage));
+    return {
+      todayEnquiries: orgLeads.length,
+      hotLeads: hot.length,
+      qualifiedLeads: orgLeads.filter((l) => l.stage === 'qualified').length,
+      pendingPayments: this.orders.filter((o) => o.organizationId === organizationId && o.status === 'pending_payment').length,
+      staleLeads: 0,
+      pipelineText: '—',
+      topHotLeads: hot.slice(0, 5).map((l) => ({ serviceInterest: l.serviceInterest, score: l.score })),
+      staleContacts: [],
+    };
+  }
+
   async findContactById(organizationId: string, contactId: string) {
     return this.contacts.find((c) => c.id === contactId && c.organizationId === organizationId);
   }

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
 import type {
-  BusinessStore, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -19,6 +19,71 @@ export class SupabaseBusinessStore implements BusinessStore {
   private fail(op: string, error: { message: string } | null): never {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
     throw new Error(`Database operation failed: ${op}: ${error?.message}`);
+  }
+
+  // ─── Owner assistant ──────────────────────────────────────────────
+
+  async getOwnerPhoneNumbers(organizationId: string): Promise<string[]> {
+    const { data, error } = await this.db.from('organizations')
+      .select('settings').eq('id', organizationId).maybeSingle();
+    if (error) this.fail('getOwnerPhoneNumbers', error);
+    const raw = (data?.settings as Record<string, unknown> | null)?.['owner_whatsapp_numbers'];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((n) => String(n).trim()).filter(Boolean).map((n) => (n.startsWith('+') ? n : `+${n}`));
+  }
+
+  async getBusinessSummary(organizationId: string, now: Date): Promise<BusinessSummary> {
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const staleCutoff = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const activeStages = ['new', 'contacted', 'qualified', 'proposal', 'negotiation'];
+
+    const countOf = async (build: (q: any) => any): Promise<number> => {
+      const { count, error } = await build(this.db.from('leads').select('id', { count: 'exact', head: true }).eq('organization_id', organizationId));
+      if (error) this.fail('getBusinessSummary.count', error);
+      return count ?? 0;
+    };
+
+    const todayEnquiries = await countOf((q) => q.gte('created_at', startOfDay));
+    const qualifiedLeads = await countOf((q) => q.eq('stage', 'qualified'));
+
+    const { data: hotRows, error: hotErr } = await this.db.from('leads')
+      .select('service_interest, score, contact_id, updated_at, stage, contacts(name)')
+      .eq('organization_id', organizationId).gte('score', 70).in('stage', activeStages)
+      .order('score', { ascending: false }).limit(10);
+    if (hotErr) this.fail('getBusinessSummary.hot', hotErr);
+    const hot = hotRows ?? [];
+
+    const { data: staleRows, error: staleErr } = await this.db.from('leads')
+      .select('service_interest, contact_id, updated_at, stage, contacts(name)')
+      .eq('organization_id', organizationId).in('stage', activeStages)
+      .lt('updated_at', staleCutoff).order('updated_at', { ascending: true }).limit(10);
+    if (staleErr) this.fail('getBusinessSummary.stale', staleErr);
+    const stale = staleRows ?? [];
+
+    const { count: pendingPayments } = await this.db.from('orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('organization_id', organizationId).eq('status', 'pending_payment');
+
+    // Rough pipeline value: unpaid bookings + pending orders
+    const { data: bookings } = await this.db.from('bookings')
+      .select('total_amount, status').eq('organization_id', organizationId).in('status', ['pending', 'confirmed']);
+    const { data: orders } = await this.db.from('orders')
+      .select('total_amount, status').eq('organization_id', organizationId).eq('status', 'pending_payment');
+    const pipeline = [...(bookings ?? []), ...(orders ?? [])].reduce((sum, r) => sum + Number(r.total_amount ?? 0), 0);
+    const pipelineText = pipeline > 0 ? `₹${pipeline.toLocaleString('en-IN')}` : '—';
+
+    const nameOf = (r: any): string | undefined => (r.contacts as { name?: string } | null)?.name ?? undefined;
+
+    return {
+      todayEnquiries,
+      hotLeads: hot.length,
+      qualifiedLeads,
+      pendingPayments: pendingPayments ?? 0,
+      staleLeads: stale.length,
+      pipelineText,
+      topHotLeads: hot.slice(0, 5).map((r) => ({ name: nameOf(r), serviceInterest: r.service_interest, score: r.score ?? undefined })),
+      staleContacts: stale.map((r) => ({ contactId: r.contact_id, name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at })),
+    };
   }
 
   // ─── Contacts & consent ───────────────────────────────────────────

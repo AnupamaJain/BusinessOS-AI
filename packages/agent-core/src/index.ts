@@ -11,3 +11,4 @@ export { OpenAICompatibleEmbeddingProvider, GoogleEmbeddingProvider, createEmbed
 export { InMemoryVectorStore, SupabaseVectorStore, cosineSimilarity } from './vector-store';
 export type { VectorStore, ChunkRecord, RetrievedChunk } from './vector-store';
 export { CoordinatorAgent } from './agents/coordinator';
+export { runOwnerAssistant, isOwnerConfirmation } from './owner-assistant';

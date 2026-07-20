@@ -21,7 +21,24 @@ export interface OrderRecord { id: string; organizationId: string; contactId: st
 export interface PackageRecord { sku: string; title: string; destination: string; durationDays: number; pricePerPerson: number; currency: string; inclusions: string[]; organizationId: string; }
 export interface BookingRecord { id: string; organizationId: string; contactId: string; bookingNumber: string; packageSku: string; travelDate: string; travelerCount: number; totalAmount: number; status: string; }
 
+/** Live business snapshot for the owner-facing assistant. */
+export interface BusinessSummary {
+  todayEnquiries: number;
+  hotLeads: number;
+  qualifiedLeads: number;
+  pendingPayments: number;
+  staleLeads: number;
+  pipelineText: string;
+  topHotLeads: Array<{ name?: string; serviceInterest: string; score?: number }>;
+  staleContacts: Array<{ contactId: string; name?: string; serviceInterest: string; lastActivity: string }>;
+}
+
 export interface BusinessStore {
+  /** Owner WhatsApp numbers (E.164) allowed to use the owner assistant. */
+  getOwnerPhoneNumbers(organizationId: string): Promise<string[]>;
+  /** Aggregate business metrics for the owner briefing. */
+  getBusinessSummary(organizationId: string, now: Date): Promise<BusinessSummary>;
+
   // Contacts & consent
   findContactById(organizationId: string, contactId: string): Promise<ContactRecord | undefined>;
   findContactByPhone(organizationId: string, phone: string): Promise<ContactRecord | undefined>;

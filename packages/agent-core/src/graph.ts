@@ -92,7 +92,7 @@ export async function executeAgentGraph(
     } else if (state.intent === 'unsafe_request') {
       state = nodeUnsafeDecline(state, deps);
     } else {
-      state = nodeClarificationFlow(state);
+      state = await nodeClarificationFlow(state, deps);
     }
 
     // ─── Node 5: response_quality_gate ────────────────────────
@@ -423,7 +423,32 @@ function nodeUnsafeDecline(state: AgentState, deps: AgentGraphDeps): AgentState 
   return state;
 }
 
-function nodeClarificationFlow(state: AgentState): AgentState {
+async function nodeClarificationFlow(state: AgentState, deps: AgentGraphDeps): Promise<AgentState> {
+  // Business memory: if we've spoken before, greet them by name and pick up the
+  // thread instead of a generic "how can I help".
+  const ctx = state.customerContext as {
+    contact?: { name?: string };
+    latestLead?: { serviceInterest?: string; stage?: string };
+  } | undefined;
+  const name = ctx?.contact?.name;
+  const lastInterest = ctx?.latestLead?.serviceInterest;
+  const isReturning = !!lastInterest || state.recentMessages.length > 1;
+
+  if (isReturning && hasRealLLM(deps)) {
+    const llmReply = await composeReplyWithLLM(deps.llm!, state, deps,
+      'This is a RETURNING customer. Greet them warmly by name if known, briefly reference what they were interested in last time, and ask a helpful question to move it forward. Do not invent details beyond the context.',
+      { customerName: name, lastInterest, lastStage: ctx?.latestLead?.stage, recentMessages: state.recentMessages.slice(-4) });
+    if (llmReply) {
+      state.proposedResponse = llmReply;
+      return state;
+    }
+  }
+
+  if (isReturning && (name || lastInterest)) {
+    state.proposedResponse = `Welcome back${name ? `, ${name}` : ''}! 👋 ${lastInterest ? `Last time you were exploring ${lastInterest}. Would you like to pick up where we left off, or is there something new I can help with?` : 'How can I help you today?'}`;
+    return state;
+  }
+
   state.proposedResponse = "Thanks for reaching out! Could you tell me a bit more about what you're looking for? I can help with product recommendations, order support, or connect you with our team.";
   return state;
 }

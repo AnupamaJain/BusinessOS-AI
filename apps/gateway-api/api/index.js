@@ -51296,6 +51296,48 @@ var SupabaseBusinessStore = class {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
     throw new Error(`Database operation failed: ${op}: ${error?.message}`);
   }
+  // ─── Owner assistant ──────────────────────────────────────────────
+  async getOwnerPhoneNumbers(organizationId) {
+    const { data, error } = await this.db.from("organizations").select("settings").eq("id", organizationId).maybeSingle();
+    if (error) this.fail("getOwnerPhoneNumbers", error);
+    const raw = data?.settings?.["owner_whatsapp_numbers"];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((n) => String(n).trim()).filter(Boolean).map((n) => n.startsWith("+") ? n : `+${n}`);
+  }
+  async getBusinessSummary(organizationId, now) {
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const staleCutoff = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1e3).toISOString();
+    const activeStages = ["new", "contacted", "qualified", "proposal", "negotiation"];
+    const countOf = async (build) => {
+      const { count, error } = await build(this.db.from("leads").select("id", { count: "exact", head: true }).eq("organization_id", organizationId));
+      if (error) this.fail("getBusinessSummary.count", error);
+      return count ?? 0;
+    };
+    const todayEnquiries = await countOf((q) => q.gte("created_at", startOfDay));
+    const qualifiedLeads = await countOf((q) => q.eq("stage", "qualified"));
+    const { data: hotRows, error: hotErr } = await this.db.from("leads").select("service_interest, score, contact_id, updated_at, stage, contacts(name)").eq("organization_id", organizationId).gte("score", 70).in("stage", activeStages).order("score", { ascending: false }).limit(10);
+    if (hotErr) this.fail("getBusinessSummary.hot", hotErr);
+    const hot = hotRows ?? [];
+    const { data: staleRows, error: staleErr } = await this.db.from("leads").select("service_interest, contact_id, updated_at, stage, contacts(name)").eq("organization_id", organizationId).in("stage", activeStages).lt("updated_at", staleCutoff).order("updated_at", { ascending: true }).limit(10);
+    if (staleErr) this.fail("getBusinessSummary.stale", staleErr);
+    const stale = staleRows ?? [];
+    const { count: pendingPayments } = await this.db.from("orders").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("status", "pending_payment");
+    const { data: bookings } = await this.db.from("bookings").select("total_amount, status").eq("organization_id", organizationId).in("status", ["pending", "confirmed"]);
+    const { data: orders } = await this.db.from("orders").select("total_amount, status").eq("organization_id", organizationId).eq("status", "pending_payment");
+    const pipeline = [...bookings ?? [], ...orders ?? []].reduce((sum, r) => sum + Number(r.total_amount ?? 0), 0);
+    const pipelineText = pipeline > 0 ? `\u20B9${pipeline.toLocaleString("en-IN")}` : "\u2014";
+    const nameOf = (r) => r.contacts?.name ?? void 0;
+    return {
+      todayEnquiries,
+      hotLeads: hot.length,
+      qualifiedLeads,
+      pendingPayments: pendingPayments ?? 0,
+      staleLeads: stale.length,
+      pipelineText,
+      topHotLeads: hot.slice(0, 5).map((r) => ({ name: nameOf(r), serviceInterest: r.service_interest, score: r.score ?? void 0 })),
+      staleContacts: stale.map((r) => ({ contactId: r.contact_id, name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at }))
+    };
+  }
   // ─── Contacts & consent ───────────────────────────────────────────
   async findContactById(organizationId, contactId) {
     const { data, error } = await this.db.from("contacts").select("id, organization_id, phone_number, name, email").eq("organization_id", organizationId).eq("id", contactId).maybeSingle();
@@ -52462,7 +52504,7 @@ async function executeAgentGraph(store, params, deps = {}) {
     } else if (state.intent === "unsafe_request") {
       state = nodeUnsafeDecline(state, deps);
     } else {
-      state = nodeClarificationFlow(state);
+      state = await nodeClarificationFlow(state, deps);
     }
     state = nodeResponseQualityGate(state);
     state = nodePersistOutcome(state);
@@ -52773,7 +52815,28 @@ function nodeUnsafeDecline(state, deps) {
   state.proposedResponse = `I'm here to help with ${business} products and services. How can I assist you today?`;
   return state;
 }
-function nodeClarificationFlow(state) {
+async function nodeClarificationFlow(state, deps) {
+  const ctx = state.customerContext;
+  const name = ctx?.contact?.name;
+  const lastInterest = ctx?.latestLead?.serviceInterest;
+  const isReturning = !!lastInterest || state.recentMessages.length > 1;
+  if (isReturning && hasRealLLM(deps)) {
+    const llmReply = await composeReplyWithLLM(
+      deps.llm,
+      state,
+      deps,
+      "This is a RETURNING customer. Greet them warmly by name if known, briefly reference what they were interested in last time, and ask a helpful question to move it forward. Do not invent details beyond the context.",
+      { customerName: name, lastInterest, lastStage: ctx?.latestLead?.stage, recentMessages: state.recentMessages.slice(-4) }
+    );
+    if (llmReply) {
+      state.proposedResponse = llmReply;
+      return state;
+    }
+  }
+  if (isReturning && (name || lastInterest)) {
+    state.proposedResponse = `Welcome back${name ? `, ${name}` : ""}! \u{1F44B} ${lastInterest ? `Last time you were exploring ${lastInterest}. Would you like to pick up where we left off, or is there something new I can help with?` : "How can I help you today?"}`;
+    return state;
+  }
   state.proposedResponse = "Thanks for reaching out! Could you tell me a bit more about what you're looking for? I can help with product recommendations, order support, or connect you with our team.";
   return state;
 }
@@ -53041,6 +53104,59 @@ var VerticalRegistry = class {
     this.verticals.set(vertical.id, vertical);
   }
 };
+
+// ../../packages/agent-core/src/owner-assistant.ts
+async function runOwnerAssistant(params) {
+  const { llm, organizationId, businessName, message, summary } = params;
+  const facts = [
+    `New enquiries today: ${summary.todayEnquiries}`,
+    `Hot leads (score \u2265 70, still open): ${summary.hotLeads}`,
+    `Qualified leads: ${summary.qualifiedLeads}`,
+    `Waiting for payment: ${summary.pendingPayments}`,
+    `Going cold (no activity 3+ days): ${summary.staleLeads}`,
+    `Revenue pipeline: ${summary.pipelineText}`
+  ];
+  if (summary.topHotLeads.length > 0) {
+    facts.push("Top hot leads: " + summary.topHotLeads.map((l) => `${l.name ?? "Lead"} \u2014 ${l.serviceInterest}${l.score ? ` (score ${l.score})` : ""}`).join("; "));
+  }
+  if (llm && llm.hasRealProvider) {
+    try {
+      const completion = await llm.generateCompletion({
+        organizationId,
+        maxTokens: 320,
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content: `You are Saarthi, the AI business co-pilot for ${businessName}. The person messaging you is the BUSINESS OWNER, not a customer.
+Answer their question using ONLY the live numbers in DATA \u2014 never invent figures. Be concise and WhatsApp-friendly (short lines, a few emojis, bullet points with \u2022). Lead with the number they asked for. End with ONE proactive suggestion (e.g. offer to follow up with cold or unpaid leads).`
+          },
+          { role: "user", content: `DATA (live):
+${facts.join("\n")}
+
+Owner asks: ${message}` }
+        ]
+      });
+      const text = completion.content.trim();
+      if (text) return text;
+    } catch (err) {
+      logger.warn("Owner assistant LLM failed; using deterministic briefing", { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  const lines = [
+    `\u{1F4CA} *${businessName} \u2014 today*`,
+    `\u2022 ${summary.todayEnquiries} new enquiries`,
+    `\u2022 ${summary.hotLeads} hot leads`,
+    `\u2022 ${summary.qualifiedLeads} qualified`,
+    `\u2022 ${summary.pendingPayments} waiting for payment`,
+    `\u2022 ${summary.staleLeads} going cold (no reply in 3+ days)`,
+    `\u2022 Pipeline: ${summary.pipelineText}`
+  ];
+  if (summary.staleLeads > 0) {
+    lines.push("", `Want me to follow up with the ${summary.staleLeads} cold lead(s)? Reply *yes*.`);
+  }
+  return lines.join("\n");
+}
 
 // ../../packages/auth/src/types.ts
 var SessionClaimsSchema = external_exports.object({
@@ -53580,6 +53696,26 @@ function buildServer(env = process.env) {
     }
     try {
       const org = await getOrgContext(orgId);
+      const ownerNumbers = await store.getOwnerPhoneNumbers(orgId);
+      const fromNorm = msg.from.startsWith("+") ? msg.from : `+${msg.from}`;
+      const ownerKeyword = /^\s*(owner|boss|\/owner)\b[:,]?\s*/i;
+      const keywordHit = ownerKeyword.test(msg.text);
+      if (ownerNumbers.includes(fromNorm) || keywordHit) {
+        const ownerQuestion = msg.text.replace(ownerKeyword, "").trim() || "Give me today\u2019s business summary.";
+        const summary = await store.getBusinessSummary(orgId, /* @__PURE__ */ new Date());
+        const reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+        const result = await replyAdapter.sendMessage(orgId, {
+          to: msg.from,
+          type: "text",
+          text: reply,
+          idempotencyKey: `owner:${msg.providerMessageId}`
+        });
+        if (result.success && result.providerMessageId) {
+          await messageService.persistOutbound(orgId, msg.from, reply, result.providerMessageId, msg.conversationId);
+        }
+        await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+        return;
+      }
       const state = await executeAgentGraph(store, {
         organizationId: orgId,
         contactId: msg.contactId,

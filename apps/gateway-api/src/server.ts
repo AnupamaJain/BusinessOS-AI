@@ -13,7 +13,7 @@ import { SupabaseBusinessStore } from '@business-os-ai/mcp-business-tools';
 import { createGatewayFromEnv, type LLMGateway } from '@business-os-ai/llm-gateway';
 import {
   createEmbeddingProviderFromEnv, SupabaseVectorStore, executeAgentGraph,
-  ingestMarkdownContent, type AgentGraphDeps, type EmbeddingProvider,
+  ingestMarkdownContent, runOwnerAssistant, type AgentGraphDeps, type EmbeddingProvider,
 } from '@business-os-ai/agent-core';
 import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/auth';
 import { RazorpayPaymentService } from '@business-os-ai/commerce';
@@ -197,6 +197,27 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
     try {
       const org = await getOrgContext(orgId);
+
+      // ── Owner assistant: does this message come from the business owner? ──
+      // Owner mode triggers when the sender is a registered owner number, or
+      // (for demo from a shared number) when the message starts with "owner"/"boss".
+      const ownerNumbers = await store.getOwnerPhoneNumbers(orgId);
+      const fromNorm = msg.from.startsWith('+') ? msg.from : `+${msg.from}`;
+      const ownerKeyword = /^\s*(owner|boss|\/owner)\b[:,]?\s*/i;
+      const keywordHit = ownerKeyword.test(msg.text);
+      if (ownerNumbers.includes(fromNorm) || keywordHit) {
+        const ownerQuestion = msg.text.replace(ownerKeyword, '').trim() || 'Give me today’s business summary.';
+        const summary = await store.getBusinessSummary(orgId, new Date());
+        const reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+        const result = await replyAdapter.sendMessage(orgId, {
+          to: msg.from, type: 'text', text: reply, idempotencyKey: `owner:${msg.providerMessageId}`,
+        });
+        if (result.success && result.providerMessageId) {
+          await messageService.persistOutbound(orgId, msg.from, reply, result.providerMessageId, msg.conversationId);
+        }
+        await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+        return;
+      }
       const state = await executeAgentGraph(store, {
         organizationId: orgId,
         contactId: msg.contactId,

@@ -1,7 +1,7 @@
 export { ToolDataStore, getCustomerContext, upsertQualifiedLead, createHumanHandoff, searchProductCatalog, requestFollowupSchedule, getOrderStatus, searchTravelPackages, createTravelBooking } from './tools';
 export { SupabaseBusinessStore } from './supabase-store';
 export type {
-  BusinessStore, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
