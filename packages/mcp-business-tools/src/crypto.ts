@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
+import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac } from 'crypto';
 
 /**
  * AES-256-GCM encryption for secrets at rest (e.g. per-tenant WhatsApp tokens).
@@ -24,6 +24,16 @@ export class SecretBox {
     const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
     const tag = cipher.getAuthTag();
     return `v1:${iv.toString('hex')}:${tag.toString('hex')}:${ct.toString('hex')}`;
+  }
+
+  /**
+   * Deterministic keyed hash ("blind index") of a value, for equality lookups
+   * on an encrypted column without exposing the plaintext. Same input → same
+   * index, so `WHERE phone_bidx = blindIndex(phone)` works over ciphertext.
+   */
+  blindIndex(value: string): string | null {
+    if (!this.key) return null;
+    return createHmac('sha256', this.key).update(value.trim().toLowerCase()).digest('hex');
   }
 
   decrypt(value: string): string {

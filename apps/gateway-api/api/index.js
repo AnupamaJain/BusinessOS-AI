@@ -43160,6 +43160,180 @@ _Reply with the name or number to choose._`);
   return parts.filter(Boolean).join("\n\n");
 }
 
+// src/adapters/instagram-adapter.ts
+var MessagingEntrySchema = external_exports.object({
+  sender: external_exports.object({ id: external_exports.string() }).optional(),
+  recipient: external_exports.object({ id: external_exports.string() }).optional(),
+  timestamp: external_exports.number().optional(),
+  message: external_exports.object({
+    mid: external_exports.string().optional(),
+    text: external_exports.string().optional(),
+    is_echo: external_exports.boolean().optional(),
+    attachments: external_exports.array(external_exports.unknown()).optional()
+  }).optional(),
+  postback: external_exports.object({
+    mid: external_exports.string().optional(),
+    payload: external_exports.string().optional(),
+    title: external_exports.string().optional()
+  }).optional(),
+  read: external_exports.object({}).passthrough().optional(),
+  delivery: external_exports.object({}).passthrough().optional()
+}).passthrough();
+var IgWebhookBodySchema = external_exports.object({
+  object: external_exports.string(),
+  entry: external_exports.array(external_exports.object({
+    id: external_exports.string().optional(),
+    time: external_exports.number().optional(),
+    messaging: external_exports.array(MessagingEntrySchema).optional()
+  }))
+});
+var InstagramMessengerAdapter = class _InstagramMessengerAdapter {
+  pageAccessToken;
+  pageId;
+  verifyToken;
+  channel;
+  constructor(config) {
+    this.pageAccessToken = config.pageAccessToken;
+    this.pageId = config.pageId;
+    this.verifyToken = config.verifyToken;
+    this.channel = config.channel;
+  }
+  verifyWebhook(token, challenge) {
+    if (token === this.verifyToken) {
+      return challenge;
+    }
+    return null;
+  }
+  parseInboundEvent(body) {
+    const parsed = IgWebhookBodySchema.safeParse(body);
+    if (!parsed.success) {
+      logger.warn("InstagramMessengerAdapter: unrecognised webhook body", { issues: parsed.error.issues.slice(0, 3) });
+      return [];
+    }
+    const messages = [];
+    for (const entry of parsed.data.entry) {
+      for (const m of entry.messaging ?? []) {
+        if (m.read || m.delivery) continue;
+        if (m.message?.is_echo === true) continue;
+        const senderId = m.sender?.id;
+        if (!senderId) continue;
+        let type;
+        let text;
+        let providerMessageId;
+        if (m.message && typeof m.message.text === "string" && m.message.text.length > 0) {
+          type = "text";
+          text = m.message.text;
+          providerMessageId = m.message.mid;
+        } else if (m.postback && (m.postback.payload || m.postback.title)) {
+          type = "interactive";
+          text = m.postback.title ?? m.postback.payload;
+          providerMessageId = m.postback.mid;
+        } else {
+          continue;
+        }
+        messages.push({
+          providerMessageId: providerMessageId ?? `${senderId}:${m.timestamp ?? ""}`,
+          from: senderId,
+          timestamp: m.timestamp ? new Date(m.timestamp) : /* @__PURE__ */ new Date(),
+          type,
+          text,
+          metadata: {
+            channel: this.channel,
+            pageId: this.pageId,
+            senderId,
+            rawType: "message"
+          }
+        });
+      }
+    }
+    return messages;
+  }
+  async sendMessage(organizationId, message) {
+    if (!this.pageAccessToken || !this.pageId) {
+      logger.warn("InstagramMessengerAdapter: credentials missing, failing request", {
+        organizationId,
+        recipient: message.to
+      });
+      return {
+        success: false,
+        error: "Instagram/Messenger credentials missing. Please configure the Page access token and Page id."
+      };
+    }
+    const url = `https://graph.facebook.com/v21.0/${this.pageId}/messages?access_token=${this.pageAccessToken}`;
+    const bodyText = _InstagramMessengerAdapter.renderBody(message);
+    const messagePayload = { text: bodyText || " " };
+    if (message.buttons && message.buttons.length > 0) {
+      messagePayload.quick_replies = message.buttons.slice(0, 3).map((b) => ({
+        content_type: "text",
+        title: b.title.slice(0, 20),
+        payload: b.id.slice(0, 256)
+      }));
+    }
+    const payload = {
+      recipient: { id: message.to },
+      messaging_type: "RESPONSE",
+      message: messagePayload
+    };
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        logger.error("Instagram/Messenger Graph API error response", {
+          status: response.status,
+          response: errText,
+          organizationId
+        });
+        return {
+          success: false,
+          error: `Graph API returned HTTP ${response.status}: ${errText}`
+        };
+      }
+      const resData = await response.json();
+      const providerMessageId = resData.message_id;
+      logger.info("Instagram/Messenger message sent successfully", {
+        organizationId,
+        providerMessageId,
+        channel: this.channel
+      });
+      return { success: true, providerMessageId };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      logger.error("Instagram/Messenger communication error", { error: errorMsg, organizationId });
+      return {
+        success: false,
+        error: `Failed to communicate with Graph API: ${errorMsg}`
+      };
+    }
+  }
+  /**
+   * Flattens a rich outbound message (text + list + cta) into a single text
+   * string suitable for the basic Messenger/IG text send. Reply buttons are
+   * handled separately as native quick replies and are not rendered here.
+   * Exposed as a static helper for unit testing.
+   */
+  static renderBody(message) {
+    const parts = [];
+    if (message.text) parts.push(message.text.trim());
+    if (message.list) {
+      const lines = [];
+      if (message.list.header) lines.push(message.list.header);
+      message.list.items.forEach((it, i) => {
+        lines.push(`${i + 1}. ${it.title}${it.description ? ` \u2014 ${it.description}` : ""}`);
+      });
+      lines.push("\nReply with the number to choose.");
+      parts.push(lines.join("\n"));
+    }
+    if (message.cta) {
+      parts.push(`${message.cta.label}: ${message.cta.url}`);
+    }
+    return parts.filter(Boolean).join("\n\n");
+  }
+};
+
 // src/services/supabase-services.ts
 var SupabaseIdempotencyService = class {
   constructor(db, provider = "whatsapp") {
@@ -51313,6 +51487,15 @@ var SecretBox = class {
     const tag = cipher.getAuthTag();
     return `v1:${iv.toString("hex")}:${tag.toString("hex")}:${ct.toString("hex")}`;
   }
+  /**
+   * Deterministic keyed hash ("blind index") of a value, for equality lookups
+   * on an encrypted column without exposing the plaintext. Same input → same
+   * index, so `WHERE phone_bidx = blindIndex(phone)` works over ciphertext.
+   */
+  blindIndex(value) {
+    if (!this.key) return null;
+    return (0, import_crypto5.createHmac)("sha256", this.key).update(value.trim().toLowerCase()).digest("hex");
+  }
   decrypt(value) {
     if (!this.key || !value.startsWith("v1:")) return value;
     const [, ivHex, tagHex, ctHex] = value.split(":");
@@ -54383,6 +54566,196 @@ function createBillingServiceFromEnv(env = process.env) {
   });
 }
 
+// ../../packages/integrations/src/hubspot.ts
+var import_node_crypto2 = require("node:crypto");
+var HUBSPOT_API_BASE = "https://api.hubapi.com";
+var NO_TOKEN_ERROR = "HUBSPOT_ACCESS_TOKEN not configured";
+var HubSpotService = class {
+  accessToken;
+  webhookSecret;
+  constructor(config = {}) {
+    this.accessToken = config.accessToken;
+    this.webhookSecret = config.webhookSecret;
+  }
+  /** True when an access token is present and HubSpot calls can actually be made. */
+  get isConfigured() {
+    return Boolean(this.accessToken);
+  }
+  /**
+   * Send a JSON request to the HubSpot API and return the parsed body, or a
+   * normalized error result. Never throws.
+   */
+  async request(method, path2, body) {
+    let response;
+    try {
+      response = await fetch(`${HUBSPOT_API_BASE}${path2}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: body === void 0 ? void 0 : JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const data = await response.json();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    let error = `HubSpot responded with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (payload?.message) error = payload.message;
+    } catch {
+    }
+    return { ok: false, error };
+  }
+  /**
+   * Upsert a contact keyed by phone number. HubSpot has no native phone-based
+   * upsert, so we search by phone first, then PATCH the existing contact or
+   * POST a new one.
+   */
+  async upsertContact(params) {
+    if (!this.accessToken) {
+      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
+    }
+    const search = await this.request("POST", "/crm/v3/objects/contacts/search", {
+      filterGroups: [
+        { filters: [{ propertyName: "phone", operator: "EQ", value: params.phone }] }
+      ],
+      properties: ["phone", "email"]
+    });
+    if (!search.ok) {
+      return { ok: false, error: search.error };
+    }
+    const searchData = search.data;
+    const existingId = searchData.results?.[0]?.id;
+    const properties = { phone: params.phone };
+    if (params.email !== void 0) properties.email = params.email;
+    if (params.firstName !== void 0) properties.firstname = params.firstName;
+    if (params.lastName !== void 0) properties.lastname = params.lastName;
+    if (params.lifecycleStage !== void 0) properties.lifecyclestage = params.lifecycleStage;
+    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/contacts/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/contacts", { properties });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const id = result.data.id ?? existingId;
+    return { ok: true, id };
+  }
+  /**
+   * Upsert a deal keyed by an external id (matched against `dealname`). Creates
+   * or patches the deal, and — when a new deal is created with a `contactId` —
+   * best-effort associates the deal to that contact.
+   */
+  async upsertDeal(params) {
+    if (!this.accessToken) {
+      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
+    }
+    const search = await this.request("POST", "/crm/v3/objects/deals/search", {
+      filterGroups: [
+        { filters: [{ propertyName: "dealname", operator: "EQ", value: params.externalId }] }
+      ],
+      properties: ["dealname"]
+    });
+    if (!search.ok) {
+      return { ok: false, error: search.error };
+    }
+    const searchData = search.data;
+    const existingId = searchData.results?.[0]?.id;
+    const properties = {
+      dealname: params.dealName,
+      pipeline: "default"
+    };
+    if (params.amount !== void 0) properties.amount = String(params.amount);
+    if (params.stage !== void 0) properties.dealstage = params.stage;
+    const created = !existingId;
+    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/deals/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/deals", { properties });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const id = result.data.id ?? existingId;
+    if (created && id && params.contactId) {
+      await this.request(
+        "PUT",
+        `/crm/v3/objects/deals/${id}/associations/contacts/${params.contactId}/deal_to_contact`
+      );
+    }
+    return { ok: true, id };
+  }
+  /**
+   * Verify a HubSpot v3 webhook signature.
+   *
+   * The signature is `base64( HMAC-SHA256( method + uri + body + timestamp,
+   * clientSecret ) )`, delivered in the `X-HubSpot-Signature-v3` header. We
+   * recompute it and timing-safe compare. Returns false if the webhook secret
+   * is missing or the header is absent.
+   */
+  verifyWebhookSignature(params) {
+    if (!this.webhookSecret || !params.signature) return false;
+    const base = `${params.method}${params.uri}${params.body}${params.timestamp}`;
+    const expected = (0, import_node_crypto2.createHmac)("sha256", this.webhookSecret).update(base, "utf8").digest("base64");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const actualBuf = Buffer.from(params.signature, "utf8");
+    if (expectedBuf.length !== actualBuf.length) return false;
+    try {
+      return (0, import_node_crypto2.timingSafeEqual)(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Parse a raw HubSpot webhook body — an ARRAY of subscription events — into
+   * normalized events. `objectType` is derived from the `subscriptionType`
+   * prefix (e.g. `contact.propertyChange` → `contact`). Returns [] for
+   * malformed input. Never throws. Signature verification is separate — call
+   * {@link verifyWebhookSignature} first.
+   */
+  parseWebhookEvents(rawBody) {
+    let parsed;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+    const events = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const raw = item;
+      const subscriptionType = asString2(raw.subscriptionType);
+      const objectId = asString2(raw.objectId) ?? asNumberString(raw.objectId);
+      if (!subscriptionType || objectId === void 0) continue;
+      const objectType2 = subscriptionType.split(".")[0];
+      const event = { objectType: objectType2, objectId };
+      const propertyName = asString2(raw.propertyName);
+      if (propertyName !== void 0) event.propertyName = propertyName;
+      const propertyValue = asString2(raw.propertyValue);
+      if (propertyValue !== void 0) event.propertyValue = propertyValue;
+      const changeType = asString2(raw.changeType);
+      if (changeType !== void 0) event.changeType = changeType;
+      events.push(event);
+    }
+    return events;
+  }
+};
+function asString2(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function asNumberString(value) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : void 0;
+}
+function createHubSpotServiceFromEnv(env = process.env) {
+  return new HubSpotService({
+    accessToken: env.HUBSPOT_ACCESS_TOKEN,
+    webhookSecret: env.HUBSPOT_WEBHOOK_SECRET
+  });
+}
+
 // ../scheduler-worker/src/index.ts
 var path = __toESM(require("path"));
 
@@ -54648,6 +55021,15 @@ function buildServer(env = process.env) {
     adapter = new MockWhatsAppAdapter(verifyToken);
     activeProvider = "mock";
   }
+  const igPageId = env["INSTAGRAM_PAGE_ID"];
+  const igPageToken = env["INSTAGRAM_PAGE_ACCESS_TOKEN"];
+  const instagramAdapter = igPageId && igPageToken ? new InstagramMessengerAdapter({
+    pageId: igPageId,
+    pageAccessToken: igPageToken,
+    verifyToken: env["INSTAGRAM_VERIFY_TOKEN"] ?? verifyToken,
+    channel: env["INSTAGRAM_CHANNEL"] ?? "instagram"
+  }) : null;
+  if (instagramAdapter) logger.info("Instagram/Messenger channel active", { pageId: igPageId });
   const idempotencyService = new SupabaseIdempotencyService(db);
   const messageService = new SupabaseMessageService(store);
   const orgAdapterCache = /* @__PURE__ */ new Map();
@@ -54708,6 +55090,40 @@ function buildServer(env = process.env) {
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
+  const hubspot = createHubSpotServiceFromEnv(env);
+  async function syncLeadToHubSpot(orgId, leadId) {
+    if (!hubspot.isConfigured) return;
+    try {
+      const { data: lead } = await db.from("leads").select("id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id").eq("organization_id", orgId).eq("id", leadId).maybeSingle();
+      if (!lead?.contact_id) return;
+      const { data: contact } = await db.from("contacts").select("id, name, email, phone_number, hubspot_contact_id").eq("organization_id", orgId).eq("id", lead.contact_id).maybeSingle();
+      if (!contact?.phone_number) return;
+      const [firstName, ...rest] = (contact.name ?? "").trim().split(/\s+/);
+      const c = await hubspot.upsertContact({
+        phone: contact.phone_number,
+        email: contact.email ?? void 0,
+        firstName: firstName || void 0,
+        lastName: rest.join(" ") || void 0,
+        lifecycleStage: (lead.score ?? 0) >= 50 ? "salesqualifiedlead" : "lead"
+      });
+      if (c.ok && c.id && c.id !== contact.hubspot_contact_id) {
+        await db.from("contacts").update({ hubspot_contact_id: c.id }).eq("id", contact.id);
+      }
+      const d = await hubspot.upsertDeal({
+        dealName: `${contact.name ?? contact.phone_number} \u2014 ${lead.service_interest ?? "enquiry"}`.slice(0, 120),
+        amount: typeof lead.estimated_value === "number" ? lead.estimated_value : void 0,
+        stage: lead.stage === "qualified" ? "qualifiedtobuy" : "appointmentscheduled",
+        contactId: c.id,
+        externalId: `saarthi-lead-${lead.id}`
+      });
+      if (d.ok && d.id && d.id !== lead.hubspot_deal_id) {
+        await db.from("leads").update({ hubspot_deal_id: d.id }).eq("id", lead.id);
+      }
+      logger.info("Lead synced to HubSpot", { orgId, leadId, contactId: c.id, dealId: d.id });
+    } catch (err) {
+      logger.warn("HubSpot lead sync failed", { orgId, leadId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
   function agentDeps(orgId, org) {
     return {
       llm,
@@ -54926,6 +55342,20 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
           await messageService.persistOutbound(orgId, msg.from, state.finalResponse, result.providerMessageId, msg.conversationId);
         } else if (!result.success) {
           logger.error("Failed to send agent reply", { error: result.error, to: msg.from });
+        }
+      }
+      if (hubspot.isConfigured) {
+        for (const tc of state.toolCalls) {
+          if (tc.tool === "upsert_qualified_lead") {
+            const out = tc.output;
+            if (out?.leadId) {
+              const work = syncLeadToHubSpot(orgId, out.leadId);
+              try {
+                (0, import_functions.waitUntil)(work);
+              } catch {
+              }
+            }
+          }
         }
       }
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
@@ -55245,6 +55675,71 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
+    app3.post("/webhooks/hubspot", async (req, res) => {
+      const raw = req.rawBody;
+      const sig = req.headers["x-hubspot-signature-v3"];
+      const ts = req.headers["x-hubspot-request-timestamp"];
+      if (!raw || typeof sig !== "string" || typeof ts !== "string") {
+        res.status(401).json({ error: "Missing signature" });
+        return;
+      }
+      const ok = hubspot.verifyWebhookSignature({
+        method: "POST",
+        uri: `${publicBaseUrl}${req.originalUrl}`,
+        body: raw.toString("utf8"),
+        signature: sig,
+        timestamp: ts
+      });
+      if (!ok) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+      const events = hubspot.parseWebhookEvents(raw.toString("utf8"));
+      for (const ev of events) {
+        if (ev.objectType !== "contact" || !ev.propertyName) continue;
+        const col = ev.propertyName === "email" ? "email" : ev.propertyName === "firstname" || ev.propertyName === "lastname" ? "name" : null;
+        if (!col || ev.propertyValue == null) continue;
+        const patch = {};
+        if (col === "email") patch["email"] = ev.propertyValue;
+        else patch["name"] = ev.propertyValue;
+        const { data } = await db.from("contacts").update(patch).eq("hubspot_contact_id", String(ev.objectId)).select("id, organization_id");
+        if (data && data.length > 0) {
+          logger.info("Contact updated from HubSpot", { property: ev.propertyName, count: data.length });
+        }
+      }
+      res.status(200).json({ received: true, processed: events.length });
+    });
+    if (instagramAdapter) {
+      app3.get("/webhooks/instagram", (req, res) => {
+        const challenge = instagramAdapter.verifyWebhook(
+          String(req.query["hub.verify_token"] ?? ""),
+          String(req.query["hub.challenge"] ?? "")
+        );
+        if (challenge) res.status(200).send(challenge);
+        else res.status(403).send("Forbidden");
+      });
+      app3.post("/webhooks/instagram", async (req, res) => {
+        const raw = req.rawBody;
+        const sig = req.headers["x-hub-signature-256"];
+        const appSecret = env["META_APP_SECRET"];
+        if (appSecret) {
+          const { createHmac: createHmac7 } = await import("crypto");
+          const expected = "sha256=" + createHmac7("sha256", appSecret).update(raw ?? Buffer.from("")).digest("hex");
+          if (typeof sig !== "string" || sig !== expected) {
+            res.status(401).json({ error: "Invalid signature" });
+            return;
+          }
+        }
+        res.status(200).json({ received: true });
+        const messages = instagramAdapter.parseInboundEvent(req.body);
+        if (messages.length === 0) return;
+        const work = ingestInboundMessages(messages, instagramAdapter);
+        try {
+          (0, import_functions.waitUntil)(work);
+        } catch {
+        }
+      });
+    }
     const OperatorMessageSchema = external_exports.object({
       conversationId: external_exports.string().uuid(),
       text: external_exports.string().min(1).max(4096)

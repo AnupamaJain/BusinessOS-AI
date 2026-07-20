@@ -5,6 +5,7 @@ import { createApp, type InboundCallbackMessage } from './app';
 import { MockWhatsAppAdapter } from './adapters/mock-whatsapp-adapter';
 import { MetaCloudApiAdapter } from './adapters/meta-cloud-api-adapter';
 import { TwilioWhatsAppAdapter } from './adapters/twilio-whatsapp-adapter';
+import { InstagramMessengerAdapter } from './adapters/instagram-adapter';
 import type { WhatsAppAdapter, InboundMessage, InteractiveList, ReplyButton } from './adapters/types';
 import type { AgentState } from '@business-os-ai/agent-core';
 import { SupabaseIdempotencyService, SupabaseMessageService } from './services/supabase-services';
@@ -20,7 +21,7 @@ import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/
 import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@business-os-ai/commerce';
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
-  createBillingServiceFromEnv, PLANS,
+  createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -174,6 +175,20 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     activeProvider = 'mock';
   }
 
+  // ── Instagram Direct / Messenger channel (optional) ──
+  // Same agent pipeline, different Meta surface. Enabled when a Page/IG token is set.
+  const igPageId = env['INSTAGRAM_PAGE_ID'];
+  const igPageToken = env['INSTAGRAM_PAGE_ACCESS_TOKEN'];
+  const instagramAdapter = (igPageId && igPageToken)
+    ? new InstagramMessengerAdapter({
+        pageId: igPageId,
+        pageAccessToken: igPageToken,
+        verifyToken: env['INSTAGRAM_VERIFY_TOKEN'] ?? verifyToken,
+        channel: (env['INSTAGRAM_CHANNEL'] as 'instagram' | 'messenger') ?? 'instagram',
+      })
+    : null;
+  if (instagramAdapter) logger.info('Instagram/Messenger channel active', { pageId: igPageId });
+
   const idempotencyService = new SupabaseIdempotencyService(db);
   const messageService = new SupabaseMessageService(store);
 
@@ -245,6 +260,53 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
+  const hubspot = createHubSpotServiceFromEnv(env);
+
+  /**
+   * Outbound CRM sync: mirror a qualified lead into HubSpot as a contact + deal.
+   * Best-effort and non-blocking (called via waitUntil) — never affects the
+   * customer reply. Stores the returned HubSpot ids so inbound webhooks can map
+   * property changes back to our rows (two-way sync).
+   */
+  async function syncLeadToHubSpot(orgId: string, leadId: string): Promise<void> {
+    if (!hubspot.isConfigured) return;
+    try {
+      const { data: lead } = await db.from('leads')
+        .select('id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id')
+        .eq('organization_id', orgId).eq('id', leadId).maybeSingle();
+      if (!lead?.contact_id) return;
+      const { data: contact } = await db.from('contacts')
+        .select('id, name, email, phone_number, hubspot_contact_id')
+        .eq('organization_id', orgId).eq('id', lead.contact_id).maybeSingle();
+      if (!contact?.phone_number) return;
+
+      const [firstName, ...rest] = (contact.name ?? '').trim().split(/\s+/);
+      const c = await hubspot.upsertContact({
+        phone: contact.phone_number,
+        email: contact.email ?? undefined,
+        firstName: firstName || undefined,
+        lastName: rest.join(' ') || undefined,
+        lifecycleStage: (lead.score ?? 0) >= 50 ? 'salesqualifiedlead' : 'lead',
+      });
+      if (c.ok && c.id && c.id !== contact.hubspot_contact_id) {
+        await db.from('contacts').update({ hubspot_contact_id: c.id }).eq('id', contact.id);
+      }
+
+      const d = await hubspot.upsertDeal({
+        dealName: `${contact.name ?? contact.phone_number} — ${lead.service_interest ?? 'enquiry'}`.slice(0, 120),
+        amount: typeof lead.estimated_value === 'number' ? lead.estimated_value : undefined,
+        stage: (lead.stage as string) === 'qualified' ? 'qualifiedtobuy' : 'appointmentscheduled',
+        contactId: c.id,
+        externalId: `saarthi-lead-${lead.id}`,
+      });
+      if (d.ok && d.id && d.id !== lead.hubspot_deal_id) {
+        await db.from('leads').update({ hubspot_deal_id: d.id }).eq('id', lead.id);
+      }
+      logger.info('Lead synced to HubSpot', { orgId, leadId, contactId: c.id, dealId: d.id });
+    } catch (err) {
+      logger.warn('HubSpot lead sync failed', { orgId, leadId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   function agentDeps(orgId: string, org: { name: string; vertical?: string }): AgentGraphDeps {
     return {
@@ -477,6 +539,20 @@ export function buildServer(env: Record<string, string | undefined> = process.en
           await messageService.persistOutbound(orgId, msg.from, state.finalResponse, result.providerMessageId, msg.conversationId);
         } else if (!result.success) {
           logger.error('Failed to send agent reply', { error: result.error, to: msg.from });
+        }
+      }
+
+      // Mirror any lead the agent qualified into HubSpot — off the reply path so
+      // CRM latency never delays the customer.
+      if (hubspot.isConfigured) {
+        for (const tc of state.toolCalls) {
+          if (tc.tool === 'upsert_qualified_lead') {
+            const out = tc.output as { leadId?: string } | undefined;
+            if (out?.leadId) {
+              const work = syncLeadToHubSpot(orgId, out.leadId);
+              try { waitUntil(work); } catch { void work; }
+            }
+          }
         }
       }
 
@@ -807,6 +883,73 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
+    /**
+     * HubSpot webhook — inbound half of the two-way sync. When a contact's
+     * property changes in HubSpot (email, name, phone), mirror it back onto the
+     * SaarthiOne contact we linked via hubspot_contact_id.
+     */
+    app.post('/webhooks/hubspot', async (req, res) => {
+      const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const sig = req.headers['x-hubspot-signature-v3'];
+      const ts = req.headers['x-hubspot-request-timestamp'];
+      if (!raw || typeof sig !== 'string' || typeof ts !== 'string') {
+        res.status(401).json({ error: 'Missing signature' }); return;
+      }
+      const ok = hubspot.verifyWebhookSignature({
+        method: 'POST', uri: `${publicBaseUrl}${req.originalUrl}`,
+        body: raw.toString('utf8'), signature: sig, timestamp: ts,
+      });
+      if (!ok) { res.status(401).json({ error: 'Invalid signature' }); return; }
+
+      const events = hubspot.parseWebhookEvents(raw.toString('utf8'));
+      for (const ev of events) {
+        if (ev.objectType !== 'contact' || !ev.propertyName) continue;
+        const col = ev.propertyName === 'email' ? 'email'
+          : ev.propertyName === 'firstname' || ev.propertyName === 'lastname' ? 'name'
+          : null;
+        if (!col || ev.propertyValue == null) continue;
+        // Match our contact by the HubSpot object id we stored on push.
+        const patch: Record<string, string> = {};
+        if (col === 'email') patch['email'] = ev.propertyValue;
+        else patch['name'] = ev.propertyValue; // best-effort: full/first name
+        const { data } = await db.from('contacts')
+          .update(patch).eq('hubspot_contact_id', String(ev.objectId)).select('id, organization_id');
+        if (data && data.length > 0) {
+          logger.info('Contact updated from HubSpot', { property: ev.propertyName, count: data.length });
+        }
+      }
+      res.status(200).json({ received: true, processed: events.length });
+    });
+
+    // ── Instagram Direct / Messenger webhook (shares the WhatsApp agent pipeline) ──
+    if (instagramAdapter) {
+      app.get('/webhooks/instagram', (req, res) => {
+        const challenge = instagramAdapter.verifyWebhook(
+          String(req.query['hub.verify_token'] ?? ''), String(req.query['hub.challenge'] ?? ''),
+        );
+        if (challenge) res.status(200).send(challenge);
+        else res.status(403).send('Forbidden');
+      });
+
+      app.post('/webhooks/instagram', async (req, res) => {
+        // Meta signs IG/Messenger webhooks with the same app secret as WhatsApp.
+        const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
+        const sig = req.headers['x-hub-signature-256'];
+        const appSecret = env['META_APP_SECRET'];
+        if (appSecret) {
+          const { createHmac } = await import('crypto');
+          const expected = 'sha256=' + createHmac('sha256', appSecret).update(raw ?? Buffer.from('')).digest('hex');
+          if (typeof sig !== 'string' || sig !== expected) { res.status(401).json({ error: 'Invalid signature' }); return; }
+        }
+        // Ack immediately, process in the background (Meta requires a fast 200).
+        res.status(200).json({ received: true });
+        const messages = instagramAdapter.parseInboundEvent(req.body);
+        if (messages.length === 0) return;
+        const work = ingestInboundMessages(messages, instagramAdapter);
+        try { waitUntil(work); } catch { void work; }
+      });
+    }
+
     const OperatorMessageSchema = z.object({
       conversationId: z.string().uuid(),
       text: z.string().min(1).max(4096),
