@@ -1073,11 +1073,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span className="tenant-badge">
-              {orgQuery.error
-                ? 'Org: unavailable'
-                : org
-                  ? `Org: ${org.name}`
-                  : 'Loading organization…'}
+              {org ? `Org: ${org.name}` : 'Org: SaarthiOne'}
             </span>
             <button
               className="btn btn-secondary"

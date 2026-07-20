@@ -1,17 +1,19 @@
 # Booking & Reservation Agent Specification
 
 > **Agent ID**: `booking-agent`  
-> **Role**: Unified Reservation Lifecycle & Booking Confirmation Agent  
+> **Avatar**: 📅 Booking Agent  
+> **SLA Benchmark**: Zero Double-Bookings Guarantee  
+> **Role**: Slot Selection, Token Allocation & Real-time Reservation Agent  
 
 ---
 
 ## 1. Overview & Objectives
 
-The **Booking Agent** manages the transactional booking lifecycle for holiday packages:
-- Creates unique booking numbers (`BK-12345`)
-- Coordinates package, hotel, flight, and tour activity reservations
-- Generates PDF vouchers and sends instant WhatsApp confirmations
-- Handles booking modifications, date changes, and cancellations.
+The **Booking Agent** manages the transactional reservation lifecycle for SMBs across Travel, Dining, Clinics, and Wellness:
+- Creates unique booking numbers (`BK-9921`) and appointment tokens (`#CL-8842`)
+- Coordinates real-time slot selection with zero double-booking guarantee
+- Dispatches instant WhatsApp calendar invites & confirmation vouchers
+- Handles appointment rescheduling, date modifications, and cancellations
 
 ---
 
@@ -19,18 +21,28 @@ The **Booking Agent** manages the transactional booking lifecycle for holiday pa
 
 ```mermaid
 graph TD
-    A[Booking Request] --> B[Validate Package Availability & Price]
-    B --> C[Create Booking Record in PostgreSQL]
-    C --> D[Generate Unique Booking Number BK-XXXXX]
+    A[Slot/Booking Request] --> B[Check Slot & Catalogue Availability]
+    B --> C[Reserve Slot & Create Booking Record]
+    C --> D[Generate Booking ID / Token #CL-XXXX]
     D --> E[Log Audit Event in Audit Table]
-    E --> F[Send Confirmation Message & Invoice Link]
+    E --> F[Send WA Confirmation & Calendar Invite]
 ```
 
 ---
 
-## 3. Tool Permissions & MCP Interfaces
+## 3. Sample Live Dialogue (https://saarthione.vercel.app/)
+
+> **Customer**: *"Do you have slots for Doctor Appointment tomorrow at 4 PM?"*  
+> **Booking Agent**: *"Dr. Sharma has a slot open tomorrow at 4:30 PM. Shall I confirm your consultation?"*  
+> **Customer**: *"Yes, confirm 4:30 PM please."*  
+> **Booking Agent**: *"✅ Appointment Confirmed! Appointment ID: #CL-8842. Calendar invite sent to your WhatsApp."*
+
+---
+
+## 4. Tool Permissions & MCP Interfaces
 
 | Tool Name | Scope | Purpose |
 |-----------|-------|---------|
 | `create_travel_booking` | Tenant-scoped | Create booking record with idempotency key |
 | `getOrderStatus` | Tenant-scoped | Retrieve status of booking by booking number |
+

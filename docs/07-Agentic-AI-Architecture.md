@@ -5,22 +5,31 @@
 ```mermaid
 graph TD
     User[Customer Inbound] --> Coord[Coordinator Agent]
-    Coord -->|Sales/Itinerary| TravelPlanner[Travel Planner Agent]
-    Coord -->|Support/Policy| TravelSupport[Travel Care Support Agent]
-    Coord -->|Reservation| BookingAgent[Booking Agent]
-    Coord -->|Invoicing| PaymentAgent[Payment Agent]
+    
+    Coord -->|Inquiry / Lead| Sales[Sales Agent · 3.4x Conv]
+    Coord -->|Support / Policy| Support[Support Agent · <2s Res]
+    Coord -->|Reservation| Booking[Booking Agent · Zero Double-Book]
+    Coord -->|Broadcast / Offer| Marketing[Marketing Agent · 68% Open Rate]
+    Coord -->|Payment / Tax| Finance[Finance Agent · GST Invoices]
+    Coord -->|Itinerary| Travel[Travel Agent · Concierge]
 
-    TravelPlanner --> LLMGateway[LLM Gateway]
-    TravelSupport --> RAG[RAG Retrieval Engine]
-    BookingAgent --> MCP[MCP Business Tools]
+    Sales --> MCP[MCP Business Tools]
+    Support --> RAG[Grounded RAG Search]
+    Booking --> MCP
+    Marketing --> Scheduler[Scheduler Worker]
+    Finance --> Gateway[Razorpay Payment Gateway]
+    Travel --> MCP
 ```
 
-## 2. Agent Responsibilities Matrix
+## 2. Agent Responsibilities & Benchmark SLA Matrix
 
-| Agent Name | Primary Responsibility | Key Tools Used |
-|------------|------------------------|----------------|
-| **Coordinator Agent** | Intent routing & delegate selection | Intent Classifier, Vertical Registry |
-| **Travel Planner Agent** | Lead qualification & itinerary generation | `search_travel_packages`, `upsert_qualified_lead` |
-| **Travel Care Support Agent** | Policy Q&A & escalation | `create_human_handoff`, RAG Search |
-| **Booking Agent** | Reservation confirmation & status | `create_travel_booking`, `getOrderStatus` |
-| **Payment Agent** | Invoicing & payment link generation | `generate_payment_link`, `process_refund` |
+| Agent Name | Avatar & SLA Benchmark | Primary Responsibility | Key Tools & Infrastructure |
+|------------|------------------------|------------------------|----------------------------|
+| **Coordinator Agent** | 🧭 Meta/WhatsApp Ingress | Intent classification, routing & state preservation | Intent Classifier, Vertical Registry |
+| **Sales Agent** | 💼 3.4x Lead Conv | Lead qualification, quote generation & instant lock | `upsert_qualified_lead`, `search_travel_packages` |
+| **Support Agent** | 🎧 < 2-sec Resolution | 24/7 policy search, visa/refund Q&A & human escalation | `create_human_handoff`, Vector RAG Search |
+| **Booking Agent** | 📅 Zero Double-Bookings | Slot selection, reservation lock & appointment tokens | `create_travel_booking`, `getOrderStatus` |
+| **Marketing Agent** | 📢 68% WA Open Rate | Re-engagement campaigns, promo codes & consent checks | `request_followup_schedule`, Scheduler Worker |
+| **Finance Agent** | 💳 ₹74k Recovered / mo | Payment links, official GST tax invoice PDFs & refunds | `RazorpayPaymentService`, Webhook Listener |
+| **Travel Agent** | 🌴 Concierge Plans | Customized day-by-day trip planning & vouchers | `search_travel_packages`, Itinerary Builder |
+

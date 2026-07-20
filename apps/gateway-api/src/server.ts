@@ -207,14 +207,28 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
       if (state.finalResponse) {
         const rich = buildInteractive(state);
-        const result = await replyAdapter.sendMessage(orgId, {
+        const isRich = !!(rich.list || rich.buttons);
+        let result = await replyAdapter.sendMessage(orgId, {
           to: msg.from,
-          type: rich.list || rich.buttons ? 'interactive' : 'text',
+          type: isRich ? 'interactive' : 'text',
           text: state.finalResponse,
           list: rich.list,
           buttons: rich.buttons,
           idempotencyKey: `reply:${msg.providerMessageId}`,
         });
+
+        // Resilience: never leave the customer with silence. If a rich/interactive
+        // send fails, retry the same answer as plain text.
+        if (!result.success && isRich) {
+          logger.warn('Interactive reply failed, retrying as plain text', { error: result.error, to: msg.from });
+          result = await replyAdapter.sendMessage(orgId, {
+            to: msg.from,
+            type: 'text',
+            text: state.finalResponse,
+            idempotencyKey: `reply-txt:${msg.providerMessageId}`,
+          });
+        }
+
         if (result.success && result.providerMessageId) {
           await messageService.persistOutbound(orgId, msg.from, state.finalResponse, result.providerMessageId, msg.conversationId);
         } else if (!result.success) {
