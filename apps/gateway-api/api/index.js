@@ -51465,6 +51465,132 @@ async function searchTravelPackages(store, input) {
     }))
   };
 }
+async function searchCabRoutes(store, input) {
+  const packages = await store.getPackagesByType(input.organizationId, "cab-route");
+  const routes = packages.filter((p) => {
+    const meta = p.metadata ?? {};
+    if (input.fromCity && (meta.fromCity ?? "").toLowerCase() !== input.fromCity.toLowerCase()) return false;
+    if (input.toCity && (meta.toCity ?? "").toLowerCase() !== input.toCity.toLowerCase()) return false;
+    if (input.vehicleClass && (meta.vehicleClass ?? "").toLowerCase() !== input.vehicleClass.toLowerCase()) return false;
+    return true;
+  }).map((p) => {
+    const meta = p.metadata ?? {};
+    return {
+      sku: p.sku,
+      title: p.title,
+      fromCity: meta.fromCity ?? "",
+      toCity: meta.toCity ?? "",
+      vehicleClass: meta.vehicleClass ?? "",
+      seats: meta.seats ?? 0,
+      fare: `\u20B9${p.pricePerPerson.toLocaleString("en-IN")}`,
+      estimatedHours: meta.estimatedHours ?? 0,
+      inclusions: p.inclusions
+    };
+  });
+  return { routes };
+}
+async function createCabBooking(store, input) {
+  const contact = await store.findContactById(input.organizationId, input.contactId);
+  if (!contact) throw new TenantAccessError("Contact not found in organization.");
+  const packages = await store.getPackagesByType(input.organizationId, "cab-route");
+  const pkg = packages.find((p) => p.sku === input.packageSku);
+  const meta = pkg?.metadata ?? {};
+  const fare = pkg ? pkg.pricePerPerson : 0;
+  const booking = await store.insertBooking({
+    organizationId: input.organizationId,
+    contactId: input.contactId,
+    packageSku: input.packageSku,
+    travelDate: input.pickupDate,
+    travelerCount: 1,
+    totalAmount: fare,
+    metadata: {
+      type: "cab-route",
+      fromCity: meta.fromCity,
+      toCity: meta.toCity,
+      vehicleClass: meta.vehicleClass,
+      pickupDate: input.pickupDate,
+      fare
+    }
+  });
+  await store.insertAuditEvent({
+    id: (0, import_crypto4.randomUUID)(),
+    organizationId: input.organizationId,
+    action: "cab_booking_created",
+    entityType: "booking",
+    entityId: booking.id,
+    actorType: "agent",
+    details: { packageSku: input.packageSku, pickupDate: input.pickupDate },
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return {
+    bookingId: booking.id,
+    bookingNumber: booking.bookingNumber,
+    status: booking.status,
+    totalAmount: `\u20B9${fare.toLocaleString("en-IN")}`
+  };
+}
+async function searchServicePlans(store, input) {
+  const packages = await store.getPackagesByType(input.organizationId, "home-service");
+  const plans = packages.filter((p) => {
+    const meta = p.metadata ?? {};
+    if (input.service && (meta.service ?? "").toLowerCase() !== input.service.toLowerCase()) return false;
+    if (input.planType && (meta.planType ?? "").toLowerCase() !== input.planType.toLowerCase()) return false;
+    return true;
+  }).map((p) => {
+    const meta = p.metadata ?? {};
+    return {
+      sku: p.sku,
+      title: p.title,
+      service: meta.service ?? "",
+      planType: meta.planType ?? "",
+      hoursPerVisit: meta.hoursPerVisit ?? 0,
+      visitsPerMonth: meta.visitsPerMonth ?? 0,
+      area: meta.area ?? "",
+      price: `\u20B9${p.pricePerPerson.toLocaleString("en-IN")}`,
+      inclusions: p.inclusions
+    };
+  });
+  return { plans };
+}
+async function createServiceBooking(store, input) {
+  const contact = await store.findContactById(input.organizationId, input.contactId);
+  if (!contact) throw new TenantAccessError("Contact not found in organization.");
+  const packages = await store.getPackagesByType(input.organizationId, "home-service");
+  const pkg = packages.find((p) => p.sku === input.packageSku);
+  const meta = pkg?.metadata ?? {};
+  const price = pkg ? pkg.pricePerPerson : 0;
+  const booking = await store.insertBooking({
+    organizationId: input.organizationId,
+    contactId: input.contactId,
+    packageSku: input.packageSku,
+    travelDate: input.startDate,
+    travelerCount: 1,
+    totalAmount: price,
+    metadata: {
+      type: "home-service",
+      service: meta.service,
+      planType: meta.planType,
+      area: meta.area,
+      startDate: input.startDate
+    }
+  });
+  await store.insertAuditEvent({
+    id: (0, import_crypto4.randomUUID)(),
+    organizationId: input.organizationId,
+    action: "service_booking_created",
+    entityType: "booking",
+    entityId: booking.id,
+    actorType: "agent",
+    details: { packageSku: input.packageSku, startDate: input.startDate },
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return {
+    bookingId: booking.id,
+    bookingNumber: booking.bookingNumber,
+    status: booking.status,
+    totalAmount: `\u20B9${price.toLocaleString("en-IN")}`
+  };
+}
 
 // ../../packages/mcp-business-tools/src/supabase-store.ts
 var import_crypto6 = require("crypto");
@@ -51509,6 +51635,19 @@ var SecretBox = class {
     }
   }
 };
+function maskPhone(phone) {
+  const raw = (phone ?? "").trim();
+  if (!raw) return raw;
+  const hasPlus = raw.startsWith("+");
+  const digits = raw.replace(/\D/g, "");
+  const prefix = hasPlus ? "+" : "";
+  if (digits.length <= 4) return `${prefix}${digits}`;
+  const last4 = digits.slice(-4);
+  const hintLen = digits.length >= 8 ? 2 : 0;
+  const hint = digits.slice(0, hintLen);
+  const maskedCount = Math.max(digits.length - hintLen - 4, 1);
+  return `${prefix}${hint}${"\u2022".repeat(maskedCount)}${last4}`;
+}
 
 // ../../packages/mcp-business-tools/src/supabase-store.ts
 var SupabaseBusinessStore = class {
@@ -51570,7 +51709,7 @@ var SupabaseBusinessStore = class {
     const { data: hotRows, error: hotErr } = await this.db.from("leads").select("service_interest, score, contact_id, updated_at, stage, contacts(name)").eq("organization_id", organizationId).gte("score", 70).in("stage", activeStages).order("score", { ascending: false }).limit(10);
     if (hotErr) this.fail("getBusinessSummary.hot", hotErr);
     const hot = hotRows ?? [];
-    const { data: staleRows, error: staleErr } = await this.db.from("leads").select("service_interest, contact_id, updated_at, stage, contacts(name, phone_number)").eq("organization_id", organizationId).in("stage", activeStages).lt("updated_at", staleCutoff).order("updated_at", { ascending: true }).limit(10);
+    const { data: staleRows, error: staleErr } = await this.db.from("leads").select("service_interest, contact_id, updated_at, stage, contacts(name, phone_number, phone_enc)").eq("organization_id", organizationId).in("stage", activeStages).lt("updated_at", staleCutoff).order("updated_at", { ascending: true }).limit(10);
     if (staleErr) this.fail("getBusinessSummary.stale", staleErr);
     const stale = staleRows ?? [];
     const { count: pendingPayments } = await this.db.from("orders").select("id", { count: "exact", head: true }).eq("organization_id", organizationId).eq("status", "pending_payment");
@@ -51579,7 +51718,11 @@ var SupabaseBusinessStore = class {
     const pipeline = [...bookings ?? [], ...orders ?? []].reduce((sum, r) => sum + Number(r.total_amount ?? 0), 0);
     const pipelineText = pipeline > 0 ? `\u20B9${pipeline.toLocaleString("en-IN")}` : "\u2014";
     const nameOf = (r) => r.contacts?.name ?? void 0;
-    const phoneOf = (r) => r.contacts?.phone_number ?? void 0;
+    const phoneOf = (r) => {
+      const c = r.contacts;
+      if (!c) return void 0;
+      return this.realPhone(c) || void 0;
+    };
     return {
       todayEnquiries,
       hotLeads: hot.length,
@@ -51592,22 +51735,61 @@ var SupabaseBusinessStore = class {
     };
   }
   // ─── Contacts & consent ───────────────────────────────────────────
+  /** Normalize a phone to an E.164-ish form: trim + ensure a leading `+`. */
+  normalizePhone(phone) {
+    const trimmed = (phone ?? "").trim();
+    return trimmed.startsWith("+") ? trimmed : `+${trimmed}`;
+  }
+  /**
+   * The real (decrypted) phone for a contacts row. When encryption is enabled,
+   * `phone_number` holds only a mask, so the real value lives in `phone_enc`.
+   * Legacy (un-backfilled) rows have no `phone_enc` and keep the real number in
+   * `phone_number`.
+   */
+  realPhone(row) {
+    return row.phone_enc ? this.box.decrypt(row.phone_enc) : row.phone_number ?? "";
+  }
+  /**
+   * Columns to write for a contact's phone. When the box is enabled the real
+   * number is encrypted (`phone_enc`), indexed for equality lookups
+   * (`phone_bidx`), and `phone_number` is stored masked. When disabled, the raw
+   * phone is stored as before so local/dev is unchanged.
+   */
+  phoneWriteFields(normalized) {
+    if (!this.box.enabled) return { phone_number: normalized };
+    return {
+      phone_number: maskPhone(normalized),
+      phone_enc: this.box.encrypt(normalized),
+      phone_bidx: this.box.blindIndex(normalized) ?? void 0
+    };
+  }
   async findContactById(organizationId, contactId) {
-    const { data, error } = await this.db.from("contacts").select("id, organization_id, phone_number, name, email").eq("organization_id", organizationId).eq("id", contactId).maybeSingle();
+    const { data, error } = await this.db.from("contacts").select("id, organization_id, phone_number, phone_enc, name, email").eq("organization_id", organizationId).eq("id", contactId).maybeSingle();
     if (error) this.fail("findContactById", error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? void 0, email: data.email ?? void 0 } : void 0;
+    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? void 0, email: data.email ?? void 0 } : void 0;
   }
   async findContactByPhone(organizationId, phone) {
-    const { data, error } = await this.db.from("contacts").select("id, organization_id, phone_number, name, email").eq("organization_id", organizationId).eq("phone_number", phone).maybeSingle();
+    const normalized = this.normalizePhone(phone);
+    const select = "id, organization_id, phone_number, phone_enc, name, email";
+    if (this.box.enabled) {
+      const bidx = this.box.blindIndex(normalized);
+      if (bidx) {
+        const { data: data2, error: error2 } = await this.db.from("contacts").select(select).eq("organization_id", organizationId).eq("phone_bidx", bidx).maybeSingle();
+        if (error2) this.fail("findContactByPhone", error2);
+        if (data2) return { id: data2.id, organizationId: data2.organization_id, phone: this.realPhone(data2), name: data2.name ?? void 0, email: data2.email ?? void 0 };
+      }
+    }
+    const { data, error } = await this.db.from("contacts").select(select).eq("organization_id", organizationId).eq("phone_number", normalized).maybeSingle();
     if (error) this.fail("findContactByPhone", error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? void 0, email: data.email ?? void 0 } : void 0;
+    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? void 0, email: data.email ?? void 0 } : void 0;
   }
   async upsertContactByPhone(organizationId, phone, name) {
-    const existing = await this.findContactByPhone(organizationId, phone);
+    const normalized = this.normalizePhone(phone);
+    const existing = await this.findContactByPhone(organizationId, normalized);
     if (existing) return existing;
-    const { data, error } = await this.db.from("contacts").insert({ organization_id: organizationId, phone_number: phone, name }).select("id, organization_id, phone_number, name").single();
+    const { data, error } = await this.db.from("contacts").insert({ organization_id: organizationId, name, ...this.phoneWriteFields(normalized) }).select("id, organization_id, phone_number, phone_enc, name").single();
     if (error || !data) this.fail("upsertContactByPhone", error);
-    return { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? void 0 };
+    return { id: data.id, organizationId: data.organization_id, phone: normalized, name: data.name ?? void 0 };
   }
   async listConsent(organizationId, contactId) {
     const { data, error } = await this.db.from("consent_records").select("contact_id, organization_id, consent_type, action, recorded_at").eq("organization_id", organizationId).eq("contact_id", contactId).order("recorded_at", { ascending: true });
@@ -51888,7 +52070,7 @@ var SupabaseBusinessStore = class {
   }
   // ─── Travel ───────────────────────────────────────────────────────
   async searchPackages(organizationId, filters) {
-    const { data, error } = await this.db.from("packages").select("sku, title, duration_days, price_per_person, currency, inclusions, destinations(name)").eq("organization_id", organizationId).eq("status", "active").limit(100);
+    const { data, error } = await this.db.from("packages").select("sku, title, duration_days, price_per_person, currency, inclusions, metadata, destinations(name)").eq("organization_id", organizationId).eq("status", "active").limit(100);
     if (error) this.fail("searchPackages", error);
     return (data ?? []).map((p) => {
       const destination = p.destinations?.name ?? p.title.split(" ")[0] ?? "";
@@ -51900,7 +52082,8 @@ var SupabaseBusinessStore = class {
         pricePerPerson: Number(p.price_per_person),
         currency: p.currency,
         inclusions: p.inclusions ?? [],
-        organizationId
+        organizationId,
+        metadata: p.metadata ?? {}
       };
     }).filter((p) => {
       if (filters?.destination && !`${p.destination} ${p.title}`.toLowerCase().includes(filters.destination.toLowerCase())) return false;
@@ -51922,10 +52105,29 @@ var SupabaseBusinessStore = class {
       traveler_count: booking.travelerCount,
       total_amount: booking.totalAmount,
       currency: "INR",
-      status: "confirmed"
+      status: "confirmed",
+      metadata: booking.metadata ?? {}
     }).select("id").single();
     if (error || !data) this.fail("insertBooking", error);
-    return { ...booking, id: data.id, bookingNumber, status: "confirmed" };
+    return { ...booking, id: data.id, bookingNumber, status: "confirmed", metadata: booking.metadata ?? {} };
+  }
+  async getPackagesByType(organizationId, type) {
+    const { data, error } = await this.db.from("packages").select("sku, title, duration_days, price_per_person, currency, inclusions, metadata, destinations(name)").eq("organization_id", organizationId).eq("status", "active").filter("metadata->>type", "eq", type).limit(100);
+    if (error) this.fail("getPackagesByType", error);
+    return (data ?? []).map((p) => {
+      const destination = p.destinations?.name ?? p.title.split(" ")[0] ?? "";
+      return {
+        sku: p.sku,
+        title: p.title,
+        destination,
+        durationDays: p.duration_days,
+        pricePerPerson: Number(p.price_per_person),
+        currency: p.currency,
+        inclusions: p.inclusions ?? [],
+        organizationId,
+        metadata: p.metadata ?? {}
+      };
+    });
   }
 };
 
@@ -52062,6 +52264,69 @@ var CreateTravelBookingInput = external_exports.object({
   idempotencyKey: external_exports.string()
 });
 var CreateTravelBookingOutput = external_exports.object({
+  bookingId: external_exports.string(),
+  bookingNumber: external_exports.string(),
+  status: external_exports.string(),
+  totalAmount: external_exports.string()
+});
+var SearchCabRoutesInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  fromCity: external_exports.string().optional(),
+  toCity: external_exports.string().optional(),
+  vehicleClass: external_exports.enum(["sedan", "suv", "tempo"]).optional()
+});
+var SearchCabRoutesOutput = external_exports.object({
+  routes: external_exports.array(external_exports.object({
+    sku: external_exports.string(),
+    title: external_exports.string(),
+    fromCity: external_exports.string(),
+    toCity: external_exports.string(),
+    vehicleClass: external_exports.string(),
+    seats: external_exports.number(),
+    fare: external_exports.string(),
+    estimatedHours: external_exports.number(),
+    inclusions: external_exports.array(external_exports.string())
+  }))
+});
+var CreateCabBookingInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  contactId: external_exports.string().uuid(),
+  packageSku: external_exports.string(),
+  pickupDate: external_exports.string(),
+  idempotencyKey: external_exports.string()
+});
+var CreateCabBookingOutput = external_exports.object({
+  bookingId: external_exports.string(),
+  bookingNumber: external_exports.string(),
+  status: external_exports.string(),
+  totalAmount: external_exports.string()
+});
+var SearchServicePlansInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  service: external_exports.enum(["cleaning", "cooking", "full-time", "babysitting"]).optional(),
+  planType: external_exports.enum(["one-time", "monthly"]).optional()
+});
+var SearchServicePlansOutput = external_exports.object({
+  plans: external_exports.array(external_exports.object({
+    sku: external_exports.string(),
+    title: external_exports.string(),
+    service: external_exports.string(),
+    planType: external_exports.string(),
+    hoursPerVisit: external_exports.number(),
+    visitsPerMonth: external_exports.number(),
+    area: external_exports.string(),
+    price: external_exports.string(),
+    inclusions: external_exports.array(external_exports.string())
+  }))
+});
+var CreateServiceBookingInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  contactId: external_exports.string().uuid(),
+  packageSku: external_exports.string(),
+  startDate: external_exports.string(),
+  idempotencyKey: external_exports.string()
+});
+var CreateServiceBookingOutput = external_exports.object({
   bookingId: external_exports.string(),
   bookingNumber: external_exports.string(),
   status: external_exports.string(),
@@ -52535,7 +52800,37 @@ function classifyIntent(message) {
   if (["person", "human", "agent", "support team", "speak to", "talk to", "operator"].some((k) => lower.includes(k))) return "human_request";
   if (["book", "appointment", "schedule", "reserve", "slot", "consultation"].some((k) => lower.includes(k))) return "booking_request";
   if (["shipping", "delivery time", "returns", "exchange", "policy", "hours", "contact", "support", "address", "phone number"].some((k) => lower.includes(k))) return "support_question";
-  if (["buy", "purchase", "price", "cost", "interested in", "i need", "looking for", "recommend", "suggest", "which product", "best for", "how much is"].some((k) => lower.includes(k))) return "sales_enquiry";
+  if ([
+    "buy",
+    "purchase",
+    "price",
+    "cost",
+    "interested in",
+    "i need",
+    "looking for",
+    "recommend",
+    "suggest",
+    "which product",
+    "best for",
+    "how much is",
+    // Cab (intercity)
+    "cab",
+    "taxi",
+    "outstation",
+    "intercity",
+    // Home services (maid/cook/cleaning)
+    "maid",
+    "cook",
+    "cooking",
+    "cleaning",
+    "cleaner",
+    "housekeeping",
+    "househelp",
+    "babysitter",
+    "nanny",
+    "deep clean",
+    "full-time maid"
+  ].some((k) => lower.includes(k))) return "sales_enquiry";
   if (["order status", "where is my order", "tracking", "package", "delivery status", "when will i receive", "owner of order", "order"].some((k) => lower.includes(k))) return "order_status";
   if (["what is", "how to use", "ingredients", "spf", "difference between", "suitable for", "good for", "tested", "niacinamide", "vitamin c", "serum", "cleanser"].some((k) => lower.includes(k))) return "product_question";
   return "unknown";
@@ -52740,6 +53035,23 @@ function messageHasDate(msg) {
   if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
   if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
   return false;
+}
+var CAB_KEYWORD_RE = /\b(cab|taxi|ride|car|outstation|intercity|pick\s?up|pickup|drop)\b/i;
+var HOME_SERVICE_KEYWORD_RE = /\b(maid|cook|cooking|cleaning|cleaner|housekeeping|househelp|babysitter|nanny|deep\s?clean|full[-\s]?time\s?maid)\b/i;
+var CITY_PAIR_RE = /\b([a-z]+)\s+to\s+([a-z]+)\b/i;
+var VEHICLE_CLASSES = ["sedan", "suv", "tempo"];
+function parseServiceKind(lower) {
+  if (/\b(babysitter|nanny|babysitting)\b/.test(lower)) return "babysitting";
+  if (/\b(cook|cooking)\b/.test(lower)) return "cooking";
+  if (/\b(clean|cleaning|cleaner|housekeeping|housekeeper|maid|househelp)\b/.test(lower)) return "cleaning";
+  if (/\bfull[-\s]?time\b/.test(lower)) return "full-time";
+  return void 0;
+}
+function hasCabKeyword(deps, text) {
+  return deps.vertical === "cab-intercity" || CAB_KEYWORD_RE.test(text);
+}
+function hasHomeServiceSignal(deps, text) {
+  return deps.vertical === "home-services" || HOME_SERVICE_KEYWORD_RE.test(text);
 }
 var INTENT_VALUES = [
   "sales_enquiry",
@@ -53001,6 +53313,83 @@ When are you planning to travel, and for how many people?`;
     }
     return state;
   }
+  {
+    const cabKeyword = hasCabKeyword(deps, lower);
+    const cityPair = lower.match(CITY_PAIR_RE);
+    if (cabKeyword || cityPair) {
+      const fromCity = cityPair?.[1];
+      const toCity = cityPair?.[2];
+      const vehicleClass = VEHICLE_CLASSES.find((v) => lower.includes(v));
+      const input = { organizationId: state.organizationId, fromCity, toCity, vehicleClass };
+      const searchResult2 = await searchCabRoutes(store, input);
+      if (cabKeyword || searchResult2.routes.length > 0) {
+        state.toolCalls.push({ tool: "search_cab_routes", input, output: searchResult2 });
+        if (searchResult2.routes.length > 0) {
+          const top = searchResult2.routes.slice(0, 3);
+          const first = top[0];
+          const llmReply = hasRealLLM(deps) ? await composeReplyWithLLM(
+            deps.llm,
+            state,
+            deps,
+            "Recommend the most relevant cab route(s). For each, mention the fare, vehicle class and estimated travel time. Then ask for the pickup date.",
+            { cabRoutes: top }
+          ) : null;
+          state.proposedResponse = llmReply ?? `Here are cab options I can arrange:
+${top.map((r) => `\u2022 *${r.title}* \u2014 ${r.fare}, ${r.vehicleClass}, ~${r.estimatedHours}h`).join("\n")}
+
+Which route works for you, and when should we pick you up?`;
+          const leadResult = await upsertQualifiedLead(store, {
+            organizationId: state.organizationId,
+            contactId: state.contactId,
+            conversationId: state.conversationId,
+            serviceInterest: state.inboundMessage.substring(0, 500),
+            qualificationSummary: `Customer interested in cab route ${first.sku} (${first.fromCity} \u2192 ${first.toCity}).`,
+            score: 60,
+            idempotencyKey: `lead:${state.conversationId}:${state.traceId}`
+          });
+          state.toolCalls.push({ tool: "upsert_qualified_lead", input: { serviceInterest: state.inboundMessage }, output: leadResult });
+        } else {
+          state.proposedResponse = "Happy to arrange a cab! \u{1F695} Which cities are you travelling between (pickup \u2192 drop), and on what date?";
+        }
+        return state;
+      }
+    }
+  }
+  if (hasHomeServiceSignal(deps, lower)) {
+    const service = parseServiceKind(lower);
+    const planType = lower.includes("monthly") ? "monthly" : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? "one-time" : void 0;
+    const input = { organizationId: state.organizationId, service, planType };
+    const searchResult2 = await searchServicePlans(store, input);
+    state.toolCalls.push({ tool: "search_service_plans", input, output: searchResult2 });
+    if (searchResult2.plans.length > 0) {
+      const top = searchResult2.plans.slice(0, 3);
+      const first = top[0];
+      const llmReply = hasRealLLM(deps) ? await composeReplyWithLLM(
+        deps.llm,
+        state,
+        deps,
+        "Recommend the most relevant home-service plan(s). For each, mention the price, hours per visit and plan type. Then ask when they would like to start.",
+        { servicePlans: top }
+      ) : null;
+      state.proposedResponse = llmReply ?? `Here are plans I'd recommend:
+${top.map((p) => `\u2022 *${p.title}* \u2014 ${p.price}, ${p.hoursPerVisit}h/visit, ${p.planType}`).join("\n")}
+
+Which plan suits you, and when would you like to start?`;
+      const leadResult = await upsertQualifiedLead(store, {
+        organizationId: state.organizationId,
+        contactId: state.contactId,
+        conversationId: state.conversationId,
+        serviceInterest: state.inboundMessage.substring(0, 500),
+        qualificationSummary: `Customer interested in home-service plan ${first.sku} (${first.service}, ${first.planType}).`,
+        score: 60,
+        idempotencyKey: `lead:${state.conversationId}:${state.traceId}`
+      });
+      state.toolCalls.push({ tool: "upsert_qualified_lead", input: { serviceInterest: state.inboundMessage }, output: leadResult });
+    } else {
+      state.proposedResponse = "I'd be glad to help! \u{1F9F9} Are you looking for cooking, cleaning or full-time help \u2014 and for which area? I'll share the best plans.";
+    }
+    return state;
+  }
   const skinType = lower.includes("oily") ? "oily" : lower.includes("dry") ? "dry" : void 0;
   const searchResult = await searchProductCatalog(store, {
     organizationId: state.organizationId,
@@ -53120,7 +53509,10 @@ async function nodeBookingFlow(store, state, deps) {
   } catch {
     state.errors.push("Failed to record callback request");
   }
-  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+  const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
+  const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
+  const nonTravelSkus = new Set([...cabRoutes, ...servicePlans].map((p) => p.sku));
+  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages.filter((p) => !nonTravelSkus.has(p.sku));
   const ctx = state.customerContext;
   const contextText = [
     state.inboundMessage,
@@ -53191,6 +53583,76 @@ Is there anything else I can help you with? \u{1F60A}`;
         return state;
       }
     }
+  }
+  const matchedCab = cabRoutes.find((r) => contextText.includes(r.sku.toLowerCase()) || !!r.fromCity && !!r.toCity && contextText.includes(r.fromCity.toLowerCase()) && contextText.includes(r.toCity.toLowerCase()) || r.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isCabBooking = !isTravelBooking && (deps.vertical === "cab-intercity" || !!matchedCab || hasCabKeyword(deps, contextText));
+  if (isCabBooking) {
+    if (matchedCab && !hasDate) {
+      offerChoices(state, { list: { header: "\u{1F4C5} When should we pick you up?", button: "Pick a date", items: upcomingDates() } });
+      state.proposedResponse = `Great \u2014 *${matchedCab.title}* (${matchedCab.fare}). \u{1F695}
+When should we pick you up? Tap a date below, or type your preferred date. \u{1F447}`;
+      return state;
+    }
+    if (matchedCab && hasDate) {
+      const pickupDate = state.inboundMessage.replace(/^date:/i, "").trim();
+      const booking = deps.createCabBooking ? await deps.createCabBooking({ contactId: state.contactId, packageSku: matchedCab.sku, pickupDate }) : null;
+      if (booking?.url) {
+        state.proposedResponse = `Perfect! \u{1F695} I've reserved *${matchedCab.title}* for ${pickupDate}. Fare: ${booking.amountText} (Booking ${booking.bookingNumber}).
+
+\u{1F4B3} Complete your booking with this secure payment link:
+${booking.url}
+
+Once you pay, your driver details will be shared. \u2728`;
+      } else if (booking) {
+        state.proposedResponse = `All set! \u{1F695} I've noted your cab *${matchedCab.title}* for ${pickupDate} (Booking ${booking.bookingNumber}), fare ${booking.amountText}. Our team will share your secure payment link and driver details shortly. \u{1F60A}`;
+      } else {
+        state.proposedResponse = `All set! \u{1F695} I've noted your request for *${matchedCab.title}* on ${pickupDate}. Our team will confirm and share the payment link shortly. \u{1F60A}`;
+      }
+      state.toolCalls.push({ tool: "create_cab_booking", input: { packageSku: matchedCab.sku, pickupDate }, output: booking ?? void 0 });
+      return state;
+    }
+    if (isConfirming && !matchedCab && cabRoutes.length > 0) {
+      state.toolCalls.push({ tool: "search_cab_routes", input: {}, output: { routes: cabRoutes } });
+      state.proposedResponse = `Happy to get you booked! \u{1F695} Which route shall we go with? Tap one below \u{1F447}`;
+      return state;
+    }
+    state.proposedResponse = "Happy to book your cab! \u{1F60A} Which route (pickup \u2192 drop) and pickup date works for you?";
+    return state;
+  }
+  const matchedPlan = servicePlans.find((p) => contextText.includes(p.sku.toLowerCase()) || !!p.service && contextText.includes(p.service.toLowerCase()) || p.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isServiceBooking = !isTravelBooking && (deps.vertical === "home-services" || !!matchedPlan || hasHomeServiceSignal(deps, contextText));
+  if (isServiceBooking) {
+    if (matchedPlan && !hasDate) {
+      offerChoices(state, { list: { header: "\u{1F4C5} When would you like to start?", button: "Pick a date", items: upcomingDates() } });
+      state.proposedResponse = `Great \u2014 *${matchedPlan.title}* (${matchedPlan.price}). \u{1F9F9}
+When would you like to start? Tap a date below, or type your preferred date. \u{1F447}`;
+      return state;
+    }
+    if (matchedPlan && hasDate) {
+      const startDate = state.inboundMessage.replace(/^date:/i, "").trim();
+      const booking = deps.createServiceBooking ? await deps.createServiceBooking({ contactId: state.contactId, packageSku: matchedPlan.sku, startDate }) : null;
+      if (booking?.url) {
+        state.proposedResponse = `Perfect! \u{1F9F9} I've booked *${matchedPlan.title}* starting ${startDate}. Amount: ${booking.amountText} (Booking ${booking.bookingNumber}).
+
+\u{1F4B3} Complete your booking with this secure payment link:
+${booking.url}
+
+Once you pay, we'll confirm your assigned help. \u2728`;
+      } else if (booking) {
+        state.proposedResponse = `All set! \u{1F9F9} I've noted *${matchedPlan.title}* starting ${startDate} (Booking ${booking.bookingNumber}), amount ${booking.amountText}. Our team will share your secure payment link shortly. \u{1F60A}`;
+      } else {
+        state.proposedResponse = `All set! \u{1F9F9} I've noted your request for *${matchedPlan.title}* starting ${startDate}. Our team will confirm and share the payment link shortly. \u{1F60A}`;
+      }
+      state.toolCalls.push({ tool: "create_service_booking", input: { packageSku: matchedPlan.sku, startDate }, output: booking ?? void 0 });
+      return state;
+    }
+    if (isConfirming && !matchedPlan && servicePlans.length > 0) {
+      state.toolCalls.push({ tool: "search_service_plans", input: {}, output: { plans: servicePlans } });
+      state.proposedResponse = `Happy to get you booked! \u{1F9F9} Which plan shall we go with? Tap one below \u{1F447}`;
+      return state;
+    }
+    state.proposedResponse = "Happy to book your home help! \u{1F60A} Which plan would you like, and when should we start?";
+    return state;
   }
   if (!isTravelBooking && deps.vertical && deps.vertical !== "travel") {
     if (!messageHasDate(state.inboundMessage)) {
@@ -54955,6 +55417,26 @@ function buildInteractive(state) {
         } };
       }
     }
+    if (tc.tool === "search_cab_routes") {
+      const routes = out?.["routes"] ?? [];
+      if (routes.length >= 2) {
+        return { list: {
+          header: "Available cabs",
+          button: "View routes",
+          items: routes.slice(0, 10).map((r) => ({ id: r.sku, title: truncate(r.title, 24), description: truncate(`${r.fare} \xB7 ${r.vehicleClass} \xB7 ~${r.estimatedHours}h`, 72) }))
+        } };
+      }
+    }
+    if (tc.tool === "search_service_plans") {
+      const plans = out?.["plans"] ?? [];
+      if (plans.length >= 2) {
+        return { list: {
+          header: "Our plans",
+          button: "View plans",
+          items: plans.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.title, 24), description: truncate(`${p.price} \xB7 ${p.planType}`, 72) }))
+        } };
+      }
+    }
   }
   if (!state.handoffId && !state.policyDecision?.shouldHandoff && state.intent === "unknown") {
     return { buttons: [{ id: "browse-offers", title: "\u{1F9F3} Browse offers" }, { id: "talk-human", title: "\u{1F4AC} Talk to a human" }] };
@@ -55071,10 +55553,30 @@ function buildServer(env = process.env) {
       return false;
     }
   }
-  async function recordError(source, message, ctx, orgId) {
+  const alertEmail = env["ALERT_EMAIL"];
+  async function alertOps(key, subject, body) {
+    if (!alertEmail || !emailService.isConfigured) return;
+    const windowKey = (/* @__PURE__ */ new Date()).toISOString().slice(0, 13);
     try {
-      await db.from("error_events").insert({ organization_id: orgId ?? null, source, severity: "error", message: message.slice(0, 2e3), context: ctx ?? {} });
+      const { data: claimed } = await db.rpc("claim_alert", { p_key: key, p_window_key: windowKey });
+      if (claimed !== true) return;
+      await emailService.send({
+        to: alertEmail,
+        subject: `\u{1F6A8} SaarthiOne alert: ${subject}`,
+        html: `<h3>${subject}</h3><pre style="white-space:pre-wrap;font-family:monospace;font-size:13px">${body.slice(0, 4e3).replace(/</g, "&lt;")}</pre><p style="color:#888">Throttled to one email per hour per alert key.</p>`
+      });
     } catch {
+    }
+  }
+  async function recordError(source, message, ctx, orgId, severity = "error") {
+    try {
+      await db.from("error_events").insert({ organization_id: orgId ?? null, source, severity, message: message.slice(0, 2e3), context: ctx ?? {} });
+    } catch {
+    }
+    if (severity === "critical" || source === "agent_runtime" || source === "whatsapp_send" || source === "token_expired") {
+      await alertOps(`${source}:${orgId ?? "platform"}`, `${source} (${orgId ?? "platform"})`, `${message}
+
+context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
     }
   }
   const orgCache = /* @__PURE__ */ new Map();
@@ -55097,10 +55599,12 @@ function buildServer(env = process.env) {
       const { data: lead } = await db.from("leads").select("id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id").eq("organization_id", orgId).eq("id", leadId).maybeSingle();
       if (!lead?.contact_id) return;
       const { data: contact } = await db.from("contacts").select("id, name, email, phone_number, hubspot_contact_id").eq("organization_id", orgId).eq("id", lead.contact_id).maybeSingle();
-      if (!contact?.phone_number) return;
+      if (!contact) return;
+      const realPhone = (await store.findContactById(orgId, contact.id))?.phone ?? void 0;
+      if (!realPhone) return;
       const [firstName, ...rest] = (contact.name ?? "").trim().split(/\s+/);
       const c = await hubspot.upsertContact({
-        phone: contact.phone_number,
+        phone: realPhone,
         email: contact.email ?? void 0,
         firstName: firstName || void 0,
         lastName: rest.join(" ") || void 0,
@@ -55110,7 +55614,7 @@ function buildServer(env = process.env) {
         await db.from("contacts").update({ hubspot_contact_id: c.id }).eq("id", contact.id);
       }
       const d = await hubspot.upsertDeal({
-        dealName: `${contact.name ?? contact.phone_number} \u2014 ${lead.service_interest ?? "enquiry"}`.slice(0, 120),
+        dealName: `${contact.name ?? realPhone} \u2014 ${lead.service_interest ?? "enquiry"}`.slice(0, 120),
         amount: typeof lead.estimated_value === "number" ? lead.estimated_value : void 0,
         stage: lead.stage === "qualified" ? "qualifiedtobuy" : "appointmentscheduled",
         contactId: c.id,
@@ -55178,7 +55682,7 @@ function buildServer(env = process.env) {
             logger.info("Booking reserved; Razorpay not configured \u2014 payment link deferred to team", { booking: booking.bookingNumber });
             return null;
           }
-          const { data: contact } = await db.from("contacts").select("name, phone_number").eq("id", contactId).maybeSingle();
+          const contact = await store.findContactById(orgId, contactId);
           const link = await razorpay.createPaymentLink({
             organizationId: orgId,
             orderId: booking.id,
@@ -55186,12 +55690,60 @@ function buildServer(env = process.env) {
             currency: "INR",
             description: `${title} \u2014 ${travellers} traveller(s)`,
             customerName: contact?.name ?? void 0,
-            customerPhone: contact?.phone_number ?? void 0,
+            customerPhone: contact?.phone ?? void 0,
             expiresInMinutes: 60
           });
           return { url: link.url, amountText };
         } catch (err) {
           logger.warn("createCheckoutLink failed", { error: err instanceof Error ? err.message : String(err) });
+          return null;
+        }
+      },
+      // ── Intercity cab booking → reserve + Razorpay link ──
+      createCabBooking: async ({ contactId, packageSku, pickupDate }) => {
+        try {
+          const res = await createCabBooking(store, { organizationId: orgId, contactId, packageSku, pickupDate, idempotencyKey: `cab:${contactId}:${packageSku}:${pickupDate}` });
+          const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, "")) || 0;
+          const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
+          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const contact = await store.findContactById(orgId, contactId);
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId,
+            orderId: res.bookingId,
+            amount,
+            currency: "INR",
+            description: `Cab booking ${res.bookingNumber}`,
+            customerName: contact?.name ?? void 0,
+            customerPhone: contact?.phone ?? void 0,
+            expiresInMinutes: 180
+          });
+          return { url: link.url, amountText, bookingNumber: res.bookingNumber };
+        } catch (err) {
+          logger.warn("createCabBooking failed", { error: err instanceof Error ? err.message : String(err) });
+          return null;
+        }
+      },
+      // ── Home-service booking → reserve + Razorpay link ──
+      createServiceBooking: async ({ contactId, packageSku, startDate }) => {
+        try {
+          const res = await createServiceBooking(store, { organizationId: orgId, contactId, packageSku, startDate, idempotencyKey: `svc:${contactId}:${packageSku}:${startDate}` });
+          const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, "")) || 0;
+          const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
+          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const contact = await store.findContactById(orgId, contactId);
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId,
+            orderId: res.bookingId,
+            amount,
+            currency: "INR",
+            description: `Home service ${res.bookingNumber}`,
+            customerName: contact?.name ?? void 0,
+            customerPhone: contact?.phone ?? void 0,
+            expiresInMinutes: 1440
+          });
+          return { url: link.url, amountText, bookingNumber: res.bookingNumber };
+        } catch (err) {
+          logger.warn("createServiceBooking failed", { error: err instanceof Error ? err.message : String(err) });
           return null;
         }
       }
@@ -55342,6 +55894,9 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
           await messageService.persistOutbound(orgId, msg.from, state.finalResponse, result.providerMessageId, msg.conversationId);
         } else if (!result.success) {
           logger.error("Failed to send agent reply", { error: result.error, to: msg.from });
+          const errStr = result.error ?? "send failed";
+          const isTokenExpiry = /\b190\b|131005|expired|OAuthException|access token/i.test(errStr);
+          await recordError(isTokenExpiry ? "token_expired" : "whatsapp_send", errStr, { to: msg.from }, orgId, isTokenExpiry ? "critical" : "error");
         }
       }
       if (hubspot.isConfigured) {
@@ -55617,7 +56172,8 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }
       const org = operator.organizationId;
       const norm = phone.startsWith("+") ? phone : `+${phone}`;
-      const { data: contact } = await db.from("contacts").select("*").eq("organization_id", org).eq("phone_number", norm).maybeSingle();
+      const found = await store.findContactByPhone(org, norm);
+      const { data: contact } = found ? await db.from("contacts").select("*").eq("organization_id", org).eq("id", found.id).maybeSingle() : { data: null };
       if (!contact) {
         res.status(404).json({ error: "No data for that number" });
         return;
@@ -55647,7 +56203,8 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }
       const org = operator.organizationId;
       const norm = phone.startsWith("+") ? phone : `+${phone}`;
-      const { data: contact } = await db.from("contacts").select("id").eq("organization_id", org).eq("phone_number", norm).maybeSingle();
+      const found = await store.findContactByPhone(org, norm);
+      const contact = found ? { id: found.id } : null;
       if (!contact) {
         res.status(404).json({ error: "No data for that number" });
         return;
@@ -55740,6 +56297,115 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         }
       });
     }
+    app3.get("/health/ready", async (_req, res) => {
+      const t = Date.now();
+      let dbOk = false;
+      try {
+        const { error } = await db.from("organizations").select("id").limit(1);
+        dbOk = !error;
+      } catch {
+        dbOk = false;
+      }
+      res.status(dbOk ? 200 : 503).json({
+        status: dbOk ? "ok" : "degraded",
+        db: dbOk,
+        whatsapp: activeProvider,
+        embeddings: !!embedder,
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        latencyMs: Date.now() - t
+      });
+    });
+    app3.post("/api/team/invite", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const email = req.body?.email?.trim().toLowerCase();
+      const role = req.body?.role === "admin" ? "admin" : "operator";
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        res.status(400).json({ ok: false, error: "A valid email is required" });
+        return;
+      }
+      const token = ((0, import_crypto12.randomUUID)() + (0, import_crypto12.randomUUID)()).replace(/-/g, "");
+      const { data, error } = await db.from("team_invites").upsert({
+        organization_id: operator.organizationId,
+        email,
+        role,
+        token,
+        invited_by: operator.userId,
+        status: "pending",
+        accepted_at: null
+      }, { onConflict: "organization_id,email" }).select("id, email, role, status, created_at").single();
+      if (error) {
+        res.status(500).json({ ok: false, error: error.message });
+        return;
+      }
+      const base = env["DASHBOARD_URL"] ?? "https://saarthione.vercel.app";
+      const acceptUrl = `${base}/?invite=${token}`;
+      if (emailService.isConfigured) {
+        const org = await getOrgContext(operator.organizationId);
+        await emailService.send({
+          to: email,
+          subject: `You're invited to ${org.name} on SaarthiOne`,
+          html: `<p>You've been invited to join <b>${org.name}</b> as <b>${role}</b> on SaarthiOne.</p><p><a href="${acceptUrl}">Accept your invitation</a></p><p style="color:#888;font-size:12px">Or paste this link into your browser: ${acceptUrl}</p>`
+        }).catch(() => {
+        });
+      }
+      res.status(200).json({ ok: true, invite: data, acceptUrl });
+    });
+    app3.get("/api/team/invites", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const { data } = await db.from("team_invites").select("id, email, role, status, created_at, accepted_at").eq("organization_id", operator.organizationId).order("created_at", { ascending: false });
+      res.status(200).json({ ok: true, invites: data ?? [] });
+    });
+    app3.post("/api/team/invite/revoke", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const id = req.body?.id;
+      if (!id) {
+        res.status(400).json({ ok: false, error: "id required" });
+        return;
+      }
+      await db.from("team_invites").update({ status: "revoked" }).eq("id", id).eq("organization_id", operator.organizationId);
+      res.status(200).json({ ok: true });
+    });
+    app3.post("/api/invite/accept", async (req, res) => {
+      const auth = req.headers.authorization;
+      if (!auth?.startsWith("Bearer ")) {
+        res.status(401).json({ ok: false, error: "Sign in to accept the invite" });
+        return;
+      }
+      const user = await verifySupabaseAccessToken({ supabaseUrl, anonKey, accessToken: auth.slice(7) });
+      if (!user) {
+        res.status(401).json({ ok: false, error: "Invalid session" });
+        return;
+      }
+      const token = req.body?.token;
+      if (!token) {
+        res.status(400).json({ ok: false, error: "token required" });
+        return;
+      }
+      const { data: invite } = await db.from("team_invites").select("*").eq("token", token).eq("status", "pending").maybeSingle();
+      if (!invite) {
+        res.status(404).json({ ok: false, error: "This invite is invalid or was already used" });
+        return;
+      }
+      if (user.email && invite.email && user.email.toLowerCase() !== String(invite.email).toLowerCase()) {
+        res.status(403).json({ ok: false, error: `This invite is for ${invite.email}. Please sign in with that email.` });
+        return;
+      }
+      await db.from("organization_members").upsert({ organization_id: invite.organization_id, user_id: user.userId, role: invite.role }, { onConflict: "organization_id,user_id" });
+      await db.from("team_invites").update({ status: "accepted", accepted_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", invite.id);
+      res.status(200).json({ ok: true, organizationId: invite.organization_id, role: invite.role });
+    });
     const OperatorMessageSchema = external_exports.object({
       conversationId: external_exports.string().uuid(),
       text: external_exports.string().min(1).max(4096)
@@ -55906,20 +56572,32 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     // Vercel provides the OIDC token via request header; surface it for the
     // AI Gateway providers which read process.env at call time.
     preMiddleware: (req, res, next2) => {
-      const oidc = req.headers["x-vercel-oidc-token"];
-      if (typeof oidc === "string" && oidc.length > 0) {
-        process.env["VERCEL_OIDC_TOKEN"] = oidc;
-      }
-      const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
-      const now = Date.now();
-      const win = rateWindows.get(ip);
-      if (!win || now > win.reset) {
-        rateWindows.set(ip, { count: 1, reset: now + 1e4 });
-      } else if (++win.count > 60) {
-        res.status(429).json({ error: "Too many requests" });
-        return;
-      }
-      next2();
+      void (async () => {
+        const oidc = req.headers["x-vercel-oidc-token"];
+        if (typeof oidc === "string" && oidc.length > 0) {
+          process.env["VERCEL_OIDC_TOKEN"] = oidc;
+        }
+        const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+        const now = Date.now();
+        const win = rateWindows.get(ip);
+        if (!win || now > win.reset) {
+          rateWindows.set(ip, { count: 1, reset: now + 1e4 });
+        } else if (++win.count > 60) {
+          res.status(429).json({ error: "Too many requests" });
+          return;
+        }
+        if (req.method === "POST" && !req.path.startsWith("/webhook")) {
+          try {
+            const { data: allowed } = await db.rpc("check_rate_limit", { p_key: `ip:${ip}`, p_max: 300, p_window_seconds: 60 });
+            if (allowed === false) {
+              res.status(429).json({ error: "Rate limit exceeded" });
+              return;
+            }
+          } catch {
+          }
+        }
+        next2();
+      })();
     }
   });
   return { app: app2, adapter, db, store, llm, embedder };

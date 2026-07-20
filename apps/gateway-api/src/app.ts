@@ -212,12 +212,12 @@ export function createApp(deps: CreateAppDeps): express.Express {
     res.status(result.success ? 200 : 500).json(result);
   });
 
-  /** Health check */
+  /** Liveness — the process is up. Readiness (with DB) is /health/ready. */
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
   });
 
-  // Production-only routes (operator API, internal RAG/scheduler endpoints)
+  // Production-only routes (operator API, internal RAG/scheduler endpoints).
   deps.registerRoutes?.(app);
 
   return app;

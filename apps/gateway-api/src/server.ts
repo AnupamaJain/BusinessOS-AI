@@ -10,7 +10,7 @@ import type { WhatsAppAdapter, InboundMessage, InteractiveList, ReplyButton } fr
 import type { AgentState } from '@business-os-ai/agent-core';
 import { SupabaseIdempotencyService, SupabaseMessageService } from './services/supabase-services';
 import { createServiceClient, type SupabaseClient } from '@business-os-ai/database';
-import { SupabaseBusinessStore } from '@business-os-ai/mcp-business-tools';
+import { SupabaseBusinessStore, createCabBooking as createCabBookingTool, createServiceBooking as createServiceBookingTool } from '@business-os-ai/mcp-business-tools';
 import { createGatewayFromEnv, type LLMGateway } from '@business-os-ai/llm-gateway';
 import {
   createEmbeddingProviderFromEnv, SupabaseVectorStore, executeAgentGraph,
@@ -322,11 +322,14 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       const { data: contact } = await db.from('contacts')
         .select('id, name, email, phone_number, hubspot_contact_id')
         .eq('organization_id', orgId).eq('id', lead.contact_id).maybeSingle();
-      if (!contact?.phone_number) return;
+      if (!contact) return;
+      // Real (decrypted) phone — the column may be masked at rest.
+      const realPhone = (await store.findContactById(orgId, contact.id))?.phone ?? undefined;
+      if (!realPhone) return;
 
       const [firstName, ...rest] = (contact.name ?? '').trim().split(/\s+/);
       const c = await hubspot.upsertContact({
-        phone: contact.phone_number,
+        phone: realPhone,
         email: contact.email ?? undefined,
         firstName: firstName || undefined,
         lastName: rest.join(' ') || undefined,
@@ -337,7 +340,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }
 
       const d = await hubspot.upsertDeal({
-        dealName: `${contact.name ?? contact.phone_number} — ${lead.service_interest ?? 'enquiry'}`.slice(0, 120),
+        dealName: `${contact.name ?? realPhone} — ${lead.service_interest ?? 'enquiry'}`.slice(0, 120),
         amount: typeof lead.estimated_value === 'number' ? lead.estimated_value : undefined,
         stage: (lead.stage as string) === 'qualified' ? 'qualifiedtobuy' : 'appointmentscheduled',
         contactId: c.id,
@@ -402,16 +405,56 @@ export function buildServer(env: Record<string, string | undefined> = process.en
             logger.info('Booking reserved; Razorpay not configured — payment link deferred to team', { booking: booking.bookingNumber });
             return null;
           }
-          const { data: contact } = await db.from('contacts').select('name, phone_number').eq('id', contactId).maybeSingle();
+          // findContactById returns the REAL phone (decrypted) even though the
+          // phone_number column may be masked at rest.
+          const contact = await store.findContactById(orgId, contactId);
           const link = await razorpay.createPaymentLink({
             organizationId: orgId, orderId: booking.id, amount, currency: 'INR',
             description: `${title} — ${travellers} traveller(s)`,
-            customerName: contact?.name ?? undefined, customerPhone: contact?.phone_number ?? undefined,
+            customerName: contact?.name ?? undefined, customerPhone: contact?.phone ?? undefined,
             expiresInMinutes: 60,
           });
           return { url: link.url, amountText };
         } catch (err) {
           logger.warn('createCheckoutLink failed', { error: err instanceof Error ? err.message : String(err) });
+          return null;
+        }
+      },
+      // ── Intercity cab booking → reserve + Razorpay link ──
+      createCabBooking: async ({ contactId, packageSku, pickupDate }) => {
+        try {
+          const res = await createCabBookingTool(store, { organizationId: orgId, contactId, packageSku, pickupDate, idempotencyKey: `cab:${contactId}:${packageSku}:${pickupDate}` });
+          const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, '')) || 0;
+          const amountText = `₹${amount.toLocaleString('en-IN')}`;
+          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const contact = await store.findContactById(orgId, contactId);
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId, orderId: res.bookingId, amount, currency: 'INR',
+            description: `Cab booking ${res.bookingNumber}`,
+            customerName: contact?.name ?? undefined, customerPhone: contact?.phone ?? undefined, expiresInMinutes: 180,
+          });
+          return { url: link.url, amountText, bookingNumber: res.bookingNumber };
+        } catch (err) {
+          logger.warn('createCabBooking failed', { error: err instanceof Error ? err.message : String(err) });
+          return null;
+        }
+      },
+      // ── Home-service booking → reserve + Razorpay link ──
+      createServiceBooking: async ({ contactId, packageSku, startDate }) => {
+        try {
+          const res = await createServiceBookingTool(store, { organizationId: orgId, contactId, packageSku, startDate, idempotencyKey: `svc:${contactId}:${packageSku}:${startDate}` });
+          const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, '')) || 0;
+          const amountText = `₹${amount.toLocaleString('en-IN')}`;
+          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const contact = await store.findContactById(orgId, contactId);
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId, orderId: res.bookingId, amount, currency: 'INR',
+            description: `Home service ${res.bookingNumber}`,
+            customerName: contact?.name ?? undefined, customerPhone: contact?.phone ?? undefined, expiresInMinutes: 1440,
+          });
+          return { url: link.url, amountText, bookingNumber: res.bookingNumber };
+        } catch (err) {
+          logger.warn('createServiceBooking failed', { error: err instanceof Error ? err.message : String(err) });
           return null;
         }
       },
@@ -881,7 +924,11 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
       const org = operator.organizationId;
       const norm = phone.startsWith('+') ? phone : `+${phone}`;
-      const { data: contact } = await db.from('contacts').select('*').eq('organization_id', org).eq('phone_number', norm).maybeSingle();
+      // Look up via the blind index (phone_number is masked/encrypted at rest).
+      const found = await store.findContactByPhone(org, norm);
+      const { data: contact } = found
+        ? await db.from('contacts').select('*').eq('organization_id', org).eq('id', found.id).maybeSingle()
+        : { data: null };
       if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
       const cid = contact.id;
       const [consent, leads, bookings, handoffs, convs] = await Promise.all([
@@ -904,7 +951,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
       const org = operator.organizationId;
       const norm = phone.startsWith('+') ? phone : `+${phone}`;
-      const { data: contact } = await db.from('contacts').select('id').eq('organization_id', org).eq('phone_number', norm).maybeSingle();
+      const found = await store.findContactByPhone(org, norm);
+      const contact = found ? { id: found.id } : null;
       if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
       // Deleting the contact cascades to consent/conversations/messages/leads/bookings/handoffs.
       await db.from('contacts').delete().eq('organization_id', org).eq('id', contact.id);
@@ -999,8 +1047,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       });
     }
 
-    /** Liveness + dependency health for uptime monitors (public, no secrets). */
-    app.get('/health', async (_req, res) => {
+    /** Readiness — liveness + DB reachability for uptime monitors (public, no secrets). */
+    app.get('/health/ready', async (_req, res) => {
       const t = Date.now();
       let dbOk = false;
       try { const { error } = await db.from('organizations').select('id').limit(1); dbOk = !error; } catch { dbOk = false; }

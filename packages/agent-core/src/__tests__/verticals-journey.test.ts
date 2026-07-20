@@ -53,7 +53,7 @@ describe('Cab (intercity) journey', () => {
   });
 
   it('books the cab and surfaces the payment link when a date is present', async () => {
-    const createCabBooking = vi.fn(async () => ({
+    const createCabBooking = vi.fn(async (_a: { contactId: string; packageSku: string; pickupDate: string }) => ({
       url: 'https://pay.example.com/cab/abc123', amountText: '₹3,500', bookingNumber: 'BK-55501',
     }));
     const deps: AgentGraphDeps = { vertical: 'cab-intercity', createCabBooking };
@@ -95,7 +95,7 @@ describe('Home services (maid) journey', () => {
   });
 
   it('books the service and surfaces the payment link when a start date is present', async () => {
-    const createServiceBooking = vi.fn(async () => ({
+    const createServiceBooking = vi.fn(async (_a: { contactId: string; packageSku: string; startDate: string }) => ({
       url: 'https://pay.example.com/svc/xyz789', amountText: '₹6,000', bookingNumber: 'BK-66601',
     }));
     const deps: AgentGraphDeps = { vertical: 'home-services', createServiceBooking };
