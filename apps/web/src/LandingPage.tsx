@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { 
-  Bot, Sparkles, CheckCircle, ArrowRight, Play, 
-  Lock, Users, ChevronRight, Compass, Utensils, Stethoscope, Scissors, GraduationCap, ShoppingBag,
-  Eye, FileText, Activity
+import {
+  Sparkles, ArrowRight, Play, CheckCircle, Check,
+  Compass, Utensils, Stethoscope, Scissors, GraduationCap, ShoppingBag, Briefcase,
+  Wrench, Loader,
 } from 'lucide-react';
+import { joinWaitlist } from './lib/api';
 
 interface LandingPageProps {
   onLaunchApp: () => void;
@@ -211,697 +212,254 @@ function JourneyPhone({ sub, screen }: { sub: string; screen: ScreenItem[] }) {
   );
 }
 
-export function LandingPage({ onLaunchApp, onStartOnboarding }: LandingPageProps) {
-  const [selectedAgent, setSelectedAgent] = useState<string>('sales');
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('travel');
-  const [activeHeroTab, setActiveHeroTab] = useState<'summary' | 'demo'>('summary');
+// ─── Section data ───────────────────────────────────────────────────────
 
-  const AI_EMPLOYEES = [
-    {
-      id: 'sales',
-      title: 'Sales Agent',
-      subtitle: 'Converts leads into paid customers',
-      avatar: '💼',
-      color: '#00f2fe',
-      metrics: '3.4x higher lead conversion',
-      messages: [
-        { sender: 'customer', text: 'Hi, I want details about your Bali Honeymoon Package.' },
-        { sender: 'agent', text: 'Hello! 👋 Our Bali Honeymoon Package (5N/6D, ₹49,999/person) includes a 4-Star Private Pool Villa in Seminyak, Nusa Penida tour, and candlelight dinner! Would you like me to reserve dates or send the itinerary?' },
-        { sender: 'customer', text: 'Yes! Send me the itinerary for October 15.' },
-        { sender: 'agent', text: 'Done! 📄 I have locked ₹49,999/person for Oct 15-20. Here is your instant booking link: pay.saarthione.ai/bk-9921' }
-      ]
-    },
-    {
-      id: 'support',
-      title: 'Support Agent',
-      subtitle: '24/7 instant resolution & policy search',
-      avatar: '🎧',
-      color: '#00ff87',
-      metrics: '< 2-sec resolution time',
-      messages: [
-        { sender: 'customer', text: 'What is the visa policy and cancellation refund for Europe tour?' },
-        { sender: 'agent', text: 'Schengen Visa requires application 45 days prior. Cancellations made 30+ days before departure receive a 90% refund! Would you like our visa concierge to assist with slot booking?' },
-        { sender: 'customer', text: 'My flight got cancelled due to weather!' },
-        { sender: 'agent', text: '🚨 Emergency detected. I am connecting you to senior agent Aarav right now with your booking history. Hang tight!' }
-      ]
-    },
-    {
-      id: 'booking',
-      title: 'Booking Agent',
-      subtitle: 'Slot selection & real-time reservations',
-      avatar: '📅',
-      color: '#4facfe',
-      metrics: 'Zero double-bookings',
-      messages: [
-        { sender: 'customer', text: 'Do you have slots for Doctor Appointment tomorrow at 4 PM?' },
-        { sender: 'agent', text: 'Dr. Sharma has a slot open tomorrow at 4:30 PM. Shall I confirm your consultation?' },
-        { sender: 'customer', text: 'Yes, confirm 4:30 PM please.' },
-        { sender: 'agent', text: '✅ Appointment Confirmed! Appointment ID: #CL-8842. Calendar invite sent to your WhatsApp.' }
-      ]
-    },
-    {
-      id: 'marketing',
-      title: 'Marketing Agent',
-      subtitle: 'Consent-safe broadcasts & re-engagement',
-      avatar: '📢',
-      color: '#feb47b',
-      metrics: '68% WhatsApp open rate',
-      messages: [
-        { sender: 'agent', text: 'Hi Priya! 👋 You inquired about the Bali Package last week. We have 2 villa slots left for Diwali week at 15% off!' },
-        { sender: 'customer', text: 'Is the 15% discount still valid?' },
-        { sender: 'agent', text: 'Yes! Discount code DIVALI15 applied automatically. Valid for the next 2 hours.' }
-      ]
-    },
-    {
-      id: 'finance',
-      title: 'Finance Agent',
-      subtitle: 'Payment links, GST invoices & refunds',
-      avatar: '💳',
-      color: '#ff4e50',
-      metrics: '₹74k recovered monthly',
-      messages: [
-        { sender: 'customer', text: 'Please send GST invoice for my booking #BK-9921.' },
-        { sender: 'agent', text: 'Here is your official GST Tax Invoice #INV-2026-9921 (PDF). Amount Paid: ₹99,998.' }
-      ]
-    },
-    {
-      id: 'travel',
-      title: 'Travel Agent',
-      subtitle: 'Complete trip planning & itinerary concierge',
-      avatar: '🌴',
-      color: '#a855f7',
-      metrics: 'Custom day-by-day plans',
-      messages: [
-        { sender: 'customer', text: 'Build me a 4-day Goa itinerary with water sports.' },
-        { sender: 'agent', text: 'Here is your custom Goa plan! Day 1: Calangute Resort check-in + Sunset Cruise. Day 2: Parasailing & Jet Ski at Baga Beach. Day 3: Old Goa Heritage + Club Night. Day 4: Flea Market shopping & Departure.' }
-      ]
-    }
-  ];
+const HERO_FLOW = [
+  { icon: '👋', label: 'Customer' },
+  { icon: '💬', label: 'WhatsApp' },
+  { icon: '🤖', label: 'AI asks the right questions' },
+  { icon: '📄', label: 'Quote' },
+  { icon: '💳', label: 'Payment' },
+  { icon: '📅', label: 'Booking' },
+  { icon: '✅', label: 'Done' },
+];
 
-  const INDUSTRIES = [
-    {
-      id: 'travel',
-      name: 'Travel & Tourism',
-      icon: <Compass size={20} />,
-      badge: 'Holiday Packages & Flight Concierge',
-      sampleChat: [
-        { sender: 'customer', text: 'Hi! Looking for a 6-day honeymoon in Bali under 1 Lakh.' },
-        { sender: 'agent', text: "Congratulations! 🎉 For Bali in October, I recommend our 'Bali Romance Escape' (5N/6D, ₹49,999/person). Includes 4-Star Private Pool Villa, Nusa Penida tour, and romantic dinner." },
-        { sender: 'customer', text: 'Can I add a floating breakfast to the villa?' },
-        { sender: 'agent', text: 'Absolutely! Floating breakfast added for ₹2,500. Total package: ₹1,02,498 for 2 adults. Here is your payment link: pay.saarthione.ai/trv-bali' }
-      ]
-    },
-    {
-      id: 'restaurant',
-      name: 'Restaurant & Dining',
-      icon: <Utensils size={20} />,
-      badge: 'Table Booking & Menu Ordering',
-      sampleChat: [
-        { sender: 'customer', text: 'Table for 4 people tonight at 8 PM at Olive Garden?' },
-        { sender: 'agent', text: 'We have a outdoor terrace table available at 8:15 PM tonight. Shall I reserve it under your name?' },
-        { sender: 'customer', text: 'Yes please. We also have 2 vegetarians.' },
-        { sender: 'agent', text: 'Table Reserved! 🍽️ Confirmation #RES-441. Our Chef Special Jain & Vegan menu link has been attached!' }
-      ]
-    },
-    {
-      id: 'clinic',
-      name: 'Clinic & Healthcare',
-      icon: <Stethoscope size={20} />,
-      badge: 'Doctor Appointment & Token Status',
-      sampleChat: [
-        { sender: 'customer', text: 'Need a dermatologist consultation appointment for tomorrow.' },
-        { sender: 'agent', text: 'Dr. Ananya (Dermatology) is available tomorrow at 11:00 AM or 3:30 PM. Which slot suits you?' },
-        { sender: 'customer', text: '11 AM works.' },
-        { sender: 'agent', text: '✅ Confirmed! Token #14 for Dr. Ananya at 11:00 AM tomorrow. Please arrive 10 minutes prior. Clinic location: maps.app.goo.gl/clinic' }
-      ]
-    },
-    {
-      id: 'salon',
-      name: 'Salon & Wellness',
-      icon: <Scissors size={20} />,
-      badge: 'Hair & Spa Slot Scheduling',
-      sampleChat: [
-        { sender: 'customer', text: 'Book hair spa and pedicure for Saturday 2 PM.' },
-        { sender: 'agent', text: 'Saturday 2 PM is available with Senior Stylist Rahul! Total duration: 90 mins. Price: ₹2,499.' },
-        { sender: 'customer', text: 'Confirm it!' },
-        { sender: 'agent', text: 'Spa Slot Booked! 💆‍♀️ See you Saturday at 2:00 PM.' }
-      ]
-    },
-    {
-      id: 'education',
-      name: 'Education & Academies',
-      icon: <GraduationCap size={20} />,
-      badge: 'Course Admissions & Prospectus',
-      sampleChat: [
-        { sender: 'customer', text: 'What is the fee structure for Full Stack Data Science Course?' },
-        { sender: 'agent', text: 'Our 6-month Data Science Bootcamp is ₹45,000 (EMI options from ₹4,500/mo). Next batch starts August 1st! Download Prospectus PDF below.' },
-        { sender: 'customer', text: 'Book a free demo class.' },
-        { sender: 'agent', text: 'Demo Class Pass Issued! 🎓 Date: Saturday 5 PM on Zoom.' }
-      ]
-    },
-    {
-      id: 'retail',
-      name: 'Retail & E-commerce',
-      icon: <ShoppingBag size={20} />,
-      badge: 'Product Check & Quick Checkout',
-      sampleChat: [
-        { sender: 'customer', text: 'Do you have Vitamin C Serum in stock?' },
-        { sender: 'agent', text: 'Yes! GlowRoot Vitamin C Serum (₹1,299) is in stock with 24h express dispatch.' },
-        { sender: 'customer', text: 'Send payment link.' },
-        { sender: 'agent', text: '🛒 Click here to pay via UPI/Card: pay.saarthione.ai/order-991' }
-      ]
-    }
-  ];
+const AI_TEAM = [
+  { avatar: '💼', name: 'Sales AI', color: '#00f2fe', tagline: 'Turns curious visitors into paying customers.', tasks: ['Qualifies every lead, instantly', 'Recommends the right package', 'Generates quotations on the spot'] },
+  { avatar: '🎧', name: 'Support AI', color: '#00ff87', tagline: 'Answers in seconds, escalates when it matters.', tasks: ['Answers FAQs from your own policies', 'Resolves issues 24×7', 'Hands off to a human when needed'] },
+  { avatar: '📅', name: 'Booking AI', color: '#4facfe', tagline: 'Fills your calendar without the back-and-forth.', tasks: ['Schedules appointments & slots', 'Confirms and sends reminders', 'Zero double-bookings'] },
+  { avatar: '💳', name: 'Finance AI', color: '#feb47b', tagline: 'Gets you paid, on time, every time.', tasks: ['Sends secure payment links', 'Issues invoices & receipts', 'Chases pending payments politely'] },
+];
 
-  const currentAgent = AI_EMPLOYEES.find(a => a.id === selectedAgent) || AI_EMPLOYEES[0]!;
-  const currentIndustry = INDUSTRIES.find(i => i.id === selectedIndustry) || INDUSTRIES[0]!;
+const AUDIENCE = [
+  { icon: <Compass size={22} />, name: 'Travel' },
+  { icon: <Scissors size={22} />, name: 'Salon' },
+  { icon: <Stethoscope size={22} />, name: 'Clinic' },
+  { icon: <Utensils size={22} />, name: 'Restaurant' },
+  { icon: <GraduationCap size={22} />, name: 'Education' },
+  { icon: <ShoppingBag size={22} />, name: 'Retail' },
+  { icon: <Briefcase size={22} />, name: 'Professional Services' },
+];
+
+const WHY_DIFFERENT = [
+  ['AI chat', 'AI teammate'],
+  ['Answers questions', 'Completes tasks'],
+  ['Five different tools', 'One platform'],
+  ['You update everything manually', 'Automatic workflows'],
+  ['Dashboard-first', 'Conversation-first'],
+];
+
+const ROADMAP = [
+  { done: true, label: 'Vision' },
+  { done: true, label: 'Architecture' },
+  { done: true, label: 'Landing page' },
+  { done: true, label: 'Live WhatsApp agent' },
+  { done: false, label: 'Travel vertical GA' },
+  { done: false, label: 'Public beta' },
+];
+
+const DEMO_CHAT: { from: 'customer' | 'agent'; text: string }[] = [
+  { from: 'customer', text: 'Hi! Need a Bali honeymoon package 🌴' },
+  { from: 'agent', text: 'Congrats! 🎉 What are your travel dates and budget per person?' },
+  { from: 'customer', text: 'Mid-October, around ₹50k each, 2 of us.' },
+  { from: 'agent', text: 'Perfect — our Bali Romance Escape (5N/6D) is ₹49,999/person: private-pool villa, daily breakfast, candlelight dinner & Nusa Penida tour. Shall I hold it?' },
+  { from: 'customer', text: 'Yes please!' },
+  { from: 'agent', text: '✅ Held for 2 travellers — total ₹99,998. Here’s your secure payment link 👉 pay it and I’ll confirm the booking + send your itinerary.' },
+];
+
+// ─── Reusable bits ────────────────────────────────────────────────────────
+
+function Eyebrow({ children, color = '#00f2fe' }: { children: React.ReactNode; color?: string }) {
+  return (
+    <div style={{ fontSize: '12px', fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '10px', fontFamily: 'monospace' }}>
+      {children}
+    </div>
+  );
+}
+
+function ChainStep({ text, danger }: { text: string; danger?: boolean }) {
+  return (
+    <div style={{
+      padding: '11px 16px', borderRadius: '10px', fontSize: '14px', textAlign: 'center', fontWeight: 500,
+      backgroundColor: danger ? 'rgba(255,107,107,0.06)' : 'rgba(0,242,254,0.06)',
+      border: `1px solid ${danger ? 'rgba(255,107,107,0.25)' : 'rgba(0,242,254,0.25)'}`,
+      color: danger ? '#ffb4b4' : '#d6f7ff',
+    }}>{text}</div>
+  );
+}
+
+// ─── Landing page ─────────────────────────────────────────────────────────
+
+export function LandingPage({ onLaunchApp }: LandingPageProps) {
+  const [wlEmail, setWlEmail] = useState('');
+  const [wlType, setWlType] = useState('');
+  const [wlState, setWlState] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
+  const [wlError, setWlError] = useState<string | null>(null);
+  const [demoCount, setDemoCount] = useState(2);
+
+  const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+
+  const submitWaitlist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (wlState === 'submitting') return;
+    setWlState('submitting');
+    setWlError(null);
+    const err = await joinWaitlist(wlEmail, wlType || null);
+    if (err) { setWlError(err); setWlState('error'); }
+    else { setWlState('done'); }
+  };
+
+  const linkStyle: React.CSSProperties = { color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s', cursor: 'pointer' };
+  const hoverIn = (e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#fff');
+  const hoverOut = (e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#9ca3af');
 
   return (
-    <div className="landing-wrapper" style={{ backgroundColor: '#07090e', color: '#f3f4f6', minHeight: '100vh', fontFamily: 'Inter, sans-serif' }}>
-      
-      {/* ─── 1. Header Navigation ────────────────────────────────────────── */}
-      <nav style={{ 
-        position: 'sticky', top: 0, zIndex: 100, backdropFilter: 'blur(16px)', 
-        backgroundColor: 'rgba(9, 11, 15, 0.85)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-        padding: '16px 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' 
-      }}>
+    <div style={{ backgroundColor: '#07090e', color: '#f3f4f6', minHeight: '100vh', fontFamily: 'Inter, sans-serif' }}>
+
+      {/* ─── Nav ─── */}
+      <nav style={{ position: 'sticky', top: 0, zIndex: 100, backdropFilter: 'blur(16px)', backgroundColor: 'rgba(9,11,15,0.85)', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '16px 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }} onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-          <div style={{ 
-            width: '36px', height: '36px', borderRadius: '10px', 
-            background: 'linear-gradient(135deg, #00f2fe, #4facfe)', 
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 15px rgba(0, 242, 254, 0.4)'
-          }}>
-            <Bot size={22} style={{ color: '#000' }} />
-          </div>
-          <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '22px', letterSpacing: '-0.5px' }}>
-            Saarthi<span style={{ color: '#00f2fe' }}>One</span>
-          </span>
+          <img src="/logo-mark.svg" alt="SaarthiOne" width={34} height={34} style={{ borderRadius: '9px' }} />
+          <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '22px', letterSpacing: '-0.5px' }}>Saarthi<span style={{ color: '#00f2fe' }}>One</span></span>
         </div>
-
-        <div style={{ display: 'flex', gap: '32px', alignItems: 'center', fontSize: '14px', fontWeight: 500 }}>
-          <a href="#hero-demo" style={{ color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}>Live Demo</a>
-          <a href="#ai-employees" style={{ color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}>AI Employees</a>
-          <a href="#industries" style={{ color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}>Industries</a>
-          <a href="#journey" style={{ color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}>Why SaarthiOne</a>
-          <a href="#architecture" style={{ color: '#9ca3af', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}>Architecture</a>
+        <div style={{ display: 'flex', gap: '30px', alignItems: 'center', fontSize: '14px', fontWeight: 500 }}>
+          <a style={linkStyle} onClick={() => scrollTo('problem')} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>The Problem</a>
+          <a style={linkStyle} onClick={() => scrollTo('team')} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>AI Team</a>
+          <a style={linkStyle} onClick={() => scrollTo('journey')} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>How it works</a>
+          <a style={linkStyle} onClick={() => scrollTo('different')} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>Why different</a>
         </div>
-
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <button 
-            onClick={onLaunchApp}
-            style={{ 
-              padding: '10px 18px', borderRadius: '10px', backgroundColor: '#1a1f2e', color: '#f3f4f6', 
-              border: '1px solid rgba(255, 255, 255, 0.12)', fontWeight: 600, fontSize: '13px', cursor: 'pointer' 
-            }}
-          >
-            Launch Dashboard
-          </button>
-          <button 
-            onClick={onStartOnboarding}
-            style={{ 
-              padding: '10px 20px', borderRadius: '10px', 
-              background: 'linear-gradient(135deg, #00f2fe, #4facfe)', color: '#000', 
-              border: 'none', fontWeight: 700, fontSize: '13px', cursor: 'pointer',
-              boxShadow: '0 0 20px rgba(0, 242, 254, 0.3)' 
-            }}
-          >
-            Get Started Free
-          </button>
+        <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+          <button onClick={onLaunchApp} style={{ padding: '10px 18px', borderRadius: '10px', backgroundColor: '#1a1f2e', color: '#f3f4f6', border: '1px solid rgba(255,255,255,0.12)', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>Sign In</button>
+          <button onClick={() => scrollTo('waitlist')} style={{ padding: '10px 20px', borderRadius: '10px', background: 'linear-gradient(135deg, #00f2fe, #4facfe)', color: '#000', border: 'none', fontWeight: 700, fontSize: '13px', cursor: 'pointer', boxShadow: '0 0 20px rgba(0,242,254,0.3)' }}>Get Early Access</button>
         </div>
       </nav>
 
-      {/* ─── 2. Hero Section ────────────────────────────────────────────── */}
-      <section id="hero-demo" style={{ 
-        maxWidth: '1200px', margin: '0 auto', padding: '80px 24px 60px', 
-        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '60px', alignItems: 'center' 
-      }}>
+      {/* ─── 1. Hero ─── */}
+      <section style={{ maxWidth: '1200px', margin: '0 auto', padding: '80px 24px 60px', display: 'grid', gridTemplateColumns: '1.05fr 0.95fr', gap: '56px', alignItems: 'center' }} className="hero-grid">
         <div>
-          <div style={{ 
-            display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 14px', borderRadius: '20px', 
-            backgroundColor: 'rgba(0, 242, 254, 0.08)', border: '1px solid rgba(0, 242, 254, 0.25)', 
-            color: '#00f2fe', fontSize: '12px', fontWeight: 600, marginBottom: '24px' 
-          }}>
-            <Sparkles size={14} />
-            <span>AI-Native Business Operating System</span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 14px', borderRadius: '20px', backgroundColor: 'rgba(0,242,254,0.08)', border: '1px solid rgba(0,242,254,0.25)', color: '#00f2fe', fontSize: '12px', fontWeight: 600, marginBottom: '24px' }}>
+            <Sparkles size={14} /><span>Your AI Business Teammate</span>
           </div>
-
-          <h1 style={{ 
-            fontSize: '52px', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-1.5px', 
-            marginBottom: '20px', fontFamily: 'Outfit, sans-serif' 
-          }}>
-            Run your business through <br />
-            <span style={{ 
-              background: 'linear-gradient(135deg, #00f2fe, #4facfe, #00ff87)', 
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' 
-            }}>
-              AI-powered conversations.
-            </span>
+          <h1 style={{ fontSize: '54px', fontWeight: 800, lineHeight: 1.08, letterSpacing: '-1.5px', marginBottom: '20px', fontFamily: 'Outfit, sans-serif' }}>
+            Your AI teammate for<br />
+            <span style={{ background: 'linear-gradient(135deg, #00f2fe, #4facfe, #00ff87)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>growing your business.</span>
           </h1>
-
-          <p style={{ fontSize: '18px', color: '#9ca3af', lineHeight: 1.6, marginBottom: '36px', maxWidth: '500px' }}>
-            Your first AI employee. Ready in 5 minutes to acquire leads, book appointments, process payments, and support customers 24/7 on WhatsApp.
+          <p style={{ fontSize: '18px', color: '#9ca3af', lineHeight: 1.6, marginBottom: '20px', maxWidth: '500px' }}>
+            Turn every customer conversation into bookings, sales, payments, and loyal customers — without juggling multiple tools.
           </p>
-
-          <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '32px' }}>
-            <button 
-              onClick={onStartOnboarding}
-              style={{ 
-                padding: '16px 32px', borderRadius: '12px', 
-                background: 'linear-gradient(135deg, #00f2fe, #4facfe)', color: '#000', 
-                border: 'none', fontWeight: 700, fontSize: '15px', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: '10px',
-                boxShadow: '0 0 25px rgba(0, 242, 254, 0.4)' 
-              }}
-            >
-              <span>Get Started</span>
-              <ArrowRight size={18} />
+          <p style={{ fontSize: '15px', color: '#d6f7ff', lineHeight: 1.7, marginBottom: '32px', maxWidth: '500px', fontWeight: 500 }}>
+            Never miss a lead. Never forget a follow-up. Never switch between five different tools again.
+          </p>
+          <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '28px', flexWrap: 'wrap' }}>
+            <button onClick={() => scrollTo('waitlist')} style={{ padding: '16px 30px', borderRadius: '12px', background: 'linear-gradient(135deg, #00f2fe, #4facfe)', color: '#000', border: 'none', fontWeight: 700, fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', boxShadow: '0 0 25px rgba(0,242,254,0.4)' }}>
+              🚀 Get Early Access <ArrowRight size={18} />
             </button>
-            <button 
-              onClick={onStartOnboarding}
-              style={{ 
-                padding: '16px 28px', borderRadius: '12px', backgroundColor: '#121620', color: '#f3f4f6', 
-                border: '1px solid rgba(255, 255, 255, 0.15)', fontWeight: 600, fontSize: '15px', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: '10px' 
-              }}
-            >
-              <Play size={16} style={{ color: '#00f2fe' }} />
-              <span>Watch Demo</span>
+            <button onClick={() => scrollTo('demo')} style={{ padding: '16px 26px', borderRadius: '12px', backgroundColor: '#121620', color: '#f3f4f6', border: '1px solid rgba(255,255,255,0.15)', fontWeight: 600, fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Play size={16} style={{ color: '#00f2fe' }} /> Watch 2-min Demo
             </button>
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', color: '#6b7280', fontSize: '13px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle size={16} style={{ color: '#00ff87' }} />
-              <span>No coding required</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle size={16} style={{ color: '#00ff87' }} />
-              <span>Official WhatsApp Cloud API</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle size={16} style={{ color: '#00ff87' }} />
-              <span>5-min setup</span>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '18px', color: '#6b7280', fontSize: '13px', flexWrap: 'wrap' }}>
+            {['Works on WhatsApp', 'Live in 5 minutes', 'No coding'].map((t) => (
+              <span key={t} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><CheckCircle size={16} style={{ color: '#00ff87' }} /> {t}</span>
+            ))}
           </div>
         </div>
 
-        {/* Hero Interactive Phone Interface */}
+        {/* Animated flow pipeline */}
         <div style={{ position: 'relative' }}>
-          <div style={{ 
-            position: 'absolute', inset: '-20px', borderRadius: '40px', 
-            background: 'radial-gradient(circle, rgba(0, 242, 254, 0.15) 0%, transparent 70%)', 
-            filter: 'blur(30px)', zIndex: 0 
-          }} />
-
-          <div style={{ 
-            position: 'relative', zIndex: 1, backgroundColor: '#0f141c', 
-            borderRadius: '24px', border: '1px solid rgba(0, 242, 254, 0.3)', 
-            boxShadow: '0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 242, 254, 0.1)',
-            overflow: 'hidden'
-          }}>
-            {/* Phone Top Header */}
-            <div style={{ 
-              backgroundColor: '#161d2a', padding: '14px 20px', 
-              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between' 
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ 
-                  width: '38px', height: '38px', borderRadius: '50%', 
-                  backgroundColor: 'rgba(0, 242, 254, 0.15)', border: '1px solid #00f2fe',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center' 
-                }}>
-                  <Bot size={20} style={{ color: '#00f2fe' }} />
-                </div>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>Saarthi AI (Employee #001)</div>
-                  <div style={{ fontSize: '11px', color: '#00ff87', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#00ff87' }} />
-                    Active on WhatsApp Business
+          <div style={{ position: 'absolute', inset: '-30px', borderRadius: '40px', background: 'radial-gradient(circle, rgba(0,242,254,0.14) 0%, transparent 70%)', filter: 'blur(30px)' }} />
+          <div style={{ position: 'relative', backgroundColor: '#0c1119', border: '1px solid rgba(0,242,254,0.25)', borderRadius: '22px', padding: '26px 22px', boxShadow: '0 20px 50px rgba(0,0,0,0.7)' }}>
+            <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#00f2fe', letterSpacing: '0.1em', marginBottom: '16px', textAlign: 'center' }}>ONE CONVERSATION · START TO FINISH</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+              {HERO_FLOW.map((n, i) => (
+                <React.Fragment key={n.label}>
+                  <div className="flow-node" style={{ animationDelay: `${i * 0.35}s`, display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 14px', borderRadius: '12px', backgroundColor: '#111826', border: '1px solid rgba(0,242,254,0.18)' }}>
+                    <span style={{ fontSize: '18px', width: '26px', textAlign: 'center' }}>{n.icon}</span>
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#e9f0ff' }}>{n.label}</span>
                   </div>
-                </div>
-              </div>
-              <span style={{ fontSize: '11px', padding: '4px 8px', borderRadius: '6px', backgroundColor: 'rgba(255, 255, 255, 0.08)', color: '#9ca3af' }}>LIVE</span>
-            </div>
-
-            {/* Conversation Window */}
-            <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '340px', backgroundColor: '#0b0e14' }}>
-              
-              {/* Saarthi Opening Speech */}
-              <div style={{ 
-                alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#18202c', 
-                padding: '16px', borderRadius: '16px 16px 16px 4px', 
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-              }}>
-                <div style={{ fontSize: '14px', lineHeight: 1.6, color: '#f3f4f6' }}>
-                  Good morning. 👋<br /><br />
-                  I'm <strong>Saarthi</strong>. Yesterday I:<br />
-                  <span style={{ color: '#00ff87' }}>✓</span> answered <strong>126</strong> customer messages<br />
-                  <span style={{ color: '#00ff87' }}>✓</span> booked <strong>8</strong> appointments<br />
-                  <span style={{ color: '#00ff87' }}>✓</span> recovered <strong>₹74,000</strong> in abandoned sales<br />
-                  <span style={{ color: '#00ff87' }}>✓</span> followed up with <strong>39</strong> leads<br /><br />
-                  Would you like today's summary?
-                </div>
-                <div style={{ fontSize: '10px', color: '#6b7280', textAlign: 'right', marginTop: '8px' }}>08:30 AM</div>
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', margin: '4px 0' }}>
-                <button 
-                  onClick={() => setActiveHeroTab('summary')}
-                  style={{ 
-                    padding: '8px 14px', borderRadius: '20px', 
-                    backgroundColor: activeHeroTab === 'summary' ? 'rgba(0, 242, 254, 0.2)' : '#121620', 
-                    color: activeHeroTab === 'summary' ? '#00f2fe' : '#9ca3af',
-                    border: activeHeroTab === 'summary' ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: '12px', fontWeight: 600, cursor: 'pointer' 
-                  }}
-                >
-                  ✓ Yes, show summary
-                </button>
-                <button 
-                  onClick={() => setActiveHeroTab('demo')}
-                  style={{ 
-                    padding: '8px 14px', borderRadius: '20px', 
-                    backgroundColor: activeHeroTab === 'demo' ? 'rgba(0, 242, 254, 0.2)' : '#121620', 
-                    color: activeHeroTab === 'demo' ? '#00f2fe' : '#9ca3af',
-                    border: activeHeroTab === 'demo' ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: '12px', fontWeight: 600, cursor: 'pointer' 
-                  }}
-                >
-                  📊 View Lead Funnel
-                </button>
-              </div>
-
-              {/* Simulated Reply */}
-              {activeHeroTab === 'summary' && (
-                <>
-                  <div style={{ alignSelf: 'flex-end', maxWidth: '80%', backgroundColor: '#005c4b', padding: '12px 16px', borderRadius: '16px 16px 4px 16px', color: '#fff', fontSize: '13px' }}>
-                    Yes, show today's summary!
-                  </div>
-                  <div style={{ alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#18202c', padding: '14px 16px', borderRadius: '16px 16px 16px 4px', border: '1px solid rgba(0, 242, 254, 0.2)', fontSize: '13px', lineHeight: 1.5 }}>
-                    📈 <strong>Today's Live Pulse:</strong><br />
-                    • 12 new qualified leads added to CRM<br />
-                    • 3 Bali Packages booked (₹1,49,997 collected)<br />
-                    • 0 policy or safety violations detected
-                  </div>
-                </>
-              )}
-
-              {activeHeroTab === 'demo' && (
-                <>
-                  <div style={{ alignSelf: 'flex-end', maxWidth: '80%', backgroundColor: '#005c4b', padding: '12px 16px', borderRadius: '16px 16px 4px 16px', color: '#fff', fontSize: '13px' }}>
-                    Show me the Lead Funnel
-                  </div>
-                  <div style={{ alignSelf: 'flex-start', maxWidth: '88%', backgroundColor: '#18202c', padding: '14px 16px', borderRadius: '16px 16px 16px 4px', border: '1px solid rgba(0, 242, 254, 0.2)', fontSize: '13px', lineHeight: 1.5 }}>
-                    🎯 <strong>Active CRM Funnel:</strong><br />
-                    • New Inquiries: 45<br />
-                    • Qualified Quotes: 32<br />
-                    • Booking Confirmed: 18<br />
-                    • Payments Received: 14
-                  </div>
-                </>
-              )}
-
-            </div>
-
-            {/* Bottom Subtext Banner */}
-            <div style={{ padding: '12px 20px', backgroundColor: '#121722', borderTop: '1px solid rgba(255, 255, 255, 0.08)', textAlign: 'center', fontSize: '12px', color: '#00f2fe', fontWeight: 600 }}>
-              "This isn't another CRM. It's your AI Business OS."
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ─── 3. AI Employees Section ────────────────────────────────────── */}
-      <section id="ai-employees" style={{ maxWidth: '1200px', margin: '0 auto', padding: '80px 24px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '60px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
-            Meet Your New Workforce
-          </div>
-          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-            AI Employees. Not feature cards.
-          </h2>
-          <p style={{ color: '#9ca3af', fontSize: '16px', maxWidth: '600px', margin: '0 auto' }}>
-            Deploy specialized, autonomous AI employees trained for specific roles in your business.
-          </p>
-        </div>
-
-        {/* Employee Cards Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', marginBottom: '40px' }}>
-          {AI_EMPLOYEES.map(emp => (
-            <div 
-              key={emp.id}
-              onClick={() => setSelectedAgent(emp.id)}
-              style={{ 
-                backgroundColor: selectedAgent === emp.id ? 'rgba(0, 242, 254, 0.06)' : '#0d1117', 
-                borderRadius: '16px', padding: '24px', 
-                border: selectedAgent === emp.id ? `2px solid ${emp.color}` : '1px solid rgba(255, 255, 255, 0.08)',
-                cursor: 'pointer', transition: 'all 0.2s ease',
-                boxShadow: selectedAgent === emp.id ? `0 0 20px ${emp.color}25` : 'none'
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                <span style={{ fontSize: '32px' }}>{emp.avatar}</span>
-                <span style={{ fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '12px', backgroundColor: 'rgba(255, 255, 255, 0.08)', color: emp.color }}>
-                  {emp.metrics}
-                </span>
-              </div>
-              <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '6px', color: '#fff' }}>{emp.title}</h3>
-              <p style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.4 }}>{emp.subtitle}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Active Employee Conversation Preview */}
-        <div style={{ 
-          backgroundColor: '#0f141d', borderRadius: '20px', border: `1px solid ${currentAgent.color}40`, 
-          padding: '32px', display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '40px', alignItems: 'center' 
-        }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '36px' }}>{currentAgent.avatar}</span>
-              <div>
-                <h3 style={{ fontSize: '24px', fontWeight: 800, color: '#fff' }}>{currentAgent.title}</h3>
-                <span style={{ fontSize: '13px', color: currentAgent.color, fontWeight: 600 }}>Active & Trained</span>
-              </div>
-            </div>
-            <p style={{ color: '#9ca3af', fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
-              {currentAgent.subtitle}. Works continuously through Meta Business Agents API without manual intervention.
-            </p>
-            <button 
-              onClick={onStartOnboarding}
-              style={{ 
-                padding: '12px 24px', borderRadius: '10px', backgroundColor: currentAgent.color, 
-                color: '#000', fontWeight: 700, fontSize: '13px', border: 'none', cursor: 'pointer' 
-              }}
-            >
-              Hire This AI Employee
-            </button>
-          </div>
-
-          <div style={{ backgroundColor: '#090c12', borderRadius: '16px', padding: '20px', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {currentAgent.messages.map((m, idx) => (
-              <div 
-                key={idx}
-                style={{ 
-                  alignSelf: m.sender === 'customer' ? 'flex-end' : 'flex-start',
-                  maxWidth: '85%',
-                  backgroundColor: m.sender === 'customer' ? '#005c4b' : '#1a212d',
-                  color: '#fff',
-                  padding: '10px 14px',
-                  borderRadius: m.sender === 'customer' ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-                  fontSize: '13px',
-                  lineHeight: 1.4
-                }}
-              >
-                {m.text}
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ─── 4. Industries Section ──────────────────────────────────────── */}
-      <section id="industries" style={{ backgroundColor: '#0a0d14', padding: '80px 24px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: '50px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
-              Tailored Industry Intelligence
-            </div>
-            <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-              Built for your industry out of the box.
-            </h2>
-            <p style={{ color: '#9ca3af', fontSize: '16px' }}>
-              Not generic responses — actual industry workflows, catalog schemas, and compliance bounds.
-            </p>
-          </div>
-
-          {/* Industry Tabs */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '40px' }}>
-            {INDUSTRIES.map(ind => (
-              <button 
-                key={ind.id}
-                onClick={() => setSelectedIndustry(ind.id)}
-                style={{ 
-                  display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 20px', 
-                  borderRadius: '12px', backgroundColor: selectedIndustry === ind.id ? '#00f2fe' : '#121620', 
-                  color: selectedIndustry === ind.id ? '#000' : '#9ca3af',
-                  fontWeight: selectedIndustry === ind.id ? 700 : 500, fontSize: '14px',
-                  border: selectedIndustry === ind.id ? 'none' : '1px solid rgba(255, 255, 255, 0.1)',
-                  cursor: 'pointer', transition: 'all 0.2s ease'
-                }}
-              >
-                {ind.icon}
-                <span>{ind.name}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Active Industry Conversation Demo */}
-          <div style={{ 
-            backgroundColor: '#0d1118', borderRadius: '20px', border: '1px solid rgba(0, 242, 254, 0.2)', 
-            padding: '36px', maxWidth: '800px', margin: '0 auto',
-            boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', paddingBottom: '16px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#00ff87' }} />
-                <span style={{ fontWeight: 700, fontSize: '16px' }}>{currentIndustry.name} Live WhatsApp Stream</span>
-              </div>
-              <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', backgroundColor: 'rgba(0, 242, 254, 0.1)', color: '#00f2fe', fontWeight: 600 }}>
-                {currentIndustry.badge}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {currentIndustry.sampleChat.map((chat, idx) => (
-                <div 
-                  key={idx}
-                  style={{ 
-                    alignSelf: chat.sender === 'customer' ? 'flex-end' : 'flex-start',
-                    maxWidth: '85%',
-                    backgroundColor: chat.sender === 'customer' ? '#005c4b' : '#1c2433',
-                    color: '#fff',
-                    padding: '12px 18px',
-                    borderRadius: chat.sender === 'customer' ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
-                    fontSize: '14px',
-                    lineHeight: 1.5,
-                    border: chat.sender === 'agent' ? '1px solid rgba(255, 255, 255, 0.05)' : 'none'
-                  }}
-                >
-                  {chat.text}
-                </div>
+                  {i < HERO_FLOW.length - 1 && <div style={{ textAlign: 'center', color: '#3b4a63', fontSize: '12px', lineHeight: 0.6 }}>↓</div>}
+                </React.Fragment>
               ))}
             </div>
           </div>
         </div>
       </section>
 
-      {/* ─── 5. Why SaarthiOne (The Uninterrupted Journey) ─────────────── */}
-      <section id="journey" style={{ maxWidth: '1200px', margin: '0 auto', padding: '90px 24px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '60px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
-            Why SaarthiOne
+      {/* ─── 2. The Problem ─── */}
+      <section id="problem" style={{ backgroundColor: '#0a0d14', borderTop: '1px solid rgba(255,255,255,0.05)', padding: '80px 24px' }}>
+        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '50px' }}>
+            <Eyebrow color="#ff8f8f">The problem</Eyebrow>
+            <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Running a business shouldn’t mean juggling five tools.</h2>
           </div>
-          <h2 style={{ fontSize: '42px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-            One uninterrupted journey.
-          </h2>
-          <p style={{ color: '#9ca3af', fontSize: '16px', maxWidth: '600px', margin: '0 auto' }}>
-            Instead of piecing together CRM, scheduling, and payment links, SaarthiOne handles the entire customer lifecycle in a single WhatsApp thread.
-          </p>
-        </div>
-
-        {/* Five building blocks */}
-        <div style={{ marginBottom: '56px' }}>
-          <div style={{ textAlign: 'center', marginBottom: '28px' }}>
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1.5px', fontFamily: 'monospace' }}>
-              The foundation
-            </div>
-            <h3 style={{ fontSize: '24px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', color: '#fff', marginTop: '10px', letterSpacing: '-0.5px' }}>
-              Five building blocks under every conversation.
-            </h3>
-          </div>
-          <div className="building-blocks-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '14px' }}>
-            {[
-              { icon: '🪪', title: 'Identity', desc: 'Every customer is matched to a verified contact with consent on record — so the business always knows who it’s talking to.' },
-              { icon: '🤝', title: 'Relationships', desc: 'Past chats, orders, and preferences travel into every new message. Context compounds instead of resetting.' },
-              { icon: '💬', title: 'Messaging', desc: 'People already talk on WhatsApp. The whole business runs in that same thread — nothing new to install.' },
-              { icon: '🛒', title: 'Commerce', desc: 'Browse, choose, and pay without leaving the chat. Catalogue, quote, and payment link arrive inline.' },
-              { icon: '🧠', title: 'Models', desc: 'An AI that reasons — grounded in your catalogue and policies, and honest enough to hand off to a human.' },
-            ].map((b) => (
-              <div key={b.title} style={{
-                backgroundColor: '#0e131d', borderRadius: '14px', padding: '20px 18px 22px',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                display: 'flex', flexDirection: 'column', gap: '12px',
-              }}>
-                <span style={{
-                  width: '38px', height: '38px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '18px', backgroundColor: 'rgba(0, 242, 254, 0.1)', border: '1px solid rgba(0, 242, 254, 0.25)',
-                }}>{b.icon}</span>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', letterSpacing: '-0.3px' }}>{b.title}</h4>
-                <p style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.5, margin: 0 }}>{b.desc}</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '30px', alignItems: 'center' }} className="problem-grid">
+            <div style={{ backgroundColor: '#0d1117', borderRadius: '18px', padding: '26px', border: '1px solid rgba(255,107,107,0.2)' }}>
+              <div style={{ fontWeight: 700, fontSize: '16px', color: '#ffb4b4', marginBottom: '18px' }}>Today, without SaarthiOne</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <ChainStep danger text="Reply on WhatsApp" />
+                <div style={{ textAlign: 'center', color: '#5b3a3a' }}>↓</div>
+                <ChainStep danger text="Copy details into a CRM" />
+                <div style={{ textAlign: 'center', color: '#5b3a3a' }}>↓</div>
+                <ChainStep danger text="Open the booking tool" />
+                <div style={{ textAlign: 'center', color: '#5b3a3a' }}>↓</div>
+                <ChainStep danger text="Create a payment link" />
+                <div style={{ textAlign: 'center', color: '#5b3a3a' }}>↓</div>
+                <ChainStep danger text="Remember to follow up" />
               </div>
-            ))}
+              <div style={{ marginTop: '18px', textAlign: 'center', color: '#ff8f8f', fontSize: '13px', fontWeight: 600 }}>Everything is manual. Something always slips.</div>
+            </div>
+
+            <div style={{ fontSize: '28px', color: '#00f2fe', fontWeight: 800, textAlign: 'center' }} className="problem-arrow">→</div>
+
+            <div style={{ backgroundColor: '#0d1420', borderRadius: '18px', padding: '26px', border: '1px solid rgba(0,242,254,0.3)', boxShadow: '0 0 30px rgba(0,242,254,0.08)' }}>
+              <div style={{ fontWeight: 700, fontSize: '16px', color: '#00f2fe', marginBottom: '18px' }}>With SaarthiOne</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <ChainStep text="Customer messages on WhatsApp" />
+                <div style={{ textAlign: 'center', color: '#1e4a55' }}>↓</div>
+                <ChainStep text="Saarthi handles the conversation" />
+                <div style={{ textAlign: 'center', color: '#1e4a55' }}>↓</div>
+                <div style={{ padding: '20px 16px', borderRadius: '12px', background: 'linear-gradient(135deg, rgba(0,242,254,0.12), rgba(79,172,254,0.12))', border: '1px solid rgba(0,242,254,0.35)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>Lead → Quote → Booking → Payment → Follow-up</div>
+                  <div style={{ fontSize: '13px', color: '#00ff87', marginTop: '6px', fontWeight: 600 }}>…all happen automatically.</div>
+                </div>
+              </div>
+              <div style={{ marginTop: '18px', textAlign: 'center', color: '#00ff87', fontSize: '13px', fontWeight: 600 }}>One conversation. Nothing slips.</div>
+            </div>
           </div>
         </div>
+      </section>
 
-        {/* Journey Flow Steps (overview ribbon) */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', overflowX: 'auto', paddingBottom: '20px', marginBottom: '20px' }}>
+      {/* ─── 3. The Journey (building blocks + staged mockups) ─── */}
+      <section id="journey" style={{ maxWidth: '1200px', margin: '0 auto', padding: '90px 24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '46px' }}>
+          <Eyebrow>The customer journey</Eyebrow>
+          <h2 style={{ fontSize: '40px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '14px' }}>One thread, from discovery to loyalty.</h2>
+          <p style={{ color: '#9ca3af', fontSize: '16px', maxWidth: '640px', margin: '0 auto' }}>Meet <strong style={{ color: '#fff' }}>Aarav</strong>. He taps a holiday ad and never leaves the chat again — every screen below is the same conversation, moving forward.</p>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', overflowX: 'auto', paddingBottom: '10px', marginBottom: '30px' }}>
           {JOURNEY_STAGES.map((item, index, arr) => (
             <React.Fragment key={item.num}>
-              <div style={{
-                flex: 1, minWidth: '150px', backgroundColor: '#0e131d',
-                borderRadius: '16px', padding: '24px 16px', textAlign: 'center',
-                border: '1px solid rgba(0, 242, 254, 0.2)',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)'
-              }}>
-                <div style={{ fontSize: '12px', fontWeight: 800, color: '#00f2fe', marginBottom: '8px' }}>{item.num}</div>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', marginBottom: '6px' }}>{item.phase}</h3>
-                <p style={{ fontSize: '11px', color: '#9ca3af', lineHeight: 1.4 }}>{item.body.split('.')[0]}.</p>
+              <div style={{ flex: 1, minWidth: '140px', backgroundColor: '#0e131d', borderRadius: '14px', padding: '20px 14px', textAlign: 'center', border: '1px solid rgba(0,242,254,0.2)' }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: '#00f2fe', marginBottom: '6px' }}>{item.num}</div>
+                <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>{item.phase}</h3>
               </div>
-              {index < arr.length - 1 && (
-                <ChevronRight size={24} style={{ color: '#00f2fe', flexShrink: 0 }} />
-              )}
+              {index < arr.length - 1 && <span style={{ color: '#00f2fe', flexShrink: 0 }}>›</span>}
             </React.Fragment>
           ))}
         </div>
 
-        {/* Detailed stage-by-stage walkthrough with WhatsApp mockups */}
-        <div style={{ marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-            <p style={{ color: '#9ca3af', fontSize: '15px', maxWidth: '640px', margin: '0 auto' }}>
-              Meet <strong style={{ color: '#fff' }}>Aarav</strong>. He sees a holiday ad, taps through to WhatsApp, and never leaves the chat again. Every screen below is the same conversation, moving forward.
-            </p>
-          </div>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           {JOURNEY_STAGES.map((stage, idx) => {
             const flip = idx % 2 === 1;
             return (
-              <div key={stage.num} style={{
-                display: 'grid', gridTemplateColumns: '1fr 340px', gap: '48px', alignItems: 'center',
-                padding: '40px 0', borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-              }} className="journey-stage-row">
+              <div key={stage.num} className="journey-stage-row" style={{ display: 'grid', gridTemplateColumns: '1fr 330px', gap: '48px', alignItems: 'center', padding: '38px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                 <div style={{ order: flip ? 2 : 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#00f2fe', fontFamily: 'monospace', fontSize: '13px', letterSpacing: '0.05em' }}>
-                    <span style={{ height: '1px', width: '40px', background: 'linear-gradient(90deg, #00f2fe, #4facfe)' }} />
-                    Stage {stage.num} · {stage.phase}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#00f2fe', fontFamily: 'monospace', fontSize: '13px' }}>
+                    <span style={{ height: '1px', width: '38px', background: 'linear-gradient(90deg,#00f2fe,#4facfe)' }} />Stage {stage.num} · {stage.phase}
                   </div>
-                  <h3 style={{ fontSize: '26px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', color: '#fff', marginTop: '14px', letterSpacing: '-0.5px' }}>{stage.title}</h3>
-                  <p style={{ color: '#9ca3af', fontSize: '15px', lineHeight: 1.6, marginTop: '14px', maxWidth: '440px' }}>{stage.body}</p>
-                  <div style={{ marginTop: '20px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {stage.tags.map((t, k) => {
-                      const parts = t.split('·');
-                      const head = (parts[0] ?? '').trim();
-                      const rest = parts.slice(1).join('·').trim();
-                      return (
-                        <span key={k} style={{ fontFamily: 'monospace', fontSize: '11.5px', border: '1px dashed rgba(255,255,255,0.15)', color: '#9ca3af', borderRadius: '7px', padding: '6px 10px' }}>
-                          <span style={{ color: '#00f2fe' }}>{head}</span>{rest ? ' · ' + rest : ''}
-                        </span>
-                      );
-                    })}
-                  </div>
+                  <h3 style={{ fontSize: '25px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', color: '#fff', marginTop: '12px', letterSpacing: '-0.5px' }}>{stage.title}</h3>
+                  <p style={{ color: '#9ca3af', fontSize: '15px', lineHeight: 1.6, marginTop: '13px', maxWidth: '430px' }}>{stage.body}</p>
                 </div>
                 <div style={{ order: flip ? 1 : 2, display: 'flex', justifyContent: 'center' }}>
                   <JourneyPhone sub={stage.sub} screen={stage.screen} />
@@ -912,111 +470,224 @@ export function LandingPage({ onLaunchApp, onStartOnboarding }: LandingPageProps
         </div>
       </section>
 
-      {/* ─── 6. Trust & Safety Section ──────────────────────────────────── */}
-      <section id="trust" style={{ backgroundColor: '#090d15', padding: '80px 24px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: '60px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, color: '#00ff87', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
-              Enterprise Governance
-            </div>
-            <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-              This is where we differentiate.
-            </h2>
-            <p style={{ color: '#9ca3af', fontSize: '16px' }}>
-              Every AI action is bounded, explainable, and guarded by deterministic safety gates.
-            </p>
+      {/* ─── 4. Meet Your AI Team ─── */}
+      <section id="team" style={{ backgroundColor: '#0a0d14', borderTop: '1px solid rgba(255,255,255,0.05)', padding: '90px 24px' }}>
+        <div style={{ maxWidth: '1120px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+            <Eyebrow>Now hiring — ₹0 salary, works 24×7</Eyebrow>
+            <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Meet your AI team.</h2>
+            <p style={{ color: '#9ca3af', fontSize: '16px', maxWidth: '560px', margin: '14px auto 0' }}>Not chatbots. Teammates that actually complete the work — each trained for a role in your business.</p>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px' }}>
-            {[
-              { icon: <Activity size={24} />, title: 'Traceable', desc: 'Full OpenTelemetry tracing for every LLM token & tool call' },
-              { icon: <Eye size={24} />, title: 'Explainable', desc: 'Transparent policy decision logs for why actions were taken' },
-              { icon: <FileText size={24} />, title: 'Auditable', desc: 'Immutable append-only audit log table protected by DB triggers' },
-              { icon: <Users size={24} />, title: 'Human Override', desc: 'Instant 1-click escalation to operator inbox when requested' },
-              { icon: <Lock size={24} />, title: 'Secure', desc: 'Supabase Row-Level Security (RLS) tenant isolation on all tables' }
-            ].map((t, idx) => (
-              <div key={idx} style={{ backgroundColor: '#101622', borderRadius: '16px', padding: '24px', border: '1px solid rgba(255, 255, 255, 0.08)', textAlign: 'center' }}>
-                <div style={{ color: '#00ff87', marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{t.icon}</div>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#fff', marginBottom: '8px' }}>✓ {t.title}</h3>
-                <p style={{ fontSize: '12px', color: '#9ca3af', lineHeight: 1.4 }}>{t.desc}</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '18px', marginTop: '44px' }} className="team-grid">
+            {AI_TEAM.map((m) => (
+              <div key={m.name} style={{ backgroundColor: '#0d1117', borderRadius: '18px', padding: '24px', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '34px' }}>{m.avatar}</span>
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '4px 9px', borderRadius: '20px', backgroundColor: 'rgba(0,255,135,0.1)', color: '#00ff87', display: 'flex', alignItems: 'center', gap: '5px' }}><span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#00ff87' }} /> Active</span>
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '19px', fontWeight: 800, color: '#fff' }}>{m.name}</h3>
+                  <p style={{ fontSize: '13px', color: m.color, fontWeight: 500, marginTop: '4px' }}>{m.tagline}</p>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '14px' }}>
+                  {m.tasks.map((t) => (
+                    <div key={t} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '13px', color: '#c3cad6' }}>
+                      <Check size={15} style={{ color: m.color, flexShrink: 0, marginTop: '2px' }} /><span>{t}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ─── 7. Architecture & Stack ("Powered by") ──────────────────────── */}
-      <section id="architecture" style={{ maxWidth: '1200px', margin: '0 auto', padding: '90px 24px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '50px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
-            Technical Architecture
-          </div>
-          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-            Powered by industry leaders.
-          </h2>
-          <p style={{ color: '#9ca3af', fontSize: '16px' }}>
-            Built on top of foundation models and Meta's official Cloud Messaging infrastructure.
-          </p>
+      {/* ─── 5. Who is this for ─── */}
+      <section style={{ maxWidth: '1120px', margin: '0 auto', padding: '90px 24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '44px' }}>
+          <Eyebrow>Built for your business</Eyebrow>
+          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Who is this for?</h2>
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px' }}>
-          {[
-            { title: 'Meta Cloud API', category: 'Messaging Engine', desc: 'Official WhatsApp Business & Instagram Graph API' },
-            { title: 'GPT-4o / Claude 3.5', category: 'LLM Gateway', desc: 'Multi-provider routing with fallback & cost tracking' },
-            { title: 'Grounded RAG Search', category: 'Knowledge Engine', desc: '1536d Cosine similarity search with similarity thresholds' },
-            { title: 'Agentic Workflows', category: 'LangGraph Mesh', desc: 'Coordinator & Specialist multi-agent orchestrator' }
-          ].map((tech, idx) => (
-            <div key={idx} style={{ backgroundColor: '#0d1117', borderRadius: '16px', padding: '24px', border: '1px solid rgba(0, 242, 254, 0.2)' }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', marginBottom: '6px' }}>{tech.category}</div>
-              <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#fff', marginBottom: '8px' }}>{tech.title}</h3>
-              <p style={{ fontSize: '12px', color: '#9ca3af', lineHeight: 1.4 }}>{tech.desc}</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '14px' }} className="audience-grid">
+          {AUDIENCE.map((a) => (
+            <div key={a.name} style={{ backgroundColor: '#0d1117', borderRadius: '14px', padding: '22px 12px', border: '1px solid rgba(255,255,255,0.08)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+              <span style={{ color: '#00f2fe' }}>{a.icon}</span>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#e9f0ff', lineHeight: 1.3 }}>{a.name}</span>
             </div>
           ))}
         </div>
       </section>
 
-      {/* ─── 8. Final Conversion CTA Footer ─────────────────────────────── */}
-      <footer style={{ backgroundColor: '#040609', borderTop: '1px solid rgba(255, 255, 255, 0.08)', padding: '80px 24px 40px' }}>
-        <div style={{ maxWidth: '800px', margin: '0 auto', textAlign: 'center' }}>
-          <h2 style={{ fontSize: '42px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '16px' }}>
-            Your first AI employee. <br />
-            <span style={{ color: '#00f2fe' }}>Ready in 5 minutes.</span>
-          </h2>
-          <p style={{ color: '#9ca3af', fontSize: '16px', marginBottom: '32px' }}>
-            Join forward-thinking travel agencies, restaurants, and SMBs running their business through AI conversations.
-          </p>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginBottom: '60px' }}>
-            <button 
-              onClick={onStartOnboarding}
-              style={{ 
-                padding: '16px 36px', borderRadius: '12px', 
-                background: 'linear-gradient(135deg, #00f2fe, #4facfe)', color: '#000', 
-                border: 'none', fontWeight: 800, fontSize: '16px', cursor: 'pointer',
-                boxShadow: '0 0 30px rgba(0, 242, 254, 0.4)' 
-              }}
-            >
-              Get Started Free
-            </button>
-            <button 
-              onClick={onLaunchApp}
-              style={{ 
-                padding: '16px 28px', borderRadius: '12px', backgroundColor: '#121620', color: '#f3f4f6', 
-                border: '1px solid rgba(255, 255, 255, 0.15)', fontWeight: 600, fontSize: '15px', cursor: 'pointer' 
-              }}
-            >
-              Open Dashboard
-            </button>
+      {/* ─── 6. Demo conversation ─── */}
+      <section id="demo" style={{ backgroundColor: '#0a0d14', borderTop: '1px solid rgba(255,255,255,0.05)', padding: '90px 24px' }}>
+        <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+            <Eyebrow>See it in action</Eyebrow>
+            <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>One chat. Lead to paid booking.</h2>
+            <p style={{ color: '#9ca3af', fontSize: '16px', marginTop: '12px' }}>This explains more than a thousand feature bullets.</p>
           </div>
-
-          <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: '30px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#6b7280', fontSize: '12px' }}>
-            <div>© 2026 SaarthiOne Inc. All rights reserved.</div>
-            <div style={{ display: 'flex', gap: '20px' }}>
-              <span>Privacy Policy</span>
-              <span>Terms of Service</span>
-              <span>Security</span>
+          <div style={{ maxWidth: '440px', margin: '0 auto' }}>
+            <div style={{ backgroundColor: '#0b141a', borderRadius: '20px', border: '1px solid rgba(0,242,254,0.25)', overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.6)' }}>
+              <div style={{ backgroundColor: '#1f2c34', display: 'flex', alignItems: 'center', gap: '10px', padding: '13px 16px' }}>
+                <div style={{ width: '34px', height: '34px', borderRadius: '50%', background: 'linear-gradient(135deg,#00f2fe,#4facfe)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px' }}>🧭</div>
+                <div><div style={{ color: '#e9edef', fontWeight: 600, fontSize: '14px' }}>Wanderlust Travel</div><div style={{ color: '#00ff87', fontSize: '11px' }}>● online · replies instantly</div></div>
+              </div>
+              <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', gap: '9px', minHeight: '260px', backgroundColor: '#0b141a', backgroundImage: 'radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px)', backgroundSize: '18px 18px' }}>
+                {DEMO_CHAT.slice(0, demoCount).map((m, i) => (
+                  <div key={i} style={{ alignSelf: m.from === 'customer' ? 'flex-end' : 'flex-start', maxWidth: '85%', padding: '9px 12px', borderRadius: m.from === 'customer' ? '12px 12px 3px 12px' : '12px 12px 12px 3px', fontSize: '13.5px', lineHeight: 1.45, color: '#e9edef', backgroundColor: m.from === 'customer' ? '#005c4b' : '#1f2c34' }}>{m.text}</div>
+                ))}
+              </div>
+              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
+                {demoCount < DEMO_CHAT.length
+                  ? <button onClick={() => setDemoCount((c) => Math.min(c + 1, DEMO_CHAT.length))} style={{ padding: '9px 20px', borderRadius: '10px', background: 'linear-gradient(135deg,#00f2fe,#4facfe)', color: '#000', border: 'none', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>▶ Play next message</button>
+                  : <button onClick={() => setDemoCount(2)} style={{ padding: '9px 20px', borderRadius: '10px', backgroundColor: '#121620', color: '#9ca3af', border: '1px solid rgba(255,255,255,0.12)', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>↻ Replay</button>}
+              </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* ─── 7. Why SMBs ─── */}
+      <section style={{ maxWidth: '1000px', margin: '0 auto', padding: '90px 24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '46px' }}>
+          <Eyebrow>Why SaarthiOne</Eyebrow>
+          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Enterprise power, small-business simple.</h2>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '22px' }} className="smb-grid">
+          <div style={{ backgroundColor: '#0d1117', borderRadius: '18px', padding: '28px', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#8b93a3', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '18px' }}>Enterprise software</div>
+            {['Expensive to license', 'Complex to set up', 'Weeks of training to adopt', 'Needs a dedicated ops team'].map((t) => (
+              <div key={t} style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '9px 0', color: '#9ca3af', fontSize: '14px' }}><span style={{ color: '#ff6b6b' }}>✕</span> {t}</div>
+            ))}
+          </div>
+          <div style={{ backgroundColor: '#0d1420', borderRadius: '18px', padding: '28px', border: '1px solid rgba(0,242,254,0.3)', boxShadow: '0 0 30px rgba(0,242,254,0.08)' }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '18px' }}>SaarthiOne</div>
+            {['Affordable — pay as you grow', 'Conversation-first, nothing to learn', 'Live in 5 minutes on WhatsApp', 'The AI is the ops team'].map((t) => (
+              <div key={t} style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '9px 0', color: '#d6f7ff', fontSize: '14px', fontWeight: 500 }}><Check size={16} style={{ color: '#00ff87' }} /> {t}</div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─── 8. Architecture (simple) ─── */}
+      <section style={{ backgroundColor: '#0a0d14', borderTop: '1px solid rgba(255,255,255,0.05)', padding: '90px 24px' }}>
+        <div style={{ maxWidth: '900px', margin: '0 auto', textAlign: 'center' }}>
+          <Eyebrow>How it fits together</Eyebrow>
+          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif', marginBottom: '46px' }}>One brain behind the conversation.</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
+            {[{ e: '🧑', t: 'Customer' }, { e: '💬', t: 'WhatsApp' }, { e: '🧭', t: 'Saarthi AI' }].map((n, i) => (
+              <React.Fragment key={n.t}>
+                <div style={{ padding: '14px 30px', borderRadius: '14px', backgroundColor: i === 2 ? 'rgba(0,242,254,0.1)' : '#0d1117', border: `1px solid ${i === 2 ? 'rgba(0,242,254,0.4)' : 'rgba(255,255,255,0.1)'}`, fontSize: '16px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '10px', minWidth: '220px', justifyContent: 'center' }}>
+                  <span style={{ fontSize: '20px' }}>{n.e}</span> {n.t}
+                </div>
+                <div style={{ color: '#3b4a63' }}>↓</div>
+              </React.Fragment>
+            ))}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', width: '100%', maxWidth: '640px' }} className="arch-grid">
+              {[{ e: '👥', t: 'CRM' }, { e: '💳', t: 'Payments' }, { e: '📅', t: 'Booking' }, { e: '📊', t: 'Analytics' }].map((n) => (
+                <div key={n.t} style={{ padding: '18px 10px', borderRadius: '12px', backgroundColor: '#0d1117', border: '1px solid rgba(0,242,254,0.2)', fontSize: '13px', fontWeight: 600, color: '#c3cad6' }}>
+                  <div style={{ fontSize: '22px', marginBottom: '6px' }}>{n.e}</div>{n.t}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── 9. Why different ─── */}
+      <section id="different" style={{ maxWidth: '820px', margin: '0 auto', padding: '90px 24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '44px' }}>
+          <Eyebrow>Not another chatbot</Eyebrow>
+          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Why we’re different.</h2>
+        </div>
+        <div style={{ borderRadius: '18px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', backgroundColor: '#11151f' }}>
+            <div style={{ padding: '16px 24px', fontWeight: 700, fontSize: '14px', color: '#8b93a3' }}>Others</div>
+            <div style={{ padding: '16px 24px', fontWeight: 700, fontSize: '14px', color: '#00f2fe', borderLeft: '1px solid rgba(255,255,255,0.08)' }}>SaarthiOne</div>
+          </div>
+          {WHY_DIFFERENT.map(([a, b], i) => (
+            <div key={a} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', backgroundColor: i % 2 ? '#0b0e15' : '#0d1117', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ padding: '16px 24px', fontSize: '14px', color: '#9ca3af' }}>{a}</div>
+              <div style={{ padding: '16px 24px', fontSize: '14px', color: '#e9f0ff', fontWeight: 600, borderLeft: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', gap: '8px' }}><Check size={15} style={{ color: '#00ff87' }} /> {b}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ─── 10. Roadmap ─── */}
+      <section style={{ backgroundColor: '#0a0d14', borderTop: '1px solid rgba(255,255,255,0.05)', padding: '80px 24px' }}>
+        <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+            <Eyebrow>Building in public</Eyebrow>
+            <h2 style={{ fontSize: '34px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Where we are.</h2>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'center' }}>
+            {ROADMAP.map((r) => (
+              <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '11px 18px', borderRadius: '999px', backgroundColor: r.done ? 'rgba(0,255,135,0.08)' : '#0d1117', border: `1px solid ${r.done ? 'rgba(0,255,135,0.3)' : 'rgba(255,255,255,0.12)'}`, fontSize: '14px', fontWeight: 600, color: r.done ? '#00ff87' : '#9ca3af' }}>
+                {r.done ? <Check size={15} /> : <Wrench size={14} />} {r.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─── 11. Waitlist ─── */}
+      <section id="waitlist" style={{ maxWidth: '560px', margin: '0 auto', padding: '90px 24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '30px' }}>
+          <Eyebrow>Early access</Eyebrow>
+          <h2 style={{ fontSize: '38px', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>Give your business an AI teammate.</h2>
+          <p style={{ color: '#9ca3af', fontSize: '16px', marginTop: '12px' }}>Join the early-access list — we’re onboarding businesses in small batches.</p>
+        </div>
+        {wlState === 'done' ? (
+          <div style={{ backgroundColor: 'rgba(0,255,135,0.06)', border: '1px solid rgba(0,255,135,0.35)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
+            <CheckCircle size={40} style={{ color: '#00ff87', marginBottom: '12px' }} />
+            <h3 style={{ fontSize: '20px', fontWeight: 700, color: '#fff', marginBottom: '6px' }}>You’re on the list! 🎉</h3>
+            <p style={{ color: '#9ca3af', fontSize: '14px' }}>We’ll reach out at <strong style={{ color: '#00ff87' }}>{wlEmail}</strong> when your spot opens.</p>
+          </div>
+        ) : (
+          <form onSubmit={submitWaitlist} style={{ display: 'flex', flexDirection: 'column', gap: '14px', backgroundColor: '#0d1117', border: '1px solid rgba(0,242,254,0.2)', borderRadius: '18px', padding: '28px' }}>
+            <input type="email" required placeholder="you@business.com" value={wlEmail} onChange={(e) => setWlEmail(e.target.value)}
+              style={{ padding: '14px 16px', borderRadius: '10px', backgroundColor: '#0b0e15', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: '15px', outline: 'none' }} />
+            <select value={wlType} onChange={(e) => setWlType(e.target.value)}
+              style={{ padding: '14px 16px', borderRadius: '10px', backgroundColor: '#0b0e15', border: '1px solid rgba(255,255,255,0.12)', color: wlType ? '#fff' : '#6b7280', fontSize: '15px', outline: 'none' }}>
+              <option value="">Business type…</option>
+              {AUDIENCE.map((a) => <option key={a.name} value={a.name} style={{ color: '#000' }}>{a.name}</option>)}
+              <option value="Other" style={{ color: '#000' }}>Other</option>
+            </select>
+            {wlError && <div style={{ color: '#ff6b6b', fontSize: '13px' }}>{wlError}</div>}
+            <button type="submit" disabled={wlState === 'submitting'} style={{ padding: '15px', borderRadius: '10px', background: 'linear-gradient(135deg,#00f2fe,#4facfe)', color: '#000', border: 'none', fontWeight: 800, fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+              {wlState === 'submitting' ? <><Loader size={16} className="spin" /> Joining…</> : <>Join Early Access <ArrowRight size={16} /></>}
+            </button>
+            <p style={{ fontSize: '11px', color: '#6b7280', textAlign: 'center' }}>No spam. We’ll only email you about your early-access spot.</p>
+          </form>
+        )}
+      </section>
+
+      {/* ─── 12. Founder note ─── */}
+      <section style={{ maxWidth: '720px', margin: '0 auto', padding: '20px 24px 90px' }}>
+        <div style={{ backgroundColor: '#0d1117', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px', padding: '34px', textAlign: 'center' }}>
+          <div style={{ fontSize: '30px', marginBottom: '14px' }}>✍️</div>
+          <p style={{ fontSize: '18px', lineHeight: 1.7, color: '#e9f0ff', fontStyle: 'italic' }}>
+            “I’m building SaarthiOne because I believe small businesses deserve the same technology that large enterprises can afford.”
+          </p>
+          <div style={{ marginTop: '18px', fontSize: '13px', color: '#9ca3af', fontWeight: 600 }}>— The SaarthiOne founder</div>
+        </div>
+      </section>
+
+      {/* ─── Footer ─── */}
+      <footer style={{ backgroundColor: '#040609', borderTop: '1px solid rgba(255,255,255,0.08)', padding: '50px 24px 40px' }}>
+        <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <img src="/logo-mark.svg" alt="SaarthiOne" width={28} height={28} style={{ borderRadius: '7px' }} />
+            <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '18px' }}>Saarthi<span style={{ color: '#00f2fe' }}>One</span></span>
+          </div>
+          <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+            <button onClick={() => scrollTo('waitlist')} style={{ padding: '11px 22px', borderRadius: '10px', background: 'linear-gradient(135deg,#00f2fe,#4facfe)', color: '#000', border: 'none', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>Get Early Access</button>
+            <button onClick={onLaunchApp} style={{ padding: '11px 18px', borderRadius: '10px', backgroundColor: '#121620', color: '#f3f4f6', border: '1px solid rgba(255,255,255,0.15)', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>Sign In</button>
+          </div>
+        </div>
+        <div style={{ maxWidth: '1120px', margin: '30px auto 0', paddingTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#6b7280', fontSize: '12px', textAlign: 'center' }}>
+          © 2026 SaarthiOne · Your AI teammate for growing your business.
         </div>
       </footer>
     </div>

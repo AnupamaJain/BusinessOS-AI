@@ -597,3 +597,29 @@ body {
 @media (max-width: 520px) {
   .building-blocks-grid { grid-template-columns: 1fr !important; }
 }
+
+/* ── Landing hero flow animation ── */
+@keyframes flow-pulse {
+  0%, 100% { opacity: 0.45; transform: translateY(0); box-shadow: 0 0 0 rgba(0,242,254,0); }
+  50%      { opacity: 1;    transform: translateY(-3px); box-shadow: 0 0 20px rgba(0,242,254,0.35); }
+}
+@keyframes flow-dash { to { background-position: 24px 0; } }
+.flow-node { animation: flow-pulse 5.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .flow-node { animation: none; opacity: 1; }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.9s linear infinite; }
+
+/* Landing responsive reflows */
+@media (max-width: 900px) {
+  .hero-grid, .problem-grid, .smb-grid { grid-template-columns: 1fr !important; }
+  .problem-arrow { display: none !important; }
+  .team-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .audience-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  .arch-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+@media (max-width: 520px) {
+  .team-grid, .audience-grid { grid-template-columns: 1fr 1fr !important; }
+}

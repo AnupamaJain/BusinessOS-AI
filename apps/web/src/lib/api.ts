@@ -362,3 +362,13 @@ export async function fetchHandoffReasonCounts(): Promise<HandoffReasonCount[]> 
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count);
 }
+
+export async function joinWaitlist(email: string, businessType: string | null): Promise<string | null> {
+  const { error } = await supabase.from('waitlist').insert({
+    email: email.trim(),
+    business_type: businessType,
+    source: 'landing',
+  });
+  if (error) return error.message;
+  return null;
+}
