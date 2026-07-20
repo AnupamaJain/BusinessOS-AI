@@ -70,6 +70,26 @@ function buildInteractive(state: AgentState): { list?: InteractiveList; buttons?
         } };
       }
     }
+    if (tc.tool === 'search_cab_routes') {
+      const routes = (out?.['routes'] as Array<{ sku: string; title: string; fare: string; vehicleClass: string; estimatedHours: number }> | undefined) ?? [];
+      if (routes.length >= 2) {
+        return { list: {
+          header: 'Available cabs',
+          button: 'View routes',
+          items: routes.slice(0, 10).map((r) => ({ id: r.sku, title: truncate(r.title, 24), description: truncate(`${r.fare} · ${r.vehicleClass} · ~${r.estimatedHours}h`, 72) })),
+        } };
+      }
+    }
+    if (tc.tool === 'search_service_plans') {
+      const plans = (out?.['plans'] as Array<{ sku: string; title: string; price: string; planType: string }> | undefined) ?? [];
+      if (plans.length >= 2) {
+        return { list: {
+          header: 'Our plans',
+          button: 'View plans',
+          items: plans.slice(0, 10).map((p) => ({ id: p.sku, title: truncate(p.title, 24), description: truncate(`${p.price} · ${p.planType}`, 72) })),
+        } };
+      }
+    }
   }
   // Opening / unclear message → quick-action buttons
   if (!state.handoffId && !state.policyDecision?.shouldHandoff && state.intent === 'unknown') {

@@ -6,4 +6,4 @@ export type {
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
 export * from './schemas';
-export { SecretBox } from './crypto';
+export { SecretBox, maskPhone } from './crypto';

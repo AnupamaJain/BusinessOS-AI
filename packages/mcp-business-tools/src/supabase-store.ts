@@ -83,7 +83,7 @@ export class SupabaseBusinessStore implements BusinessStore {
     const hot = hotRows ?? [];
 
     const { data: staleRows, error: staleErr } = await this.db.from('leads')
-      .select('service_interest, contact_id, updated_at, stage, contacts(name, phone_number)')
+      .select('service_interest, contact_id, updated_at, stage, contacts(name, phone_number, phone_enc)')
       .eq('organization_id', organizationId).in('stage', activeStages)
       .lt('updated_at', staleCutoff).order('updated_at', { ascending: true }).limit(10);
     if (staleErr) this.fail('getBusinessSummary.stale', staleErr);
@@ -102,7 +102,12 @@ export class SupabaseBusinessStore implements BusinessStore {
     const pipelineText = pipeline > 0 ? `₹${pipeline.toLocaleString('en-IN')}` : '—';
 
     const nameOf = (r: any): string | undefined => (r.contacts as { name?: string } | null)?.name ?? undefined;
-    const phoneOf = (r: any): string | undefined => (r.contacts as { phone_number?: string } | null)?.phone_number ?? undefined;
+    const phoneOf = (r: any): string | undefined => {
+      const c = r.contacts as { phone_number?: string | null; phone_enc?: string | null } | null;
+      if (!c) return undefined;
+      // Decrypt the real number so re-engagement can actually message them.
+      return this.realPhone(c) || undefined;
+    };
 
     return {
       todayEnquiries,
@@ -118,30 +123,80 @@ export class SupabaseBusinessStore implements BusinessStore {
 
   // ─── Contacts & consent ───────────────────────────────────────────
 
+  /** Normalize a phone to an E.164-ish form: trim + ensure a leading `+`. */
+  private normalizePhone(phone: string): string {
+    const trimmed = (phone ?? '').trim();
+    return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
+  }
+
+  /**
+   * The real (decrypted) phone for a contacts row. When encryption is enabled,
+   * `phone_number` holds only a mask, so the real value lives in `phone_enc`.
+   * Legacy (un-backfilled) rows have no `phone_enc` and keep the real number in
+   * `phone_number`.
+   */
+  private realPhone(row: { phone_number?: string | null; phone_enc?: string | null }): string {
+    return row.phone_enc ? this.box.decrypt(row.phone_enc) : (row.phone_number ?? '');
+  }
+
+  /**
+   * Columns to write for a contact's phone. When the box is enabled the real
+   * number is encrypted (`phone_enc`), indexed for equality lookups
+   * (`phone_bidx`), and `phone_number` is stored masked. When disabled, the raw
+   * phone is stored as before so local/dev is unchanged.
+   */
+  private phoneWriteFields(normalized: string): { phone_number: string; phone_enc?: string; phone_bidx?: string } {
+    if (!this.box.enabled) return { phone_number: normalized };
+    return {
+      phone_number: maskPhone(normalized),
+      phone_enc: this.box.encrypt(normalized),
+      phone_bidx: this.box.blindIndex(normalized) ?? undefined,
+    };
+  }
+
   async findContactById(organizationId: string, contactId: string): Promise<ContactRecord | undefined> {
     const { data, error } = await this.db.from('contacts')
-      .select('id, organization_id, phone_number, name, email')
+      .select('id, organization_id, phone_number, phone_enc, name, email')
       .eq('organization_id', organizationId).eq('id', contactId).maybeSingle();
     if (error) this.fail('findContactById', error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
   }
 
   async findContactByPhone(organizationId: string, phone: string): Promise<ContactRecord | undefined> {
+    const normalized = this.normalizePhone(phone);
+    const select = 'id, organization_id, phone_number, phone_enc, name, email';
+
+    // Encrypted lookup: match on the keyed blind index (phone_number is masked).
+    if (this.box.enabled) {
+      const bidx = this.box.blindIndex(normalized);
+      if (bidx) {
+        const { data, error } = await this.db.from('contacts')
+          .select(select)
+          .eq('organization_id', organizationId).eq('phone_bidx', bidx).maybeSingle();
+        if (error) this.fail('findContactByPhone', error);
+        if (data) return { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined };
+      }
+      // Fall through to the plaintext lookup for legacy rows not yet backfilled.
+    }
+
     const { data, error } = await this.db.from('contacts')
-      .select('id, organization_id, phone_number, name, email')
-      .eq('organization_id', organizationId).eq('phone_number', phone).maybeSingle();
+      .select(select)
+      .eq('organization_id', organizationId).eq('phone_number', normalized).maybeSingle();
     if (error) this.fail('findContactByPhone', error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
   }
 
   async upsertContactByPhone(organizationId: string, phone: string, name?: string): Promise<ContactRecord> {
-    const existing = await this.findContactByPhone(organizationId, phone);
+    const normalized = this.normalizePhone(phone);
+    // Dedupe against the blind index (when enabled) / plaintext, never the mask.
+    const existing = await this.findContactByPhone(organizationId, normalized);
     if (existing) return existing;
     const { data, error } = await this.db.from('contacts')
-      .insert({ organization_id: organizationId, phone_number: phone, name })
-      .select('id, organization_id, phone_number, name').single();
+      .insert({ organization_id: organizationId, name, ...this.phoneWriteFields(normalized) })
+      .select('id, organization_id, phone_number, phone_enc, name').single();
     if (error || !data) this.fail('upsertContactByPhone', error);
-    return { id: data.id, organizationId: data.organization_id, phone: data.phone_number, name: data.name ?? undefined };
+    // Return the REAL phone to server-side callers, not the stored mask.
+    return { id: data.id, organizationId: data.organization_id, phone: normalized, name: data.name ?? undefined };
   }
 
   async listConsent(organizationId: string, contactId: string): Promise<ConsentRow[]> {

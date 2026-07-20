@@ -91,12 +91,16 @@ const VEHICLE_CLASSES = ['sedan', 'suv', 'tempo'] as const;
 type VehicleClass = (typeof VEHICLE_CLASSES)[number];
 type ServiceKind = 'cleaning' | 'cooking' | 'full-time' | 'babysitting';
 
-/** Map free-text service words to the SearchServicePlansInput enum. */
+/**
+ * Map free-text service words to the SearchServicePlansInput enum. Concrete
+ * services (cooking/cleaning/babysitting) win over the "full-time" schedule
+ * descriptor, so "full-time maid for cooking" resolves to cooking.
+ */
 function parseServiceKind(lower: string): ServiceKind | undefined {
-  if (/\bfull[-\s]?time\b/.test(lower)) return 'full-time';
   if (/\b(babysitter|nanny|babysitting)\b/.test(lower)) return 'babysitting';
   if (/\b(cook|cooking)\b/.test(lower)) return 'cooking';
   if (/\b(clean|cleaning|cleaner|housekeeping|housekeeper|maid|househelp)\b/.test(lower)) return 'cleaning';
+  if (/\bfull[-\s]?time\b/.test(lower)) return 'full-time';
   return undefined;
 }
 
@@ -609,7 +613,14 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
 
   // Match against the WHOLE conversation (current message + recent history +
   // the customer's last lead), so a follow-up date reply still knows the package.
-  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+  // Cab routes and service plans are fetched up-front so we can (a) exclude them
+  // from the travel matcher (the in-memory store returns all packages for travel)
+  // and (b) match them in their own sibling branches below.
+  const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
+  const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
+  const nonTravelSkus = new Set([...cabRoutes, ...servicePlans].map((p) => p.sku));
+  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages
+    .filter((p) => !nonTravelSkus.has(p.sku));
   const ctx = state.customerContext as { latestLead?: { serviceInterest?: string } } | undefined;
   const contextText = [
     state.inboundMessage,
@@ -679,7 +690,6 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
   }
 
   // ── Cab (intercity) booking ─────────────────────────────────────
-  const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
   const matchedCab = cabRoutes.find((r) =>
     contextText.includes(r.sku.toLowerCase()) ||
     (!!r.fromCity && !!r.toCity && contextText.includes(r.fromCity.toLowerCase()) && contextText.includes(r.toCity.toLowerCase())) ||
@@ -719,7 +729,6 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
   }
 
   // ── Home services (maid/cook/cleaning) booking ──────────────────
-  const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
   const matchedPlan = servicePlans.find((p) =>
     contextText.includes(p.sku.toLowerCase()) ||
     (!!p.service && contextText.includes(p.service.toLowerCase())) ||

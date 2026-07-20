@@ -52,6 +52,8 @@ import {
   sendOperatorMessage,
   startCheckout,
   updateOrganizationVertical,
+  inviteTeamMember,
+  acceptTeamInvite,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import {
@@ -506,6 +508,22 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     }
   }
 
+  /* Accept a team invite when the app is opened with ?invite=<token>. The
+     signed-in user joins the inviting org, then we reload to pick up the new
+     membership and drop the token from the URL. */
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get('invite');
+    if (!token) return;
+    void acceptTeamInvite(session.access_token, token).then((r) => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('invite');
+      window.history.replaceState({}, '', url.toString());
+      if (r.ok) window.location.reload();
+    });
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* Responsive breakpoint for the onboarding wizard (drives compact layout) */
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
@@ -516,7 +534,9 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     return () => mq.removeEventListener('change', update);
   }, []);
 
-  function handleAddInvite(): void {
+  const [invitingTeam, setInvitingTeam] = useState(false);
+
+  async function handleAddInvite(): Promise<void> {
     const email = teamEmail.trim();
     if (!email) {
       setInviteError('Enter an email address to invite.');
@@ -531,9 +551,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
       setInviteError('That email has already been invited.');
       return;
     }
+    setInviteError(null);
+    setInvitingTeam(true);
+    // Really send the invite (gateway persists it + emails an accept link).
+    const result = await inviteTeamMember(session.access_token, email, 'operator');
+    setInvitingTeam(false);
+    if (!result.ok) {
+      setInviteError(result.error ?? 'Could not send the invite. Try again.');
+      return;
+    }
     setInvitedEmails([...invitedEmails, email]);
     setTeamEmail('');
-    setInviteError(null);
   }
 
   const inDashboard = viewState === 'dashboard';
@@ -943,6 +971,18 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                     desc: 'Skincare catalog, return policies, medical exclusions, and automated follow-ups.',
                   },
                   {
+                    id: 'cab-intercity',
+                    title: 'Intercity Cab / Taxi',
+                    recommended: false,
+                    desc: 'City-to-city routes, fare quotes by vehicle class, pickup scheduling, and payment links.',
+                  },
+                  {
+                    id: 'home-services',
+                    title: 'Home & Maid Services',
+                    recommended: false,
+                    desc: 'Cooking, cleaning & full-time plans, area matching, one-time or monthly booking, and payments.',
+                  },
+                  {
                     id: 'custom',
                     title: 'Other / General Business',
                     recommended: false,
@@ -1309,13 +1349,13 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Invite team members to manage your inbox queue, claim handoffs, and monitor safety
-                logs. Invites are dispatched by an administrator through Supabase Auth.
+                logs. Each teammate gets an email with a secure link to join your workspace.
               </p>
 
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  handleAddInvite();
+                  void handleAddInvite();
                 }}
                 style={{ display: 'flex', gap: '12px', marginBottom: inviteError ? '8px' : '20px' }}
               >
@@ -1329,8 +1369,8 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                     if (inviteError) setInviteError(null);
                   }}
                 />
-                <button type="submit" className="btn btn-secondary">
-                  Invite
+                <button type="submit" className="btn btn-secondary" disabled={invitingTeam}>
+                  {invitingTeam ? 'Sending…' : 'Invite'}
                 </button>
               </form>
 
@@ -1376,7 +1416,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                       <span style={{ wordBreak: 'break-all' }}>{email}</span>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
                         <span style={{ color: 'var(--color-warning)', fontWeight: 600 }}>
-                          Pending admin approval
+                          Invite sent
                         </span>
                         <button
                           type="button"
