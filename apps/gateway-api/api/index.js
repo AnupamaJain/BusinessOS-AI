@@ -54261,10 +54261,14 @@ var RazorpayPaymentService = class {
       }
       const payment = paymentRows?.[0];
       if (payment?.order_id && payment.organization_id) {
+        result.orderId = payment.order_id;
+        result.organizationId = payment.organization_id;
         const { error: orderError } = await this.supabase.from("orders").update({ status: "paid" }).eq("id", payment.order_id).eq("organization_id", payment.organization_id);
         if (orderError) {
           throw new Error(`Failed to update order status: ${orderError.message}`);
         }
+        const { data: bookingRows } = await this.supabase.from("bookings").update({ status: "confirmed" }).eq("id", payment.order_id).eq("organization_id", payment.organization_id).select("id");
+        if (bookingRows && bookingRows.length > 0) result.bookingConfirmed = true;
       }
     }
     return result;
@@ -55940,6 +55944,25 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }, replyAdapter);
     }
   }
+  async function sendBookingConfirmation(orgId, bookingId) {
+    try {
+      const { data: booking } = await db.from("bookings").select("booking_number, contact_id, metadata, total_amount").eq("organization_id", orgId).eq("id", bookingId).maybeSingle();
+      if (!booking?.contact_id) return;
+      const contact = await store.findContactById(orgId, booking.contact_id);
+      if (!contact?.phone) return;
+      const meta = booking.metadata ?? {};
+      let detail = "";
+      if (meta["type"] === "cab-route") detail = ` Your ${meta["fromCity"]} \u2192 ${meta["toCity"]} cab is booked${meta["pickupDate"] ? ` for ${meta["pickupDate"]}` : ""}.`;
+      else if (meta["type"] === "home-service") detail = ` Your ${meta["service"]} service is booked${meta["startDate"] ? ` from ${meta["startDate"]}` : ""}.`;
+      const amountText = booking.total_amount ? ` (\u20B9${Number(booking.total_amount).toLocaleString("en-IN")})` : "";
+      const text = `\u2705 Payment received${amountText}! Booking ${booking.booking_number} is confirmed.${detail} Thank you \u2014 we\u2019ll follow up with the details shortly. \u{1F64C}`;
+      const orgAdapter = await adapterForOrg(orgId);
+      const r = await orgAdapter.sendMessage(orgId, { to: contact.phone, type: "text", text, idempotencyKey: `bookpay:${bookingId}` });
+      if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, contact.phone, text, r.providerMessageId);
+    } catch (err) {
+      logger.warn("Booking confirmation send failed", { orgId, bookingId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
   function isInternalAuthorised(req) {
     const key = req.headers["x-internal-key"];
     if (internalApiKey && key === internalApiKey) return true;
@@ -56227,6 +56250,13 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }
       try {
         const result = await razorpay.handleWebhookEvent(req.body);
+        if (result.bookingConfirmed && result.orderId && result.organizationId) {
+          const work = sendBookingConfirmation(result.organizationId, result.orderId);
+          try {
+            (0, import_functions.waitUntil)(work);
+          } catch {
+          }
+        }
         res.status(200).json(result);
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

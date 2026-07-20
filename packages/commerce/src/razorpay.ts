@@ -30,6 +30,12 @@ export interface RazorpayWebhookResult {
   providerLinkId?: string;
   paymentStatus?: PaymentStatus;
   providerTransactionId?: string;
+  /** The paid entity's id (an order id or a booking id) + its org, so the
+   *  caller can send a confirmation on the customer's channel. */
+  orderId?: string;
+  organizationId?: string;
+  /** True when a bookings row (travel/cab/maid) was confirmed by this event. */
+  bookingConfirmed?: boolean;
 }
 
 const RazorpayLinkResponseSchema = z.object({
@@ -236,6 +242,10 @@ export class RazorpayPaymentService {
 
       const payment = paymentRows?.[0] as { order_id?: string; organization_id?: string } | undefined;
       if (payment?.order_id && payment.organization_id) {
+        result.orderId = payment.order_id;
+        result.organizationId = payment.organization_id;
+        // A payment's order_id is either an orders row (product purchase) or a
+        // bookings row (travel/cab/maid). Try both — only one will match.
         const { error: orderError } = await this.supabase
           .from('orders')
           .update({ status: 'paid' })
@@ -244,6 +254,13 @@ export class RazorpayPaymentService {
         if (orderError) {
           throw new Error(`Failed to update order status: ${orderError.message}`);
         }
+        const { data: bookingRows } = await this.supabase
+          .from('bookings')
+          .update({ status: 'confirmed' })
+          .eq('id', payment.order_id)
+          .eq('organization_id', payment.organization_id)
+          .select('id');
+        if (bookingRows && bookingRows.length > 0) result.bookingConfirmed = true;
       }
     }
 

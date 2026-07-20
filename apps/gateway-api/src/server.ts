@@ -679,6 +679,33 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
+  /**
+   * Close the loop after payment: a confirmed booking (travel/cab/maid) gets a
+   * WhatsApp confirmation on the customer's own channel. Best-effort, off the
+   * webhook's response path.
+   */
+  async function sendBookingConfirmation(orgId: string, bookingId: string): Promise<void> {
+    try {
+      const { data: booking } = await db.from('bookings')
+        .select('booking_number, contact_id, metadata, total_amount')
+        .eq('organization_id', orgId).eq('id', bookingId).maybeSingle();
+      if (!booking?.contact_id) return;
+      const contact = await store.findContactById(orgId, booking.contact_id); // real (decrypted) phone
+      if (!contact?.phone) return;
+      const meta = (booking.metadata ?? {}) as Record<string, unknown>;
+      let detail = '';
+      if (meta['type'] === 'cab-route') detail = ` Your ${meta['fromCity']} → ${meta['toCity']} cab is booked${meta['pickupDate'] ? ` for ${meta['pickupDate']}` : ''}.`;
+      else if (meta['type'] === 'home-service') detail = ` Your ${meta['service']} service is booked${meta['startDate'] ? ` from ${meta['startDate']}` : ''}.`;
+      const amountText = booking.total_amount ? ` (₹${Number(booking.total_amount).toLocaleString('en-IN')})` : '';
+      const text = `✅ Payment received${amountText}! Booking ${booking.booking_number} is confirmed.${detail} Thank you — we’ll follow up with the details shortly. 🙌`;
+      const orgAdapter = await adapterForOrg(orgId);
+      const r = await orgAdapter.sendMessage(orgId, { to: contact.phone, type: 'text', text, idempotencyKey: `bookpay:${bookingId}` });
+      if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, contact.phone, text, r.providerMessageId);
+    } catch (err) {
+      logger.warn('Booking confirmation send failed', { orgId, bookingId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // ── Auth helpers for internal/operator routes ──
   function isInternalAuthorised(req: express.Request): boolean {
     const key = req.headers['x-internal-key'];
@@ -975,6 +1002,11 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }
       try {
         const result = await razorpay.handleWebhookEvent(req.body);
+        // Booking paid → confirm on WhatsApp (off the response path).
+        if (result.bookingConfirmed && result.orderId && result.organizationId) {
+          const work = sendBookingConfirmation(result.organizationId, result.orderId);
+          try { waitUntil(work); } catch { void work; }
+        }
         res.status(200).json(result);
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

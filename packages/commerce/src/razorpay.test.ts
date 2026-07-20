@@ -13,7 +13,7 @@ interface RecordedCall {
   filters: Array<[string, unknown]>;
 }
 
-function createFakeSupabase(selectRows: unknown[] = []) {
+function createFakeSupabase(selectRows: unknown[] = [], bookingUpdateRows: unknown[] = []) {
   const calls: RecordedCall[] = [];
 
   const client = {
@@ -30,6 +30,12 @@ function createFakeSupabase(selectRows: unknown[] = []) {
             eq(column: string, value: unknown) {
               call.filters.push([column, value]);
               return builder;
+            },
+            // update(...).eq(...).select(...) — used to detect whether a booking
+            // row matched; return no rows so order-payment tests are unaffected.
+            select(_columns: string) {
+              const rows = table === 'bookings' ? bookingUpdateRows : [];
+              return { then(resolve: (value: { data: unknown[]; error: null }) => void) { resolve({ data: rows, error: null }); } };
             },
             then(resolve: (value: { error: null }) => void) {
               resolve({ error: null });
@@ -295,6 +301,22 @@ describe('RazorpayPaymentService', () => {
         ['id', ORDER_ID],
         ['organization_id', ORG_A]
       ]);
+    });
+
+    it('confirms a booking and flags bookingConfirmed when the paid entity is a booking', async () => {
+      const { client, calls } = createFakeSupabase(
+        [{ order_id: ORDER_ID, organization_id: ORG_A }],
+        [{ id: ORDER_ID }], // the bookings update matched a row
+      );
+      const service = new RazorpayPaymentService({ keyId: 'rzp_test_key', keySecret: 'test_secret', supabase: client });
+
+      const result = await service.handleWebhookEvent(paidEvent);
+
+      expect(result.bookingConfirmed).toBe(true);
+      expect(result.orderId).toBe(ORDER_ID);
+      expect(result.organizationId).toBe(ORG_A);
+      const bookingUpdate = calls.find(c => c.table === 'bookings' && c.op === 'update');
+      expect(bookingUpdate?.values).toEqual({ status: 'confirmed' });
     });
 
     it('marks the payment failed on payment_link.expired', async () => {

@@ -67,16 +67,16 @@ type Msg =
 
 const HERO_THREAD: Msg[] = [
   { k: 'sys', t: '🔒 Handled by an AI teammate · a human can step in anytime' },
-  { k: 'in', t: 'Namaste Aarav! 🌏 I saw you were looking at our Bali getaways — want me to find the perfect honeymoon trip?', time: '11:04' },
+  { k: 'in', t: 'Namaste Aarav! 🌏 I saw you were looking at our Bali getaways — want me to plan the perfect trip for you?', time: '11:04' },
   { k: 'out', t: 'Yes! Mid-October, 2 of us, ~₹1L each 🏝️', time: '11:05' },
-  { k: 'in', t: <>Perfect — our <b>Bali Romance Escape</b> (5N/6D) is ₹49,999/person: private-pool villa, daily breakfast, candlelight dinner &amp; a Nusa Penida tour. Shall I hold it?</>, time: '11:06' },
+  { k: 'in', t: <>Perfect — our <b>Bali Beach Escape</b> (5N/6D) is ₹49,999/person: private-pool villa, daily breakfast, a sunset dinner cruise &amp; a Nusa Penida tour. Shall I hold it?</>, time: '11:06' },
   { k: 'out', t: 'Yes please 😍', time: '11:07' },
-  { k: 'pay', who: 'Wanderlust Travel', sub: 'Bali Romance · 2 travellers', amt: '₹99,998' },
+  { k: 'pay', who: 'Sunroute Travel', sub: 'Bali Beach Escape · 2 travellers', amt: '₹99,998' },
   { k: 'out', t: 'Paid ✅', time: '11:09' },
   { k: 'in', t: <>🎉 Booking <b>BK-48213</b> confirmed! Your itinerary &amp; villa voucher are on the way.</>, time: '11:09' },
 ];
 
-function PhoneThread({ msgs, title = 'Wanderlust Travel', maxHeight }: { msgs: Msg[]; title?: string; maxHeight?: number }) {
+function PhoneThread({ msgs, title = 'Sunroute Travel', maxHeight }: { msgs: Msg[]; title?: string; maxHeight?: number }) {
   return (
     <div style={{ width: '340px', maxWidth: '100%', backgroundColor: '#0b141a', borderRadius: '28px', border: `1px solid ${C.line}`, boxShadow: '0 30px 70px rgba(0,0,0,0.6)', overflow: 'hidden' }}>
       <div style={{ backgroundColor: '#1f2c34', display: 'flex', alignItems: 'center', gap: '10px', padding: '13px 15px' }}>
