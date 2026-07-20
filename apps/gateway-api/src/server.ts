@@ -17,7 +17,7 @@ import {
   type AgentGraphDeps, type EmbeddingProvider,
 } from '@business-os-ai/agent-core';
 import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/auth';
-import { RazorpayPaymentService, buildQuotationHtml } from '@business-os-ai/commerce';
+import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@business-os-ai/commerce';
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
 } from '@business-os-ai/integrations';
@@ -221,6 +221,28 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
           return { url, number };
         } catch {
+          return null;
+        }
+      },
+      createCheckoutLink: async ({ contactId, packageSku, title, amount, travellers }) => {
+        // Reserve the booking, then generate a real Razorpay payment link (if configured).
+        const amountText = `₹${amount.toLocaleString('en-IN')}`;
+        try {
+          const booking = await store.insertBooking({ organizationId: orgId, contactId, packageSku, travelDate: new Date().toISOString(), travelerCount: travellers, totalAmount: amount });
+          if (!razorpay) {
+            logger.info('Booking reserved; Razorpay not configured — payment link deferred to team', { booking: booking.bookingNumber });
+            return null;
+          }
+          const { data: contact } = await db.from('contacts').select('name, phone_number').eq('id', contactId).maybeSingle();
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId, orderId: booking.id, amount, currency: 'INR',
+            description: `${title} — ${travellers} traveller(s)`,
+            customerName: contact?.name ?? undefined, customerPhone: contact?.phone_number ?? undefined,
+            expiresInMinutes: 60,
+          });
+          return { url: link.url, amountText };
+        } catch (err) {
+          logger.warn('createCheckoutLink failed', { error: err instanceof Error ? err.message : String(err) });
           return null;
         }
       },
@@ -471,6 +493,42 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         res.status(200).type('html').send(html);
       } catch (err) {
         res.status(500).type('html').send('<h1>Could not load quotation</h1>');
+      }
+    });
+
+    /** Public invoice document. */
+    app.get('/doc/invoice/:id', async (req, res) => {
+      try {
+        const { data: invoice } = await db.from('invoices')
+          .select('id, organization_id, order_id, invoice_number, amount_due, amount_paid, due_date, status, created_at')
+          .eq('id', req.params.id).maybeSingle();
+        if (!invoice) { res.status(404).type('html').send('<h1>Invoice not found</h1>'); return; }
+
+        const [{ data: org }, { data: order }] = await Promise.all([
+          db.from('organizations').select('name').eq('id', invoice.organization_id).maybeSingle(),
+          db.from('orders').select('contact_id, order_items(title, quantity, unit_price)').eq('id', invoice.order_id).maybeSingle(),
+        ]);
+        const { data: contact } = order?.contact_id
+          ? await db.from('contacts').select('name, phone_number').eq('id', order.contact_id).maybeSingle()
+          : { data: null };
+
+        const items = ((order?.order_items as Array<{ title: string; quantity: number; unit_price: number }> | undefined) ?? [])
+          .map((i) => ({ title: i.title, quantity: i.quantity, unitPrice: Number(i.unit_price) }));
+        const html = buildInvoiceHtml({
+          number: invoice.invoice_number,
+          businessName: org?.name ?? 'SaarthiOne',
+          customerName: contact?.name ?? undefined,
+          customerPhone: contact?.phone_number ?? undefined,
+          currency: 'INR',
+          issuedAt: invoice.created_at,
+          dueDate: invoice.due_date,
+          status: (invoice.status as 'unpaid' | 'paid' | 'partially_paid') ?? 'unpaid',
+          items: items.length > 0 ? items : [{ title: 'Order total', quantity: 1, unitPrice: Number(invoice.amount_due) }],
+          amountPaid: Number(invoice.amount_paid ?? 0),
+        });
+        res.status(200).type('html').send(html);
+      } catch (err) {
+        res.status(500).type('html').send('<h1>Could not load invoice</h1>');
       }
     });
 

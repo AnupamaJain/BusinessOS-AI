@@ -29,6 +29,8 @@ export interface AgentGraphDeps {
   businessName?: string;
   /** Optional: create a shareable quotation document; returns its public URL. */
   createQuotation?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; pricePerPerson: number; travellers: number }) => Promise<{ url: string; number: string } | null>;
+  /** Optional: create a payment link at booking-confirm; returns the checkout URL. */
+  createCheckoutLink?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; amount: number; travellers: number }) => Promise<{ url: string; amountText: string } | null>;
 }
 
 const INTENT_VALUES: IntentType[] = [
@@ -444,14 +446,40 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     state.errors.push('Failed to record callback request');
   }
 
-  if (deps.vertical === 'travel' && hasRealLLM(deps)) {
-    const packages = await searchTravelPackages(store, { organizationId: state.organizationId });
-    const llmReply = await composeReplyWithLLM(deps.llm!, state, deps,
-      'The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.',
-      { availablePackages: packages.packages });
-    if (llmReply) {
-      state.proposedResponse = llmReply;
-      return state;
+  if (deps.vertical === 'travel') {
+    const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+    const lower = state.inboundMessage.toLowerCase();
+
+    // Auto payment link: if the customer is confirming a specific package, reserve it and drop a checkout link.
+    const matched = packages.find((p) =>
+      lower.includes(p.destination.toLowerCase()) ||
+      p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && lower.includes(w)));
+    const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage);
+
+    if (matched && isConfirming && deps.createCheckoutLink) {
+      const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+      const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
+      const price = Number(String(matched.pricePerPerson).replace(/[^\d]/g, '')) || 0;
+      const link = await deps.createCheckoutLink({
+        contactId: state.contactId, conversationId: state.conversationId,
+        packageSku: matched.sku, title: matched.title, amount: price * travellers, travellers,
+      });
+      if (link) {
+        state.proposedResponse = `Perfect! 🎉 I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? '' : 's'}. Total: ${link.amountText}.\n\n💳 Complete your booking with this secure payment link:\n${link.url}\n\nAs soon as you pay, I'll confirm your booking and send the itinerary.`;
+        state.toolCalls.push({ tool: 'create_payment_link', input: { packageSku: matched.sku, travellers }, output: link });
+        return state;
+      }
+    }
+
+    // Otherwise, gather booking details conversationally.
+    if (hasRealLLM(deps)) {
+      const llmReply = await composeReplyWithLLM(deps.llm!, state, deps,
+        'The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.',
+        { availablePackages: packages });
+      if (llmReply) {
+        state.proposedResponse = llmReply;
+        return state;
+      }
     }
   }
   state.proposedResponse = "I'd love to help you book! Could you let me know your preferred date and time? I'll check availability for you.";

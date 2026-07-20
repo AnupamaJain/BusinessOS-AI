@@ -52839,18 +52839,46 @@ async function nodeBookingFlow(store, state, deps) {
   } catch {
     state.errors.push("Failed to record callback request");
   }
-  if (deps.vertical === "travel" && hasRealLLM(deps)) {
-    const packages = await searchTravelPackages(store, { organizationId: state.organizationId });
-    const llmReply = await composeReplyWithLLM(
-      deps.llm,
-      state,
-      deps,
-      "The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.",
-      { availablePackages: packages.packages }
-    );
-    if (llmReply) {
-      state.proposedResponse = llmReply;
-      return state;
+  if (deps.vertical === "travel") {
+    const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+    const lower = state.inboundMessage.toLowerCase();
+    const matched = packages.find((p) => lower.includes(p.destination.toLowerCase()) || p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && lower.includes(w)));
+    const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage);
+    if (matched && isConfirming && deps.createCheckoutLink) {
+      const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+      const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
+      const price = Number(String(matched.pricePerPerson).replace(/[^\d]/g, "")) || 0;
+      const link = await deps.createCheckoutLink({
+        contactId: state.contactId,
+        conversationId: state.conversationId,
+        packageSku: matched.sku,
+        title: matched.title,
+        amount: price * travellers,
+        travellers
+      });
+      if (link) {
+        state.proposedResponse = `Perfect! \u{1F389} I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? "" : "s"}. Total: ${link.amountText}.
+
+\u{1F4B3} Complete your booking with this secure payment link:
+${link.url}
+
+As soon as you pay, I'll confirm your booking and send the itinerary.`;
+        state.toolCalls.push({ tool: "create_payment_link", input: { packageSku: matched.sku, travellers }, output: link });
+        return state;
+      }
+    }
+    if (hasRealLLM(deps)) {
+      const llmReply = await composeReplyWithLLM(
+        deps.llm,
+        state,
+        deps,
+        "The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.",
+        { availablePackages: packages }
+      );
+      if (llmReply) {
+        state.proposedResponse = llmReply;
+        return state;
+      }
     }
   }
   state.proposedResponse = "I'd love to help you book! Could you let me know your preferred date and time? I'll check availability for you.";
@@ -53703,6 +53731,48 @@ ${totals}
 ${footer}`;
   return wrapDocument(`Quotation ${doc.number}`, inner);
 }
+function buildInvoiceHtml(doc) {
+  const currency = doc.currency ?? "INR";
+  const taxRate = doc.taxRate ?? 0;
+  const amountPaid = doc.amountPaid ?? 0;
+  const status = doc.status ?? "unpaid";
+  const { lines, subtotal } = computeLines(doc.items);
+  const tax = subtotal * taxRate;
+  const total = subtotal + tax;
+  const balanceDue = total - amountPaid;
+  const header = renderHeader(doc.businessName, "Invoice", doc.number);
+  const customer = renderCustomer(doc.customerName, doc.customerPhone);
+  const table = renderItemsTable(lines, currency);
+  const statusLabel = status.replace("_", " ");
+  const badge = `<span class="badge ${status}">${escapeHtml(statusLabel)}</span>`;
+  const taxRow = taxRate > 0 ? `        <div class="row"><span class="label">Tax (${(taxRate * 100).toLocaleString("en-IN")}%)</span><span class="num">${formatMoney(tax, currency)}</span></div>` : "";
+  const totals = `      <div class="totals">
+        <div class="row"><span class="label">Subtotal</span><span class="num">${formatMoney(subtotal, currency)}</span></div>
+${taxRow}
+        <div class="row grand"><span class="label">Total</span><span class="num">${formatMoney(total, currency)}</span></div>
+        <div class="row"><span class="label">Amount Paid</span><span class="num">${formatMoney(amountPaid, currency)}</span></div>
+        <div class="row"><span class="label">Balance Due</span><span class="num">${formatMoney(balanceDue, currency)}</span></div>
+      </div>`;
+  const dueDate = doc.dueDate ? `        <div><div class="label">Due Date</div>${escapeHtml(doc.dueDate)}</div>` : "";
+  const footer = `    <div class="footer">
+      <div class="meta">
+        <div><div class="label">Issued</div>${escapeHtml(doc.issuedAt)}</div>
+${dueDate}
+      </div>
+      ${renderNotes(doc.notes)}
+    </div>`;
+  const inner = `${header}
+    <div class="body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        ${customer || "<div></div>"}
+        <div>${badge}</div>
+      </div>
+${table}
+${totals}
+    </div>
+${footer}`;
+  return wrapDocument(`Invoice ${doc.number}`, inner);
+}
 
 // ../../packages/integrations/src/email.ts
 var RESEND_ENDPOINT = "https://api.resend.com/emails";
@@ -54326,6 +54396,31 @@ function buildServer(env = process.env) {
         } catch {
           return null;
         }
+      },
+      createCheckoutLink: async ({ contactId, packageSku, title, amount, travellers }) => {
+        const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
+        try {
+          const booking = await store.insertBooking({ organizationId: orgId, contactId, packageSku, travelDate: (/* @__PURE__ */ new Date()).toISOString(), travelerCount: travellers, totalAmount: amount });
+          if (!razorpay) {
+            logger.info("Booking reserved; Razorpay not configured \u2014 payment link deferred to team", { booking: booking.bookingNumber });
+            return null;
+          }
+          const { data: contact } = await db.from("contacts").select("name, phone_number").eq("id", contactId).maybeSingle();
+          const link = await razorpay.createPaymentLink({
+            organizationId: orgId,
+            orderId: booking.id,
+            amount,
+            currency: "INR",
+            description: `${title} \u2014 ${travellers} traveller(s)`,
+            customerName: contact?.name ?? void 0,
+            customerPhone: contact?.phone_number ?? void 0,
+            expiresInMinutes: 60
+          });
+          return { url: link.url, amountText };
+        } catch (err) {
+          logger.warn("createCheckoutLink failed", { error: err instanceof Error ? err.message : String(err) });
+          return null;
+        }
       }
     };
   }
@@ -54539,6 +54634,36 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         res.status(200).type("html").send(html);
       } catch (err) {
         res.status(500).type("html").send("<h1>Could not load quotation</h1>");
+      }
+    });
+    app3.get("/doc/invoice/:id", async (req, res) => {
+      try {
+        const { data: invoice } = await db.from("invoices").select("id, organization_id, order_id, invoice_number, amount_due, amount_paid, due_date, status, created_at").eq("id", req.params.id).maybeSingle();
+        if (!invoice) {
+          res.status(404).type("html").send("<h1>Invoice not found</h1>");
+          return;
+        }
+        const [{ data: org }, { data: order }] = await Promise.all([
+          db.from("organizations").select("name").eq("id", invoice.organization_id).maybeSingle(),
+          db.from("orders").select("contact_id, order_items(title, quantity, unit_price)").eq("id", invoice.order_id).maybeSingle()
+        ]);
+        const { data: contact } = order?.contact_id ? await db.from("contacts").select("name, phone_number").eq("id", order.contact_id).maybeSingle() : { data: null };
+        const items = (order?.order_items ?? []).map((i) => ({ title: i.title, quantity: i.quantity, unitPrice: Number(i.unit_price) }));
+        const html = buildInvoiceHtml({
+          number: invoice.invoice_number,
+          businessName: org?.name ?? "SaarthiOne",
+          customerName: contact?.name ?? void 0,
+          customerPhone: contact?.phone_number ?? void 0,
+          currency: "INR",
+          issuedAt: invoice.created_at,
+          dueDate: invoice.due_date,
+          status: invoice.status ?? "unpaid",
+          items: items.length > 0 ? items : [{ title: "Order total", quantity: 1, unitPrice: Number(invoice.amount_due) }],
+          amountPaid: Number(invoice.amount_paid ?? 0)
+        });
+        res.status(200).type("html").send(html);
+      } catch (err) {
+        res.status(500).type("html").send("<h1>Could not load invoice</h1>");
       }
     });
     app3.post("/webhooks/twilio", import_express2.default.urlencoded({ extended: false }), (req, res) => {
