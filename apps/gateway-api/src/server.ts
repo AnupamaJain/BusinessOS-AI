@@ -13,10 +13,11 @@ import { SupabaseBusinessStore } from '@business-os-ai/mcp-business-tools';
 import { createGatewayFromEnv, type LLMGateway } from '@business-os-ai/llm-gateway';
 import {
   createEmbeddingProviderFromEnv, SupabaseVectorStore, executeAgentGraph,
-  ingestMarkdownContent, runOwnerAssistant, type AgentGraphDeps, type EmbeddingProvider,
+  ingestMarkdownContent, runOwnerAssistant, isOwnerConfirmation,
+  type AgentGraphDeps, type EmbeddingProvider,
 } from '@business-os-ai/agent-core';
 import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/auth';
-import { RazorpayPaymentService } from '@business-os-ai/commerce';
+import { RazorpayPaymentService, buildQuotationHtml } from '@business-os-ai/commerce';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
 import { waitUntil } from '@vercel/functions';
@@ -175,7 +176,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     return ctx;
   }
 
-  function agentDeps(org: { name: string; vertical?: string }): AgentGraphDeps {
+  const publicBaseUrl = (env['PUBLIC_GATEWAY_URL'] ?? 'https://saarthione-api.vercel.app').replace(/\/$/, '');
+
+  function agentDeps(orgId: string, org: { name: string; vertical?: string }): AgentGraphDeps {
     return {
       llm,
       embedder: embedder ?? undefined,
@@ -183,6 +186,22 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       retrievalThreshold: embedder ? PROD_RETRIEVAL_THRESHOLD : undefined,
       vertical: org.vertical,
       businessName: org.name,
+      createQuotation: async ({ contactId, packageSku, pricePerPerson, travellers }) => {
+        try {
+          const { data: pkg } = await db.from('packages').select('id').eq('organization_id', orgId).eq('sku', packageSku).maybeSingle();
+          const amount = pricePerPerson * travellers;
+          const number = `QT-${Math.floor(100000 + Math.random() * 900000)}`;
+          const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          const { data, error } = await db.from('quotes').insert({
+            organization_id: orgId, contact_id: contactId, package_id: pkg?.id ?? null,
+            quote_number: number, amount, valid_until: validUntil, status: 'sent',
+          }).select('id').single();
+          if (error || !data) return null;
+          return { url: `${publicBaseUrl}/doc/quote/${data.id}`, number };
+        } catch {
+          return null;
+        }
+      },
     };
   }
 
@@ -208,7 +227,28 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       if (ownerNumbers.includes(fromNorm) || keywordHit) {
         const ownerQuestion = msg.text.replace(ownerKeyword, '').trim() || 'Give me today’s business summary.';
         const summary = await store.getBusinessSummary(orgId, new Date());
-        const reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+
+        let reply: string;
+        // If the owner confirms a follow-up ("yes"/"follow up"), actually reach the cold leads.
+        if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
+          let sent = 0;
+          const today = new Date().toISOString().slice(0, 10);
+          for (const c of summary.staleContacts.slice(0, 10)) {
+            if (!c.phone) continue;
+            const re = `Hi ${c.name ?? 'there'}! 👋 Just checking in on your ${c.serviceInterest} enquiry — are you still interested? I’d be happy to help you take the next step.`;
+            const r = await adapter.sendMessage(orgId, { to: c.phone, type: 'text', text: re, idempotencyKey: `reengage:${c.contactId}:${today}` });
+            if (r.success) {
+              sent++;
+              if (r.providerMessageId) await messageService.persistOutbound(orgId, c.phone, re, r.providerMessageId);
+            }
+          }
+          reply = sent > 0
+            ? `✅ Done — I followed up with ${sent} customer${sent === 1 ? '' : 's'} who’d gone quiet. I’ll let you know as they reply.`
+            : `I tried, but couldn’t reach the cold leads right now (they may need a template outside the 24-hour window). I’ll retry via the scheduler.`;
+        } else {
+          reply = await runOwnerAssistant({ llm, organizationId: orgId, businessName: org.name, message: ownerQuestion, summary });
+        }
+
         const result = await replyAdapter.sendMessage(orgId, {
           to: msg.from, type: 'text', text: reply, idempotencyKey: `owner:${msg.providerMessageId}`,
         });
@@ -224,7 +264,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         conversationId: msg.conversationId,
         inboundMessage: msg.text,
         traceId: msg.providerMessageId,
-      }, agentDeps(org));
+      }, agentDeps(orgId, org));
 
       if (state.finalResponse) {
         const rich = buildInteractive(state);
@@ -318,6 +358,39 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
   // ── Production routes ──
   const registerRoutes = (app: express.Express): void => {
+    /** Public quotation document (opened by the customer from a WhatsApp link). */
+    app.get('/doc/quote/:id', async (req, res) => {
+      try {
+        const { data: quote } = await db.from('quotes')
+          .select('id, organization_id, contact_id, package_id, quote_number, amount, valid_until, created_at')
+          .eq('id', req.params.id).maybeSingle();
+        if (!quote) { res.status(404).type('html').send('<h1>Quotation not found</h1>'); return; }
+
+        const [{ data: org }, { data: contact }, { data: pkg }] = await Promise.all([
+          db.from('organizations').select('name').eq('id', quote.organization_id).maybeSingle(),
+          db.from('contacts').select('name, phone_number').eq('id', quote.contact_id).maybeSingle(),
+          quote.package_id ? db.from('packages').select('title, price_per_person').eq('id', quote.package_id).maybeSingle() : Promise.resolve({ data: null }),
+        ]);
+
+        const unit = Number(pkg?.price_per_person ?? quote.amount);
+        const qty = unit > 0 ? Math.max(1, Math.round(Number(quote.amount) / unit)) : 1;
+        const html = buildQuotationHtml({
+          number: quote.quote_number,
+          businessName: org?.name ?? 'SaarthiOne',
+          customerName: contact?.name ?? undefined,
+          customerPhone: contact?.phone_number ?? undefined,
+          currency: 'INR',
+          issuedAt: quote.created_at,
+          validUntil: quote.valid_until,
+          items: [{ title: pkg?.title ?? 'Holiday package', quantity: qty, unitPrice: unit }],
+          notes: 'Thank you for your interest! This quotation is valid until the date shown above.',
+        });
+        res.status(200).type('html').send(html);
+      } catch (err) {
+        res.status(500).type('html').send('<h1>Could not load quotation</h1>');
+      }
+    });
+
     /**
      * Twilio WhatsApp inbound webhook (form-encoded).
      * Signature-verified against the exact configured public URL.

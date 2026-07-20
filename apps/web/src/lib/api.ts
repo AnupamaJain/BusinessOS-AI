@@ -3,6 +3,7 @@ import type {
   AutomationRunItem,
   ContactRow,
   ConversationListItem,
+  DashboardKpis,
   HandoffItem,
   HandoffReasonCount,
   KnowledgeDocRow,
@@ -14,7 +15,11 @@ import type {
   Organization,
   PackageRow,
   ProductRow,
+  TimelineEvent,
 } from './types';
+
+/* Stages considered "in-pipeline" for hot-lead scoring. */
+const OPEN_LEAD_STAGES = ['new', 'contacted', 'qualified', 'proposal', 'negotiation'];
 
 /* PostgREST returns embedded to-one relations as an object, but can return an
  * array depending on how the FK is detected. Normalize both shapes. */
@@ -361,6 +366,159 @@ export async function fetchHandoffReasonCounts(): Promise<HandoffReasonCount[]> 
   return Array.from(counts.entries())
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count);
+}
+
+/* ─── Dashboard KPI strip ─────────────────────────────────────────── */
+
+export async function fetchDashboardKpis(): Promise<DashboardKpis> {
+  const startOfTodayUtc = new Date(
+    Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      new Date().getUTCDate()
+    )
+  ).toISOString();
+
+  const [convRes, leadsRes, bookingsRes, ordersRes] = await Promise.all([
+    supabase
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', startOfTodayUtc),
+    supabase.from('leads').select('stage, score'),
+    supabase.from('bookings').select('status, total_amount'),
+    supabase.from('orders').select('status, total_amount'),
+  ]);
+
+  if (convRes.error) throw new Error(`Failed to load KPIs (conversations): ${convRes.error.message}`);
+  if (leadsRes.error) throw new Error(`Failed to load KPIs (leads): ${leadsRes.error.message}`);
+  if (bookingsRes.error) throw new Error(`Failed to load KPIs (bookings): ${bookingsRes.error.message}`);
+  if (ordersRes.error) throw new Error(`Failed to load KPIs (orders): ${ordersRes.error.message}`);
+
+  const leadRows = (leadsRes.data ?? []) as Array<{ stage: string | null; score: number | string | null }>;
+  let qualifiedLeads = 0;
+  let hotLeads = 0;
+  for (const lead of leadRows) {
+    const stage = lead.stage ?? 'new';
+    const score = Number(lead.score ?? 0) || 0;
+    if (stage === 'qualified') qualifiedLeads += 1;
+    if (score >= 70 && OPEN_LEAD_STAGES.includes(stage)) hotLeads += 1;
+  }
+
+  const bookingRows = (bookingsRes.data ?? []) as Array<{
+    status: string | null;
+    total_amount: number | string | null;
+  }>;
+  let bookingsTotal = 0;
+  let bookingsConfirmed = 0;
+  let pendingPayments = 0;
+  let revenuePipeline = 0;
+  for (const booking of bookingRows) {
+    bookingsTotal += 1;
+    const status = booking.status ?? '';
+    const amount = Number(booking.total_amount ?? 0) || 0;
+    if (status === 'confirmed' || status === 'paid') bookingsConfirmed += 1;
+    if (status === 'pending' || status === 'confirmed') {
+      pendingPayments += 1;
+      revenuePipeline += amount;
+    }
+  }
+
+  const orderRows = (ordersRes.data ?? []) as Array<{
+    status: string | null;
+    total_amount: number | string | null;
+  }>;
+  for (const order of orderRows) {
+    if ((order.status ?? '') === 'pending_payment') {
+      pendingPayments += 1;
+      revenuePipeline += Number(order.total_amount ?? 0) || 0;
+    }
+  }
+
+  return {
+    conversationsToday: convRes.count ?? 0,
+    qualifiedLeads,
+    hotLeads,
+    bookingsTotal,
+    bookingsConfirmed,
+    pendingPayments,
+    revenuePipeline,
+  };
+}
+
+/* ─── Customer Memory timeline (per-contact history) ──────────────── */
+
+export async function fetchContactTimeline(
+  contactId: string,
+  organizationId: string
+): Promise<TimelineEvent[]> {
+  const inr = (amount: number | string | null): string =>
+    `₹${(Number(amount ?? 0) || 0).toLocaleString('en-IN')}`;
+
+  const [leadsRes, bookingsRes, handoffsRes] = await Promise.all([
+    supabase
+      .from('leads')
+      .select('service_interest, score, created_at')
+      .eq('contact_id', contactId)
+      .eq('organization_id', organizationId),
+    supabase
+      .from('bookings')
+      .select('booking_number, total_amount, status, created_at')
+      .eq('contact_id', contactId)
+      .eq('organization_id', organizationId),
+    supabase
+      .from('handoffs')
+      .select('reason, created_at')
+      .eq('contact_id', contactId)
+      .eq('organization_id', organizationId),
+  ]);
+
+  if (leadsRes.error) throw new Error(`Failed to load timeline (leads): ${leadsRes.error.message}`);
+  if (bookingsRes.error) throw new Error(`Failed to load timeline (bookings): ${bookingsRes.error.message}`);
+  if (handoffsRes.error) throw new Error(`Failed to load timeline (handoffs): ${handoffsRes.error.message}`);
+
+  const events: TimelineEvent[] = [];
+
+  for (const lead of (leadsRes.data ?? []) as Array<{
+    service_interest: string | null;
+    score: number | string | null;
+    created_at: string;
+  }>) {
+    const score = lead.score === null || lead.score === undefined ? null : Number(lead.score);
+    events.push({
+      at: lead.created_at,
+      icon: '🎯',
+      title: `Qualified interest: ${lead.service_interest ?? 'general enquiry'}`,
+      detail: score === null ? undefined : `Lead score ${score}/100`,
+    });
+  }
+
+  for (const booking of (bookingsRes.data ?? []) as Array<{
+    booking_number: string | null;
+    total_amount: number | string | null;
+    status: string | null;
+    created_at: string;
+  }>) {
+    events.push({
+      at: booking.created_at,
+      icon: '📅',
+      title: `Booking ${booking.booking_number ?? '—'} — ${inr(booking.total_amount)} — ${booking.status ?? 'unknown'}`,
+    });
+  }
+
+  for (const handoff of (handoffsRes.data ?? []) as Array<{
+    reason: string | null;
+    created_at: string;
+  }>) {
+    events.push({
+      at: handoff.created_at,
+      icon: '🙋',
+      title: `Escalated to human: ${(handoff.reason ?? 'unspecified').replace(/_/g, ' ')}`,
+    });
+  }
+
+  // Oldest-first chronological order.
+  events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  return events;
 }
 
 export async function joinWaitlist(email: string, businessType: string | null): Promise<string | null> {

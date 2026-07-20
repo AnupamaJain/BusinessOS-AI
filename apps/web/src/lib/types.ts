@@ -138,3 +138,24 @@ export interface HandoffReasonCount {
   reason: string;
   count: number;
 }
+
+/* ─── Dashboard KPIs (top strip) ──────────────────────────────────── */
+
+export interface DashboardKpis {
+  conversationsToday: number;
+  qualifiedLeads: number;
+  hotLeads: number;
+  bookingsTotal: number;
+  bookingsConfirmed: number;
+  pendingPayments: number;
+  revenuePipeline: number;
+}
+
+/* ─── Customer Memory timeline ────────────────────────────────────── */
+
+export interface TimelineEvent {
+  at: string;
+  icon: string;
+  title: string;
+  detail?: string;
+}

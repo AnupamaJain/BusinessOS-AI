@@ -201,6 +201,144 @@ body {
 .metric-footer.success { color: var(--color-success); }
 .metric-footer.warning { color: var(--color-warning); }
 
+/* ─── KPI strip (top of dashboard, all tabs) ─────────────────────── */
+
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 16px;
+  padding: 24px 40px 0;
+}
+
+.kpi-tile {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.kpi-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-glow);
+}
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.kpi-value {
+  font-size: 26px;
+  font-weight: 700;
+  font-family: var(--font-heading);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+  line-height: 1.1;
+}
+
+.kpi-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kpi-sub.accent { color: var(--color-primary); }
+
+@media (max-width: 1280px) {
+  .kpi-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ─── Customer Memory timeline (inbox) ───────────────────────────── */
+
+.memory-panel {
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-muted);
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-secondary);
+}
+
+.memory-panel-header {
+  padding: 20px;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.memory-panel-header .memory-contact {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.memory-list {
+  overflow-y: auto;
+  padding: 20px;
+  flex: 1;
+}
+
+.memory-event {
+  position: relative;
+  padding-left: 22px;
+  padding-bottom: 20px;
+  border-left: 2px solid var(--border-muted);
+  margin-left: 6px;
+}
+
+.memory-event:last-child {
+  border-left-color: transparent;
+  padding-bottom: 0;
+}
+
+.memory-dot {
+  position: absolute;
+  left: -8px;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--bg-secondary);
+  border: 2px solid var(--color-primary);
+  box-shadow: 0 0 6px rgba(0, 242, 254, 0.3);
+}
+
+.memory-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-title {
+  font-size: 13px;
+  color: var(--text-main);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+.memory-detail {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+@media (max-width: 1100px) {
+  .memory-panel { display: none; }
+}
+
 /* ─── Inbox Workspace ────────────────────────────────────────────── */
 
 .inbox-workspace {

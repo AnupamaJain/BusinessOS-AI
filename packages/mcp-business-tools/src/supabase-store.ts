@@ -54,7 +54,7 @@ export class SupabaseBusinessStore implements BusinessStore {
     const hot = hotRows ?? [];
 
     const { data: staleRows, error: staleErr } = await this.db.from('leads')
-      .select('service_interest, contact_id, updated_at, stage, contacts(name)')
+      .select('service_interest, contact_id, updated_at, stage, contacts(name, phone_number)')
       .eq('organization_id', organizationId).in('stage', activeStages)
       .lt('updated_at', staleCutoff).order('updated_at', { ascending: true }).limit(10);
     if (staleErr) this.fail('getBusinessSummary.stale', staleErr);
@@ -73,6 +73,7 @@ export class SupabaseBusinessStore implements BusinessStore {
     const pipelineText = pipeline > 0 ? `₹${pipeline.toLocaleString('en-IN')}` : '—';
 
     const nameOf = (r: any): string | undefined => (r.contacts as { name?: string } | null)?.name ?? undefined;
+    const phoneOf = (r: any): string | undefined => (r.contacts as { phone_number?: string } | null)?.phone_number ?? undefined;
 
     return {
       todayEnquiries,
@@ -82,7 +83,7 @@ export class SupabaseBusinessStore implements BusinessStore {
       staleLeads: stale.length,
       pipelineText,
       topHotLeads: hot.slice(0, 5).map((r) => ({ name: nameOf(r), serviceInterest: r.service_interest, score: r.score ?? undefined })),
-      staleContacts: stale.map((r) => ({ contactId: r.contact_id, name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at })),
+      staleContacts: stale.map((r) => ({ contactId: r.contact_id, phone: phoneOf(r), name: nameOf(r), serviceInterest: r.service_interest, lastActivity: r.updated_at })),
     };
   }
 

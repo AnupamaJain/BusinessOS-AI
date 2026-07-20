@@ -30,7 +30,7 @@ export interface BusinessSummary {
   staleLeads: number;
   pipelineText: string;
   topHotLeads: Array<{ name?: string; serviceInterest: string; score?: number }>;
-  staleContacts: Array<{ contactId: string; name?: string; serviceInterest: string; lastActivity: string }>;
+  staleContacts: Array<{ contactId: string; phone?: string; name?: string; serviceInterest: string; lastActivity: string }>;
 }
 
 export interface BusinessStore {

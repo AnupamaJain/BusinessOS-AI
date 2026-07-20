@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { AgentState } from './state';
 import { createInitialState } from './state';
 import { classifyIntent, evaluatePolicy, checkNoMedicalClaims, checkNoInternalLeakage } from './policy';
@@ -26,6 +27,8 @@ export interface AgentGraphDeps {
   vertical?: string;
   /** Organization display name used in prompts. */
   businessName?: string;
+  /** Optional: create a shareable quotation document; returns its public URL. */
+  createQuotation?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; pricePerPerson: number; travellers: number }) => Promise<{ url: string; number: string } | null>;
 }
 
 const INTENT_VALUES: IntentType[] = [
@@ -299,6 +302,26 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
         idempotencyKey: `lead:${state.conversationId}:${state.traceId}`,
       });
       state.toolCalls.push({ tool: 'upsert_qualified_lead', input: { serviceInterest: state.inboundMessage }, output: leadResult });
+
+      // Generate a shareable quotation when the customer signals booking intent.
+      const wantsQuote = /\b(quote|quotation|book|price|cost|confirm|proceed|interested)\b/i.test(state.inboundMessage);
+      if (wantsQuote && deps.createQuotation) {
+        try {
+          const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+          const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
+          const priceNum = Number(String(first.pricePerPerson).replace(/[^\d]/g, '')) || 0;
+          const quote = await deps.createQuotation({
+            contactId: state.contactId, conversationId: state.conversationId,
+            packageSku: first.sku, title: first.title, pricePerPerson: priceNum, travellers,
+          });
+          if (quote) {
+            state.proposedResponse += `\n\n📄 Here's your detailed quotation (${quote.number}): ${quote.url}`;
+            state.toolCalls.push({ tool: 'create_quotation', input: { packageSku: first.sku, travellers }, output: quote });
+          }
+        } catch (err) {
+          state.errors.push('Failed to generate quotation');
+        }
+      }
     } else {
       state.proposedResponse = "I'd love to help plan your trip! Could you tell me your preferred destination, travel dates, and budget per person? I'll find the best packages for you.";
     }
@@ -403,6 +426,24 @@ async function nodeOrderStatusFlow(store: BusinessStore, state: AgentState): Pro
 }
 
 async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: AgentGraphDeps): Promise<AgentState> {
+  // Schedule-callback capture: record the booking/callback request so the team
+  // (and the owner assistant) can see and act on it.
+  try {
+    await store.insertAuditEvent({
+      id: randomUUID(),
+      organizationId: state.organizationId,
+      action: 'callback_requested',
+      entityType: 'conversation',
+      entityId: state.conversationId,
+      actorType: 'agent',
+      details: { request: state.inboundMessage.slice(0, 300) },
+      createdAt: new Date().toISOString(),
+    });
+    state.toolCalls.push({ tool: 'record_callback_request', input: {} });
+  } catch {
+    state.errors.push('Failed to record callback request');
+  }
+
   if (deps.vertical === 'travel' && hasRealLLM(deps)) {
     const packages = await searchTravelPackages(store, { organizationId: state.organizationId });
     const llmReply = await composeReplyWithLLM(deps.llm!, state, deps,

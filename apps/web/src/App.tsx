@@ -23,7 +23,9 @@ import {
   claimHandoff,
   fetchAutomationRuns,
   fetchContacts,
+  fetchContactTimeline,
   fetchConversations,
+  fetchDashboardKpis,
   fetchHandoffReasonCounts,
   fetchHandoffs,
   fetchKnowledgeDocs,
@@ -39,7 +41,13 @@ import {
   resolveHandoff,
   sendOperatorMessage,
 } from './lib/api';
-import type { AuthSession, HandoffItem, MessageRow } from './lib/types';
+import type {
+  AuthSession,
+  DashboardKpis,
+  HandoffItem,
+  MessageRow,
+  TimelineEvent,
+} from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
 type TabKey = 'inbox' | 'crm' | 'scheduler' | 'compliance' | 'kb';
@@ -134,6 +142,64 @@ function inclusionsText(value: unknown): string {
       .join(' • ');
   }
   return '';
+}
+
+/* ─── KPI strip (top of dashboard) ────────────────────────────────── */
+
+function KpiTile({
+  label,
+  value,
+  sub,
+  subAccent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  subAccent?: boolean;
+}) {
+  return (
+    <div className="kpi-tile">
+      <span className="kpi-label">{label}</span>
+      <span className="kpi-value">{value}</span>
+      {sub ? <span className={`kpi-sub${subAccent ? ' accent' : ''}`}>{sub}</span> : null}
+    </div>
+  );
+}
+
+function KpiStrip({
+  data,
+  loading,
+}: {
+  data: DashboardKpis | null;
+  loading: boolean;
+}) {
+  const dash = !data && loading ? '—' : null;
+  const num = (n: number): string => (dash !== null ? dash : n.toLocaleString('en-IN'));
+  const revenue = dash !== null ? dash : `₹${(data?.revenuePipeline ?? 0).toLocaleString('en-IN')}`;
+
+  return (
+    <div className="kpi-strip">
+      <KpiTile label="Conversations Today" value={num(data?.conversationsToday ?? 0)} />
+      <KpiTile label="Qualified Leads" value={num(data?.qualifiedLeads ?? 0)} />
+      <KpiTile
+        label="Hot Leads"
+        value={num(data?.hotLeads ?? 0)}
+        sub="score ≥ 70"
+        subAccent
+      />
+      <KpiTile
+        label="Bookings"
+        value={num(data?.bookingsTotal ?? 0)}
+        sub={dash !== null ? undefined : `${data?.bookingsConfirmed ?? 0} confirmed / paid`}
+      />
+      <KpiTile label="Pending Payments" value={num(data?.pendingPayments ?? 0)} />
+      <KpiTile
+        label="Revenue Pipeline"
+        value={revenue}
+        sub="open bookings + orders"
+      />
+    </div>
+  );
 }
 
 /* ─── Login screen ────────────────────────────────────────────────── */
@@ -366,6 +432,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
 
   /* Live data (10s polling while the relevant view is active) */
   const orgQuery = usePolling(fetchOrganization, [session.user.id], 60_000, true);
+  const kpisQuery = usePolling(fetchDashboardKpis, [], 15_000, inDashboard);
   const conversationsQuery = usePolling(fetchConversations, [], 10_000, inboxActive);
   const handoffsQuery = usePolling(fetchHandoffs, [], 10_000, inboxActive);
   const messagesQuery = usePolling<MessageRow[]>(
@@ -414,6 +481,18 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const currentConv = conversations.find((c) => c.id === selectedConvId) ?? null;
   const currentHandoff =
     handoffs.find((h) => h.conversation_id === selectedConvId && h.status !== 'resolved') ?? null;
+
+  const selectedContactId = currentConv?.contact_id ?? null;
+  const orgId = org?.id ?? null;
+  const timelineQuery = usePolling<TimelineEvent[]>(
+    () =>
+      selectedContactId && orgId
+        ? fetchContactTimeline(selectedContactId, orgId)
+        : Promise.resolve([]),
+    [selectedContactId, orgId],
+    15_000,
+    inboxActive && !!selectedContactId && !!orgId
+  );
 
   const fetchedMessages = messagesQuery.data ?? [];
   const visibleEchoes = selectedConvId
@@ -1087,6 +1166,9 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </div>
         </header>
 
+        {/* ─── KPI strip (all tabs) ───────────────────────────────── */}
+        <KpiStrip data={kpisQuery.data} loading={kpisQuery.loading} />
+
         {/* ─── Tab View: Operator Inbox ───────────────────────────── */}
         {activeTab === 'inbox' && (
           <>
@@ -1368,6 +1450,48 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   >
                     <Send size={16} /> {sending ? 'Sending…' : 'Send'}
                   </button>
+                </div>
+              </div>
+
+              {/* Right Customer Memory Timeline */}
+              <div className="memory-panel">
+                <div className="memory-panel-header">
+                  🧠 Customer Memory
+                  <span className="memory-contact">
+                    {currentConv ? currentConv.contactName : 'Select a conversation'}
+                  </span>
+                </div>
+                <div className="memory-list">
+                  {!selectedConvId && (
+                    <StatusNote kind="empty">
+                      Select a conversation to view the customer's history.
+                    </StatusNote>
+                  )}
+                  {selectedConvId && timelineQuery.loading && !timelineQuery.data && (
+                    <StatusNote kind="loading">Loading customer memory…</StatusNote>
+                  )}
+                  {selectedConvId && timelineQuery.error && (
+                    <StatusNote kind="error">{timelineQuery.error}</StatusNote>
+                  )}
+                  {selectedConvId &&
+                    timelineQuery.data &&
+                    timelineQuery.data.length === 0 &&
+                    !timelineQuery.loading && (
+                      <StatusNote kind="empty">
+                        No history yet — this is a new customer.
+                      </StatusNote>
+                    )}
+                  {selectedConvId &&
+                    (timelineQuery.data ?? []).map((ev, idx) => (
+                      <div className="memory-event" key={`${ev.at}-${idx}`}>
+                        <span className="memory-dot" />
+                        <div className="memory-time">{formatDateTime(ev.at)}</div>
+                        <div className="memory-title">
+                          {ev.icon} {ev.title}
+                        </div>
+                        {ev.detail && <div className="memory-detail">{ev.detail}</div>}
+                      </div>
+                    ))}
                 </div>
               </div>
             </div>

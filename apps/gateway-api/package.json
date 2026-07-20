@@ -26,7 +26,8 @@
     "@business-os-ai/scheduler-worker": "workspace:*",
     "@supabase/supabase-js": "^2.49.0",
     "@vercel/functions": "^2.0.0",
-    "@business-os-ai/commerce": "workspace:*"
+    "@business-os-ai/commerce": "workspace:*",
+    "@business-os-ai/integrations": "workspace:*"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
