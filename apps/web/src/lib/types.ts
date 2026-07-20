@@ -108,6 +108,28 @@ export interface MessageTemplateRow {
   status: string | null;
 }
 
+/* Full template row (management UI: list + create). */
+export interface MessageTemplateFull {
+  id: string;
+  template_key: string;
+  name: string;
+  content: string | null;
+  language: string | null;
+  status: string | null;
+  category: string | null;
+  created_at: string;
+}
+
+export type TemplateCategory = 'marketing' | 'utility' | 'authentication';
+
+export interface CreateTemplateInput {
+  organizationId: string;
+  name: string;
+  category: TemplateCategory;
+  language: string;
+  content: string;
+}
+
 export interface AutomationRunItem {
   id: string;
   contact_id: string | null;
@@ -149,6 +171,30 @@ export interface DashboardKpis {
   bookingsConfirmed: number;
   pendingPayments: number;
   revenuePipeline: number;
+}
+
+/* ─── Analytics: activity trend + lead funnel ─────────────────────── */
+
+export interface ActivityTrendPoint {
+  date: string; // UTC calendar date, YYYY-MM-DD
+  messages: number;
+  leads: number;
+  bookings: number;
+}
+
+export interface LeadFunnelStage {
+  stage: string;
+  count: number;
+}
+
+/* ─── Billing / upgrade ───────────────────────────────────────────── */
+
+export type BillingPlan = 'starter' | 'growth' | 'scale';
+
+export interface CheckoutResult {
+  ok: boolean;
+  url?: string;
+  error?: string;
 }
 
 /* ─── Customer Memory timeline ────────────────────────────────────── */

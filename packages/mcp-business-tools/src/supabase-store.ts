@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
+import { SecretBox } from './crypto';
 import type {
   BusinessStore, BusinessSummary, WhatsAppConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
@@ -14,7 +15,10 @@ import type {
  * every query (organization_id filter) since service role bypasses RLS.
  */
 export class SupabaseBusinessStore implements BusinessStore {
-  constructor(private readonly db: SupabaseClient) {}
+  private readonly box: SecretBox;
+  constructor(private readonly db: SupabaseClient, encryptionKey?: string) {
+    this.box = new SecretBox(encryptionKey);
+  }
 
   private fail(op: string, error: { message: string } | null): never {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
@@ -32,7 +36,7 @@ export class SupabaseBusinessStore implements BusinessStore {
     return {
       organizationId: data.organization_id, wabaId: data.waba_id ?? undefined,
       phoneNumberId: data.phone_number_id, displayPhoneNumber: data.display_phone_number ?? undefined,
-      accessToken: data.access_token,
+      accessToken: this.box.decrypt(data.access_token),
     };
   }
 
@@ -40,7 +44,7 @@ export class SupabaseBusinessStore implements BusinessStore {
     const { error } = await this.db.from('whatsapp_connections').upsert({
       organization_id: conn.organizationId, provider: 'meta', waba_id: conn.wabaId,
       phone_number_id: conn.phoneNumberId, display_phone_number: conn.displayPhoneNumber,
-      verified_name: conn.verifiedName, access_token: conn.accessToken, status: 'active',
+      verified_name: conn.verifiedName, access_token: this.box.encrypt(conn.accessToken), status: 'active',
       connected_by: conn.connectedBy,
     }, { onConflict: 'provider,phone_number_id' });
     if (error) this.fail('saveWhatsAppConnection', error);

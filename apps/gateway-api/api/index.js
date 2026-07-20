@@ -38190,7 +38190,7 @@ module.exports = __toCommonJS(vercel_exports);
 
 // src/server.ts
 var import_express2 = __toESM(require_express2());
-var import_crypto9 = require("crypto");
+var import_crypto12 = require("crypto");
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -51293,11 +51293,47 @@ async function searchTravelPackages(store, input) {
 }
 
 // ../../packages/mcp-business-tools/src/supabase-store.ts
+var import_crypto6 = require("crypto");
+
+// ../../packages/mcp-business-tools/src/crypto.ts
 var import_crypto5 = require("crypto");
-var SupabaseBusinessStore = class {
-  constructor(db) {
-    this.db = db;
+var SecretBox = class {
+  key;
+  constructor(secret) {
+    this.key = secret ? (0, import_crypto5.createHash)("sha256").update(secret).digest() : null;
   }
+  get enabled() {
+    return this.key !== null;
+  }
+  encrypt(plaintext) {
+    if (!this.key) return plaintext;
+    const iv = (0, import_crypto5.randomBytes)(12);
+    const cipher = (0, import_crypto5.createCipheriv)("aes-256-gcm", this.key, iv);
+    const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `v1:${iv.toString("hex")}:${tag.toString("hex")}:${ct.toString("hex")}`;
+  }
+  decrypt(value) {
+    if (!this.key || !value.startsWith("v1:")) return value;
+    const [, ivHex, tagHex, ctHex] = value.split(":");
+    if (!ivHex || !tagHex || !ctHex) return value;
+    try {
+      const decipher = (0, import_crypto5.createDecipheriv)("aes-256-gcm", this.key, Buffer.from(ivHex, "hex"));
+      decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+      return Buffer.concat([decipher.update(Buffer.from(ctHex, "hex")), decipher.final()]).toString("utf8");
+    } catch {
+      return value;
+    }
+  }
+};
+
+// ../../packages/mcp-business-tools/src/supabase-store.ts
+var SupabaseBusinessStore = class {
+  constructor(db, encryptionKey) {
+    this.db = db;
+    this.box = new SecretBox(encryptionKey);
+  }
+  box;
   fail(op, error) {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
     throw new Error(`Database operation failed: ${op}: ${error?.message}`);
@@ -51312,7 +51348,7 @@ var SupabaseBusinessStore = class {
       wabaId: data.waba_id ?? void 0,
       phoneNumberId: data.phone_number_id,
       displayPhoneNumber: data.display_phone_number ?? void 0,
-      accessToken: data.access_token
+      accessToken: this.box.decrypt(data.access_token)
     };
   }
   async saveWhatsAppConnection(conn) {
@@ -51323,7 +51359,7 @@ var SupabaseBusinessStore = class {
       phone_number_id: conn.phoneNumberId,
       display_phone_number: conn.displayPhoneNumber,
       verified_name: conn.verifiedName,
-      access_token: conn.accessToken,
+      access_token: this.box.encrypt(conn.accessToken),
       status: "active",
       connected_by: conn.connectedBy
     }, { onConflict: "provider,phone_number_id" });
@@ -51542,7 +51578,7 @@ var SupabaseBusinessStore = class {
     });
     if (error) this.fail("insertHandoff", error);
     await this.insertAuditEvent({
-      id: (0, import_crypto5.randomUUID)(),
+      id: (0, import_crypto6.randomUUID)(),
       organizationId: handoff.organizationId,
       action: "handoff_created",
       entityType: "handoff",
@@ -52323,7 +52359,7 @@ function classifyIntent(message) {
 }
 
 // ../../packages/agent-core/src/graph.ts
-var import_crypto6 = require("crypto");
+var import_crypto9 = require("crypto");
 
 // ../../packages/agent-core/src/mock-embedding.ts
 var MockEmbeddingProvider = class {
@@ -52888,7 +52924,7 @@ Estimated Delivery: ${result.order.estimatedDelivery}` : ""}`;
 async function nodeBookingFlow(store, state, deps) {
   try {
     await store.insertAuditEvent({
-      id: (0, import_crypto6.randomUUID)(),
+      id: (0, import_crypto9.randomUUID)(),
       organizationId: state.organizationId,
       action: "callback_requested",
       entityType: "conversation",
@@ -53415,7 +53451,7 @@ var CreateOrderInputSchema = external_exports.object({
 });
 
 // ../../packages/commerce/src/razorpay.ts
-var import_crypto7 = require("crypto");
+var import_crypto10 = require("crypto");
 var RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
 var MIN_EXPIRY_MINUTES = 15;
 var DEFAULT_EXPIRY_MINUTES = 60;
@@ -53528,13 +53564,13 @@ var RazorpayPaymentService = class {
     if (!this.webhookSecret) {
       return false;
     }
-    const expected = (0, import_crypto7.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
+    const expected = (0, import_crypto10.createHmac)("sha256", this.webhookSecret).update(rawBody).digest("hex");
     const expectedBuffer = Buffer.from(expected, "utf8");
     const signatureBuffer = Buffer.from(signature, "utf8");
     if (expectedBuffer.length !== signatureBuffer.length) {
       return false;
     }
-    return (0, import_crypto7.timingSafeEqual)(expectedBuffer, signatureBuffer);
+    return (0, import_crypto10.timingSafeEqual)(expectedBuffer, signatureBuffer);
   }
   async handleWebhookEvent(event) {
     const parsed = RazorpayWebhookEventSchema.safeParse(event);
@@ -54182,11 +54218,176 @@ function createOcrServiceFromEnv(env = process.env) {
   });
 }
 
+// ../../packages/integrations/src/billing.ts
+var import_node_crypto = require("node:crypto");
+var STRIPE_API_BASE = "https://api.stripe.com";
+var PLANS = [
+  { id: "starter", name: "Starter", priceEnvVar: "STRIPE_PRICE_STARTER", monthly: "\u20B9999" },
+  { id: "growth", name: "Growth", priceEnvVar: "STRIPE_PRICE_GROWTH", monthly: "\u20B92,999" },
+  { id: "scale", name: "Scale", priceEnvVar: "STRIPE_PRICE_SCALE", monthly: "\u20B97,999" }
+];
+var WEBHOOK_EVENT_TYPES = /* @__PURE__ */ new Set([
+  "checkout.session.completed",
+  "customer.subscription.updated",
+  "customer.subscription.deleted"
+]);
+var StripeBillingService = class {
+  secretKey;
+  webhookSecret;
+  constructor(config = {}) {
+    this.secretKey = config.secretKey;
+    this.webhookSecret = config.webhookSecret;
+  }
+  /** True when a secret key is present and Stripe calls can actually be made. */
+  get isConfigured() {
+    return Boolean(this.secretKey);
+  }
+  /**
+   * POST a form-encoded request to the Stripe API and return the parsed body,
+   * or a normalized error result. Never throws.
+   */
+  async postForm(path2, body) {
+    let response;
+    try {
+      response = await fetch(`${STRIPE_API_BASE}${path2}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const data = await response.json();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    let error = `Stripe responded with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (payload?.error?.message) error = payload.error.message;
+    } catch {
+    }
+    return { ok: false, error };
+  }
+  async createCheckoutSession(params) {
+    if (!this.secretKey) {
+      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
+    }
+    const body = new URLSearchParams();
+    body.set("mode", "subscription");
+    body.set("line_items[0][price]", params.priceId);
+    body.set("line_items[0][quantity]", "1");
+    body.set("success_url", params.successUrl);
+    body.set("cancel_url", params.cancelUrl);
+    body.set("client_reference_id", params.organizationId);
+    if (params.customerEmail) {
+      body.set("customer_email", params.customerEmail);
+    }
+    body.set("metadata[organization_id]", params.organizationId);
+    const result = await this.postForm("/v1/checkout/sessions", body);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const { id, url } = result.data;
+    return { ok: true, sessionId: id, url };
+  }
+  async createBillingPortalSession(params) {
+    if (!this.secretKey) {
+      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
+    }
+    const body = new URLSearchParams();
+    body.set("customer", params.customerId);
+    body.set("return_url", params.returnUrl);
+    const result = await this.postForm("/v1/billing_portal/sessions", body);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const { url } = result.data;
+    return { ok: true, url };
+  }
+  /**
+   * Verify a Stripe webhook signature.
+   *
+   * The `Stripe-Signature` header looks like `t=timestamp,v1=signature`. We
+   * compute the HMAC-SHA256 hex of `${t}.${payload}` keyed by the webhook
+   * secret and timing-safe compare it to the header's v1 value. Returns false
+   * if the secret is missing or the header is malformed.
+   */
+  verifyWebhookSignature(payload, sigHeader) {
+    if (!this.webhookSecret || !sigHeader) return false;
+    let timestamp;
+    let signature;
+    for (const part of sigHeader.split(",")) {
+      const eq = part.indexOf("=");
+      if (eq === -1) continue;
+      const key = part.slice(0, eq).trim();
+      const value = part.slice(eq + 1).trim();
+      if (key === "t") timestamp = value;
+      else if (key === "v1") signature = value;
+    }
+    if (!timestamp || !signature) return false;
+    const payloadStr = typeof payload === "string" ? payload : payload.toString("utf8");
+    const expected = (0, import_node_crypto.createHmac)("sha256", this.webhookSecret).update(`${timestamp}.${payloadStr}`, "utf8").digest("hex");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const actualBuf = Buffer.from(signature, "utf8");
+    if (expectedBuf.length !== actualBuf.length) return false;
+    try {
+      return (0, import_node_crypto.timingSafeEqual)(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Parse a raw webhook body into a normalized event. Returns null for unknown
+   * or malformed events. Never throws. Signature verification is separate —
+   * call {@link verifyWebhookSignature} first.
+   */
+  async parseWebhookEvent(rawBody) {
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch {
+      return null;
+    }
+    if (!event || typeof event !== "object") return null;
+    const { type, data } = event;
+    if (typeof type !== "string" || !WEBHOOK_EVENT_TYPES.has(type)) return null;
+    const obj = data?.object;
+    if (!obj || typeof obj !== "object") return null;
+    const metadata = obj.metadata;
+    const organizationId = asString(obj.client_reference_id) ?? asString(metadata?.organization_id);
+    const subscriptionId = asString(obj.subscription) ?? (type === "checkout.session.completed" ? void 0 : asString(obj.id));
+    return {
+      type,
+      organizationId,
+      customerId: asString(obj.customer),
+      subscriptionId,
+      status: asString(obj.status)
+    };
+  }
+};
+function asString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function createBillingServiceFromEnv(env = process.env) {
+  return new StripeBillingService({
+    secretKey: env.STRIPE_SECRET_KEY,
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET
+  });
+}
+
 // ../scheduler-worker/src/index.ts
 var path = __toESM(require("path"));
 
 // ../scheduler-worker/src/worker.ts
-var import_crypto8 = require("crypto");
+var import_crypto11 = require("crypto");
 var SchedulerWorker = class {
   constructor(store, options = {}) {
     this.store = store;
@@ -54273,7 +54474,7 @@ var SchedulerWorker = class {
   }
   async logAudit(organizationId, action, entityType, entityId, details) {
     await this.store.insertAuditEvent({
-      id: (0, import_crypto8.randomUUID)(),
+      id: (0, import_crypto11.randomUUID)(),
       organizationId,
       action,
       entityType,
@@ -54350,6 +54551,7 @@ if (require.main === module) {
 // src/server.ts
 var import_functions = __toESM(require_functions());
 var PROD_RETRIEVAL_THRESHOLD = 0.35;
+var rateWindows = /* @__PURE__ */ new Map();
 function truncate(s, n) {
   return s.length <= n ? s : s.slice(0, n - 1) + "\u2026";
 }
@@ -54398,7 +54600,7 @@ function buildServer(env = process.env) {
   const internalApiKey = env["INTERNAL_API_KEY"];
   const cronSecret = env["CRON_SECRET"];
   const db = createServiceClient(supabaseUrl, serviceKey);
-  const store = new SupabaseBusinessStore(db);
+  const store = new SupabaseBusinessStore(db, env["ENCRYPTION_KEY"]);
   const llm = createGatewayFromEnv(env, {
     allowMockFallback: true,
     usageSink: async (record) => {
@@ -54464,6 +54666,35 @@ function buildServer(env = process.env) {
     orgAdapterCache.set(phoneId, resolved);
     return resolved;
   }
+  async function adapterForOrg(orgId) {
+    if (orgId === defaultOrgId) return adapter;
+    const { data } = await db.from("whatsapp_connections").select("phone_number_id").eq("organization_id", orgId).eq("status", "active").maybeSingle();
+    const phoneId = data?.phone_number_id;
+    if (!phoneId) return adapter;
+    const cached = orgAdapterCache.get(phoneId);
+    if (cached) return cached.replyAdapter;
+    const conn = await store.getWhatsAppConnectionByPhoneId(phoneId);
+    if (!conn) return adapter;
+    const a = new MetaCloudApiAdapter({ accessToken: conn.accessToken, phoneNumberId: conn.phoneNumberId, verifyToken });
+    orgAdapterCache.set(phoneId, { organizationId: orgId, replyAdapter: a });
+    return a;
+  }
+  const costCapUsd = parseFloat(env["LLM_MONTHLY_COST_CAP_USD"] ?? "0");
+  async function isOverCostCap(orgId) {
+    if (!costCapUsd || costCapUsd <= 0) return false;
+    try {
+      const { data } = await db.rpc("org_llm_spend_this_month", { p_org: orgId });
+      return typeof data === "number" && data >= costCapUsd;
+    } catch {
+      return false;
+    }
+  }
+  async function recordError(source, message, ctx, orgId) {
+    try {
+      await db.from("error_events").insert({ organization_id: orgId ?? null, source, severity: "error", message: message.slice(0, 2e3), context: ctx ?? {} });
+    } catch {
+    }
+  }
   const orgCache = /* @__PURE__ */ new Map();
   async function getOrgContext(orgId) {
     const cached = orgCache.get(orgId);
@@ -54476,6 +54707,7 @@ function buildServer(env = process.env) {
   const publicBaseUrl = (env["PUBLIC_GATEWAY_URL"] ?? "https://saarthione-api.vercel.app").replace(/\/$/, "");
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
+  const billing = createBillingServiceFromEnv(env);
   function agentDeps(orgId, org) {
     return {
       llm,
@@ -54593,7 +54825,7 @@ function buildServer(env = process.env) {
 ${fields.join("\n")}
 
 Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C4} I received your document but couldn't read all the details clearly. Could you resend a clearer photo, or our team can help.`;
-            await store.insertAuditEvent({ id: (0, import_crypto9.randomUUID)(), organizationId: orgId, action: "document_extracted", entityType: "contact", entityId: msg.contactId, actorType: "agent", details: { fields: d, providerMessageId: msg.providerMessageId }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+            await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: orgId, action: "document_extracted", entityType: "contact", entityId: msg.contactId, actorType: "agent", details: { fields: d, providerMessageId: msg.providerMessageId }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
           } else {
             reply = "\u{1F4C4} I received your document \u2014 our team will review it shortly.";
           }
@@ -54624,10 +54856,19 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
           let sent = 0;
           const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+          const orgAdapter = await adapterForOrg(orgId);
+          const templateKey = env["REENGAGEMENT_TEMPLATE"] ?? "hello_world";
           for (const c of summary.staleContacts.slice(0, 10)) {
             if (!c.phone) continue;
-            const re = `Hi ${c.name ?? "there"}! \u{1F44B} Just checking in on your ${c.serviceInterest} enquiry \u2014 are you still interested? I\u2019d be happy to help you take the next step.`;
-            const r = await adapter.sendMessage(orgId, { to: c.phone, type: "text", text: re, idempotencyKey: `reengage:${c.contactId}:${today}` });
+            const re = `Hi ${c.name ?? "there"}! \u{1F44B} Just checking in on your ${c.serviceInterest} enquiry \u2014 still interested?`;
+            const r = await orgAdapter.sendMessage(orgId, {
+              to: c.phone,
+              type: "template",
+              templateKey,
+              templateParams: { name: c.name ?? "there" },
+              text: re,
+              idempotencyKey: `reengage:${c.contactId}:${today}`
+            });
             if (r.success) {
               sent++;
               if (r.providerMessageId) await messageService.persistOutbound(orgId, c.phone, re, r.providerMessageId);
@@ -54649,13 +54890,18 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         await idempotencyService.markProcessed(msg.providerMessageId, orgId);
         return;
       }
+      const deps = agentDeps(orgId, org);
+      if (await isOverCostCap(orgId)) {
+        deps.llm = void 0;
+        await recordError("cost_cap", `LLM monthly cap reached; using deterministic replies`, {}, orgId);
+      }
       const state = await executeAgentGraph(store, {
         organizationId: orgId,
         contactId: msg.contactId,
         conversationId: msg.conversationId,
         inboundMessage: msg.text,
         traceId: msg.providerMessageId
-      }, agentDeps(orgId, org));
+      }, deps);
       if (state.finalResponse) {
         const rich = buildInteractive(state);
         const isRich = !!(rich.list || rich.buttons);
@@ -54686,6 +54932,7 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error("Agent runtime error", { providerMessageId: msg.providerMessageId, error: errorMsg });
+      await recordError("agent_runtime", errorMsg, { providerMessageId: msg.providerMessageId }, orgId);
       await idempotencyService.markProcessed(msg.providerMessageId, orgId, errorMsg);
     }
   }
@@ -54879,6 +55126,106 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         res.status(500).json({ error: err instanceof Error ? err.message : "Signup failed" });
       }
     });
+    app3.post("/api/billing/checkout", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const plan = req.body?.plan;
+      const planDef = PLANS.find((p) => p.id === plan);
+      if (!planDef) {
+        res.status(400).json({ ok: false, error: "Unknown plan" });
+        return;
+      }
+      if (!billing.isConfigured) {
+        res.status(200).json({ ok: false, error: "Billing isn't enabled yet \u2014 add STRIPE_SECRET_KEY." });
+        return;
+      }
+      const priceId = env[planDef.priceEnvVar];
+      if (!priceId) {
+        res.status(200).json({ ok: false, error: `Price not configured (${planDef.priceEnvVar}).` });
+        return;
+      }
+      const base = env["DASHBOARD_URL"] ?? "https://saarthione.vercel.app";
+      const result = await billing.createCheckoutSession({
+        organizationId: operator.organizationId,
+        priceId,
+        successUrl: `${base}/?billing=success`,
+        cancelUrl: `${base}/?billing=cancel`
+      });
+      res.status(200).json(result);
+    });
+    app3.post("/webhooks/stripe", async (req, res) => {
+      const sig = req.headers["stripe-signature"];
+      const raw = req.rawBody;
+      if (!raw || typeof sig !== "string" || !billing.verifyWebhookSignature(raw, sig)) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+      const event = await billing.parseWebhookEvent(raw.toString("utf8"));
+      if (event?.organizationId) {
+        const active = event.type !== "customer.subscription.deleted";
+        await db.from("organizations").update({
+          subscription_status: event.status ?? (active ? "active" : "canceled"),
+          stripe_customer_id: event.customerId ?? void 0,
+          plan: active ? "paid" : "free"
+        }).eq("id", event.organizationId);
+      }
+      res.status(200).json({ received: true });
+    });
+    app3.post("/api/data/export", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const phone = req.body?.phone;
+      if (!phone) {
+        res.status(400).json({ error: "phone required" });
+        return;
+      }
+      const org = operator.organizationId;
+      const norm = phone.startsWith("+") ? phone : `+${phone}`;
+      const { data: contact } = await db.from("contacts").select("*").eq("organization_id", org).eq("phone_number", norm).maybeSingle();
+      if (!contact) {
+        res.status(404).json({ error: "No data for that number" });
+        return;
+      }
+      const cid = contact.id;
+      const [consent, leads, bookings, handoffs, convs] = await Promise.all([
+        db.from("consent_records").select("*").eq("organization_id", org).eq("contact_id", cid),
+        db.from("leads").select("*").eq("organization_id", org).eq("contact_id", cid),
+        db.from("bookings").select("*").eq("organization_id", org).eq("contact_id", cid),
+        db.from("handoffs").select("*").eq("organization_id", org).eq("contact_id", cid),
+        db.from("conversations").select("id").eq("organization_id", org).eq("contact_id", cid)
+      ]);
+      const convIds = (convs.data ?? []).map((c) => c.id);
+      const messages = convIds.length ? (await db.from("messages").select("direction, content, created_at").eq("organization_id", org).in("conversation_id", convIds)).data : [];
+      res.status(200).json({ contact, consent: consent.data, leads: leads.data, bookings: bookings.data, handoffs: handoffs.data, messages });
+    });
+    app3.post("/api/data/delete", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const phone = req.body?.phone;
+      if (!phone) {
+        res.status(400).json({ error: "phone required" });
+        return;
+      }
+      const org = operator.organizationId;
+      const norm = phone.startsWith("+") ? phone : `+${phone}`;
+      const { data: contact } = await db.from("contacts").select("id").eq("organization_id", org).eq("phone_number", norm).maybeSingle();
+      if (!contact) {
+        res.status(404).json({ error: "No data for that number" });
+        return;
+      }
+      await db.from("contacts").delete().eq("organization_id", org).eq("id", contact.id);
+      await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: org, action: "gdpr_erasure", entityType: "contact", entityId: contact.id, actorType: "user", details: { by: operator.userId }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+      res.status(200).json({ ok: true, erased: true });
+    });
     app3.post("/webhooks/razorpay", async (req, res) => {
       if (!razorpay) {
         res.status(503).json({ error: "Razorpay not configured (set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)." });
@@ -54923,16 +55270,17 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         res.status(404).json({ success: false, error: "Contact not found" });
         return;
       }
-      const result = await adapter.sendMessage(operator.organizationId, {
+      const opAdapter = await adapterForOrg(operator.organizationId);
+      const result = await opAdapter.sendMessage(operator.organizationId, {
         to: contact.phone,
         type: "text",
         text: parsed.data.text,
-        idempotencyKey: `operator:${(0, import_crypto9.randomUUID)()}`
+        idempotencyKey: `operator:${(0, import_crypto12.randomUUID)()}`
       });
       if (result.success && result.providerMessageId) {
         await messageService.persistOutbound(operator.organizationId, contact.phone, parsed.data.text, result.providerMessageId, conversation.id);
         await store.insertAuditEvent({
-          id: (0, import_crypto9.randomUUID)(),
+          id: (0, import_crypto12.randomUUID)(),
           organizationId: operator.organizationId,
           action: "operator_message_sent",
           entityType: "message",
@@ -54983,11 +55331,13 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     const runScheduler = async (_req, res) => {
       const worker = new SchedulerWorker(store, {
         dryRun: env["ENABLE_DRY_RUN_AUTOMATION"] === "true",
-        sendTemplate: async ({ run, contact, content }) => {
-          return adapter.sendMessage(run.organizationId, {
+        sendTemplate: async ({ run, contact, templateKey }) => {
+          const orgAdapter = await adapterForOrg(run.organizationId);
+          return orgAdapter.sendMessage(run.organizationId, {
             to: contact.phone,
-            type: "text",
-            text: content,
+            type: "template",
+            templateKey,
+            templateParams: { name: contact.name ?? "there" },
             idempotencyKey: `automation:${run.id}`
           });
         }
@@ -55060,10 +55410,19 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     },
     // Vercel provides the OIDC token via request header; surface it for the
     // AI Gateway providers which read process.env at call time.
-    preMiddleware: (req, _res, next2) => {
+    preMiddleware: (req, res, next2) => {
       const oidc = req.headers["x-vercel-oidc-token"];
       if (typeof oidc === "string" && oidc.length > 0) {
         process.env["VERCEL_OIDC_TOKEN"] = oidc;
+      }
+      const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+      const now = Date.now();
+      const win = rateWindows.get(ip);
+      if (!win || now > win.reset) {
+        rateWindows.set(ip, { count: 1, reset: now + 1e4 });
+      } else if (++win.count > 60) {
+        res.status(429).json({ error: "Too many requests" });
+        return;
       }
       next2();
     }

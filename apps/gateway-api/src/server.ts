@@ -20,6 +20,7 @@ import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/
 import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@business-os-ai/commerce';
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
+  createBillingServiceFromEnv, PLANS,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -27,6 +28,9 @@ import { waitUntil } from '@vercel/functions';
 
 /** Real-embedding similarity threshold for grounding decisions. */
 const PROD_RETRIEVAL_THRESHOLD = 0.35;
+
+/** Coarse per-instance rate-limit windows keyed by client IP. */
+const rateWindows = new Map<string, { count: number; reset: number }>();
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
@@ -101,7 +105,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const cronSecret = env['CRON_SECRET'];
 
   const db = createServiceClient(supabaseUrl, serviceKey);
-  const store = new SupabaseBusinessStore(db);
+  const store = new SupabaseBusinessStore(db, env['ENCRYPTION_KEY']);
 
   // ── LLM gateway with per-tenant usage persisted to llm_usage ──
   const llm = createGatewayFromEnv(env, {
@@ -192,6 +196,40 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     return resolved;
   }
 
+  /** The correct outbound adapter for an org — its own connected number if any, else the primary. */
+  async function adapterForOrg(orgId: string): Promise<WhatsAppAdapter> {
+    if (orgId === defaultOrgId) return adapter;
+    const { data } = await db.from('whatsapp_connections').select('phone_number_id').eq('organization_id', orgId).eq('status', 'active').maybeSingle();
+    const phoneId = data?.phone_number_id as string | undefined;
+    if (!phoneId) return adapter;
+    const cached = orgAdapterCache.get(phoneId);
+    if (cached) return cached.replyAdapter;
+    const conn = await store.getWhatsAppConnectionByPhoneId(phoneId);
+    if (!conn) return adapter;
+    const a = new MetaCloudApiAdapter({ accessToken: conn.accessToken, phoneNumberId: conn.phoneNumberId, verifyToken }) as WhatsAppAdapter;
+    orgAdapterCache.set(phoneId, { organizationId: orgId, replyAdapter: a });
+    return a;
+  }
+
+  /** True when the org has blown its monthly LLM budget (falls back to deterministic replies). */
+  const costCapUsd = parseFloat(env['LLM_MONTHLY_COST_CAP_USD'] ?? '0');
+  async function isOverCostCap(orgId: string): Promise<boolean> {
+    if (!costCapUsd || costCapUsd <= 0) return false;
+    try {
+      const { data } = await db.rpc('org_llm_spend_this_month', { p_org: orgId });
+      return typeof data === 'number' && data >= costCapUsd;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Persist an error to the durable sink for observability/alerting. */
+  async function recordError(source: string, message: string, ctx?: Record<string, unknown>, orgId?: string): Promise<void> {
+    try {
+      await db.from('error_events').insert({ organization_id: orgId ?? null, source, severity: 'error', message: message.slice(0, 2000), context: ctx ?? {} });
+    } catch { /* never let logging break the request */ }
+  }
+
   // Organization context cache (name/vertical for prompts)
   const orgCache = new Map<string, { name: string; vertical?: string }>();
   async function getOrgContext(orgId: string): Promise<{ name: string; vertical?: string }> {
@@ -206,6 +244,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const publicBaseUrl = (env['PUBLIC_GATEWAY_URL'] ?? 'https://saarthione-api.vercel.app').replace(/\/$/, '');
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
+  const billing = createBillingServiceFromEnv(env);
 
   function agentDeps(orgId: string, org: { name: string; vertical?: string }): AgentGraphDeps {
     return {
@@ -362,10 +401,18 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
           let sent = 0;
           const today = new Date().toISOString().slice(0, 10);
+          // Cold leads are outside the 24h window → business-initiated requires an
+          // approved template. Route via the org's own connected number.
+          const orgAdapter = await adapterForOrg(orgId);
+          const templateKey = env['REENGAGEMENT_TEMPLATE'] ?? 'hello_world';
           for (const c of summary.staleContacts.slice(0, 10)) {
             if (!c.phone) continue;
-            const re = `Hi ${c.name ?? 'there'}! 👋 Just checking in on your ${c.serviceInterest} enquiry — are you still interested? I’d be happy to help you take the next step.`;
-            const r = await adapter.sendMessage(orgId, { to: c.phone, type: 'text', text: re, idempotencyKey: `reengage:${c.contactId}:${today}` });
+            const re = `Hi ${c.name ?? 'there'}! 👋 Just checking in on your ${c.serviceInterest} enquiry — still interested?`;
+            const r = await orgAdapter.sendMessage(orgId, {
+              to: c.phone, type: 'template', templateKey,
+              templateParams: { name: c.name ?? 'there' },
+              text: re, idempotencyKey: `reengage:${c.contactId}:${today}`,
+            });
             if (r.success) {
               sent++;
               if (r.providerMessageId) await messageService.persistOutbound(orgId, c.phone, re, r.providerMessageId);
@@ -387,13 +434,20 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         await idempotencyService.markProcessed(msg.providerMessageId, orgId);
         return;
       }
+      // Cost cap: if the tenant is over its monthly LLM budget, drop to the
+      // deterministic (no-LLM) policy engine instead of billing more tokens.
+      const deps = agentDeps(orgId, org);
+      if (await isOverCostCap(orgId)) {
+        deps.llm = undefined;
+        await recordError('cost_cap', `LLM monthly cap reached; using deterministic replies`, {}, orgId);
+      }
       const state = await executeAgentGraph(store, {
         organizationId: orgId,
         contactId: msg.contactId,
         conversationId: msg.conversationId,
         inboundMessage: msg.text,
         traceId: msg.providerMessageId,
-      }, agentDeps(orgId, org));
+      }, deps);
 
       if (state.finalResponse) {
         const rich = buildInteractive(state);
@@ -430,6 +484,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error('Agent runtime error', { providerMessageId: msg.providerMessageId, error: errorMsg });
+      await recordError('agent_runtime', errorMsg, { providerMessageId: msg.providerMessageId }, orgId);
       await idempotencyService.markProcessed(msg.providerMessageId, orgId, errorMsg);
     }
   }
@@ -656,6 +711,82 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }
     });
 
+    /** Platform billing — create a Stripe checkout session for a plan. */
+    app.post('/api/billing/checkout', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const plan = (req.body as { plan?: string })?.plan;
+      const planDef = PLANS.find((p) => p.id === plan);
+      if (!planDef) { res.status(400).json({ ok: false, error: 'Unknown plan' }); return; }
+      if (!billing.isConfigured) { res.status(200).json({ ok: false, error: "Billing isn't enabled yet — add STRIPE_SECRET_KEY." }); return; }
+      const priceId = env[planDef.priceEnvVar];
+      if (!priceId) { res.status(200).json({ ok: false, error: `Price not configured (${planDef.priceEnvVar}).` }); return; }
+      const base = env['DASHBOARD_URL'] ?? 'https://saarthione.vercel.app';
+      const result = await billing.createCheckoutSession({
+        organizationId: operator.organizationId, priceId,
+        successUrl: `${base}/?billing=success`, cancelUrl: `${base}/?billing=cancel`,
+      });
+      res.status(200).json(result);
+    });
+
+    /** Stripe webhook — activate/deactivate the org's plan on subscription events. */
+    app.post('/webhooks/stripe', async (req, res) => {
+      const sig = req.headers['stripe-signature'];
+      const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      if (!raw || typeof sig !== 'string' || !billing.verifyWebhookSignature(raw, sig)) {
+        res.status(401).json({ error: 'Invalid signature' }); return;
+      }
+      const event = await billing.parseWebhookEvent(raw.toString('utf8'));
+      if (event?.organizationId) {
+        const active = event.type !== 'customer.subscription.deleted';
+        await db.from('organizations').update({
+          subscription_status: event.status ?? (active ? 'active' : 'canceled'),
+          stripe_customer_id: event.customerId ?? undefined,
+          plan: active ? 'paid' : 'free',
+        }).eq('id', event.organizationId);
+      }
+      res.status(200).json({ received: true });
+    });
+
+    /** GDPR — export all data held for a customer (by phone), for the org. */
+    app.post('/api/data/export', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ error: 'Unauthorized' }); return; }
+      const phone = (req.body as { phone?: string })?.phone;
+      if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
+      const org = operator.organizationId;
+      const norm = phone.startsWith('+') ? phone : `+${phone}`;
+      const { data: contact } = await db.from('contacts').select('*').eq('organization_id', org).eq('phone_number', norm).maybeSingle();
+      if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
+      const cid = contact.id;
+      const [consent, leads, bookings, handoffs, convs] = await Promise.all([
+        db.from('consent_records').select('*').eq('organization_id', org).eq('contact_id', cid),
+        db.from('leads').select('*').eq('organization_id', org).eq('contact_id', cid),
+        db.from('bookings').select('*').eq('organization_id', org).eq('contact_id', cid),
+        db.from('handoffs').select('*').eq('organization_id', org).eq('contact_id', cid),
+        db.from('conversations').select('id').eq('organization_id', org).eq('contact_id', cid),
+      ]);
+      const convIds = (convs.data ?? []).map((c) => c.id);
+      const messages = convIds.length ? (await db.from('messages').select('direction, content, created_at').eq('organization_id', org).in('conversation_id', convIds)).data : [];
+      res.status(200).json({ contact, consent: consent.data, leads: leads.data, bookings: bookings.data, handoffs: handoffs.data, messages });
+    });
+
+    /** GDPR — delete/erase all data held for a customer (by phone). */
+    app.post('/api/data/delete', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ error: 'Unauthorized' }); return; }
+      const phone = (req.body as { phone?: string })?.phone;
+      if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
+      const org = operator.organizationId;
+      const norm = phone.startsWith('+') ? phone : `+${phone}`;
+      const { data: contact } = await db.from('contacts').select('id').eq('organization_id', org).eq('phone_number', norm).maybeSingle();
+      if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
+      // Deleting the contact cascades to consent/conversations/messages/leads/bookings/handoffs.
+      await db.from('contacts').delete().eq('organization_id', org).eq('id', contact.id);
+      await store.insertAuditEvent({ id: randomUUID(), organizationId: org, action: 'gdpr_erasure', entityType: 'contact', entityId: contact.id, actorType: 'user', details: { by: operator.userId }, createdAt: new Date().toISOString() });
+      res.status(200).json({ ok: true, erased: true });
+    });
+
     /** Razorpay payment webhook — signature-verified, updates payments/orders. */
     app.post('/webhooks/razorpay', async (req, res) => {
       if (!razorpay) {
@@ -705,7 +836,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         return;
       }
 
-      const result = await adapter.sendMessage(operator.organizationId, {
+      const opAdapter = await adapterForOrg(operator.organizationId);
+      const result = await opAdapter.sendMessage(operator.organizationId, {
         to: contact.phone,
         type: 'text',
         text: parsed.data.text,
@@ -771,11 +903,15 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     const runScheduler = async (_req: express.Request, res: express.Response): Promise<void> => {
       const worker = new SchedulerWorker(store, {
         dryRun: env['ENABLE_DRY_RUN_AUTOMATION'] === 'true',
-        sendTemplate: async ({ run, contact, content }) => {
-          return adapter.sendMessage(run.organizationId, {
+        sendTemplate: async ({ run, contact, templateKey }) => {
+          // Automations are business-initiated → use the org's own number + an
+          // approved template (24-hour-window compliant).
+          const orgAdapter = await adapterForOrg(run.organizationId);
+          return orgAdapter.sendMessage(run.organizationId, {
             to: contact.phone,
-            type: 'text',
-            text: content,
+            type: 'template',
+            templateKey,
+            templateParams: { name: contact.name ?? 'there' },
             idempotencyKey: `automation:${run.id}`,
           });
         },
@@ -853,10 +989,21 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     },
     // Vercel provides the OIDC token via request header; surface it for the
     // AI Gateway providers which read process.env at call time.
-    preMiddleware: (req, _res, next) => {
+    preMiddleware: (req, res, next) => {
       const oidc = req.headers['x-vercel-oidc-token'];
       if (typeof oidc === 'string' && oidc.length > 0) {
         process.env['VERCEL_OIDC_TOKEN'] = oidc;
+      }
+      // Best-effort per-instance rate limit (60 req / 10s per IP) — a coarse
+      // abuse guard; Vercel's platform firewall handles volumetric DDoS.
+      const ip = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+      const now = Date.now();
+      const win = rateWindows.get(ip);
+      if (!win || now > win.reset) {
+        rateWindows.set(ip, { count: 1, reset: now + 10_000 });
+      } else if (++win.count > 60) {
+        res.status(429).json({ error: 'Too many requests' });
+        return;
       }
       next();
     },

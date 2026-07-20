@@ -15,6 +15,9 @@ import {
   Settings,
   Globe,
   LogOut,
+  BarChart3,
+  Plus,
+  CreditCard,
 } from 'lucide-react';
 import { LandingPage } from './LandingPage';
 import { useAuth } from './hooks/useAuth';
@@ -22,6 +25,8 @@ import { usePolling } from './hooks/usePolling';
 import {
   claimHandoff,
   completeWhatsappSignup,
+  createTemplate,
+  fetchActivityTrend,
   fetchAutomationRuns,
   fetchContacts,
   fetchContactTimeline,
@@ -30,6 +35,7 @@ import {
   fetchHandoffReasonCounts,
   fetchHandoffs,
   fetchKnowledgeDocs,
+  fetchLeadFunnel,
   fetchLeads,
   fetchLlmUsageSummary,
   fetchMessages,
@@ -37,11 +43,14 @@ import {
   fetchOrganization,
   fetchPackages,
   fetchProducts,
+  fetchTemplatesFull,
   queueAutomationRun,
   resolveConversation,
   resolveHandoff,
   sendOperatorMessage,
+  startCheckout,
 } from './lib/api';
+import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import {
   getLastSignupInfo,
   launchWhatsAppSignup,
@@ -49,16 +58,30 @@ import {
 } from './lib/metaSignup';
 import type {
   AuthSession,
+  BillingPlan,
   DashboardKpis,
   HandoffItem,
   MessageRow,
+  TemplateCategory,
   TimelineEvent,
 } from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
-type TabKey = 'inbox' | 'crm' | 'scheduler' | 'compliance' | 'kb';
+type TabKey = 'inbox' | 'crm' | 'scheduler' | 'compliance' | 'kb' | 'analytics';
 
 const ERROR_COLOR = '#ff6b6b';
+
+const BILLING_PLANS: Array<{
+  plan: BillingPlan;
+  name: string;
+  price: string;
+  tagline: string;
+  featured?: boolean;
+}> = [
+  { plan: 'starter', name: 'Starter', price: '₹999', tagline: 'Solo operators getting started' },
+  { plan: 'growth', name: 'Growth', price: '₹2,999', tagline: 'Growing support & sales teams', featured: true },
+  { plan: 'scale', name: 'Scale', price: '₹7,999', tagline: 'High-volume, multi-operator orgs' },
+];
 
 /* ─── Small presentational helpers ────────────────────────────────── */
 
@@ -416,6 +439,21 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     text: string;
   } | null>(null);
 
+  // Template management state (scheduler tab)
+  const [tplName, setTplName] = useState('');
+  const [tplCategory, setTplCategory] = useState<TemplateCategory>('marketing');
+  const [tplLanguage, setTplLanguage] = useState('en');
+  const [tplContent, setTplContent] = useState('');
+  const [tplBusy, setTplBusy] = useState(false);
+  const [tplNotice, setTplNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+
+  // Billing / upgrade state (compliance tab)
+  const [billingBusyPlan, setBillingBusyPlan] = useState<BillingPlan | null>(null);
+  const [billingNotice, setBillingNotice] = useState<{
+    kind: 'error' | 'success';
+    text: string;
+  } | null>(null);
+
   // Catalog search state
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -467,6 +505,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const crmActive = inDashboard && activeTab === 'crm';
   const schedulerActive = inDashboard && activeTab === 'scheduler';
   const complianceActive = inDashboard && activeTab === 'compliance';
+  const analyticsActive = inDashboard && activeTab === 'analytics';
   const kbActive =
     (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 3);
 
@@ -487,9 +526,12 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const kbDocsQuery = usePolling(fetchKnowledgeDocs, [], 10_000, kbActive);
   const contactsQuery = usePolling(fetchContacts, [], 10_000, schedulerActive);
   const templatesQuery = usePolling(fetchMessageTemplates, [], 10_000, schedulerActive);
+  const templatesFullQuery = usePolling(fetchTemplatesFull, [], 15_000, schedulerActive);
   const runsQuery = usePolling(fetchAutomationRuns, [], 10_000, schedulerActive);
   const llmQuery = usePolling(fetchLlmUsageSummary, [], 10_000, complianceActive);
   const reasonsQuery = usePolling(fetchHandoffReasonCounts, [], 10_000, complianceActive);
+  const activityTrendQuery = usePolling(fetchActivityTrend, [], 30_000, analyticsActive);
+  const leadFunnelQuery = usePolling(fetchLeadFunnel, [], 30_000, analyticsActive);
 
   const org = orgQuery.data;
   const conversations = conversationsQuery.data ?? [];
@@ -628,6 +670,60 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     } finally {
       setScheduleBusy(false);
     }
+  };
+
+  const handleCreateTemplate = async (e: FormEvent) => {
+    e.preventDefault();
+    if (tplBusy) return;
+    if (!org) {
+      setTplNotice({ kind: 'error', text: 'Organization not loaded yet — try again.' });
+      return;
+    }
+    if (!tplName.trim() || !tplContent.trim()) {
+      setTplNotice({ kind: 'error', text: 'Template name and content are required.' });
+      return;
+    }
+    setTplBusy(true);
+    setTplNotice(null);
+    try {
+      await createTemplate({
+        organizationId: org.id,
+        name: tplName,
+        category: tplCategory,
+        language: tplLanguage,
+        content: tplContent,
+      });
+      setTplNotice({
+        kind: 'success',
+        text: 'Template created with status “pending”. Submit it to Meta for approval before sending.',
+      });
+      setTplName('');
+      setTplContent('');
+      await Promise.all([templatesFullQuery.refetch(), templatesQuery.refetch()]);
+    } catch (err) {
+      setTplNotice({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Failed to create template',
+      });
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  const handleUpgrade = async (plan: BillingPlan) => {
+    if (billingBusyPlan) return;
+    setBillingBusyPlan(plan);
+    setBillingNotice(null);
+    const result = await startCheckout(session.access_token, plan);
+    if (result.ok && result.url) {
+      window.location.href = result.url;
+      return; // navigation in progress — keep the button in its busy state
+    }
+    setBillingNotice({
+      kind: 'error',
+      text: result.error ?? "Billing isn't enabled yet. Please try again later.",
+    });
+    setBillingBusyPlan(null);
   };
 
   /* CRM search filtering */
@@ -1216,6 +1312,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </div>
 
           <div
+            className={`nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
+            onClick={() => setActiveTab('analytics')}
+          >
+            <BarChart3 className="nav-icon" />
+            <span>Analytics</span>
+          </div>
+
+          <div
             className={`nav-item ${activeTab === 'compliance' ? 'active' : ''}`}
             onClick={() => setActiveTab('compliance')}
           >
@@ -1264,6 +1368,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'crm' && 'CRM Context & Product Directory'}
             {activeTab === 'scheduler' && 'Consent-Safe Auto Campaigns'}
             {activeTab === 'compliance' && 'AI Usage & Safety Observability'}
+            {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -1893,12 +1998,245 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 </tbody>
               </table>
             </div>
+
+            {/* Message template management */}
+            <div className="scheduler-card" style={{ marginTop: 0 }}>
+              <div className="report-card-title">
+                <FileText size={20} style={{ color: 'var(--color-primary)' }} />
+                WhatsApp Message Templates
+              </div>
+
+              {tplNotice && <InlineBanner kind={tplNotice.kind}>{tplNotice.text}</InlineBanner>}
+              {templatesFullQuery.error && (
+                <InlineBanner kind="error">{templatesFullQuery.error}</InlineBanner>
+              )}
+
+              <form
+                onSubmit={(e) => {
+                  void handleCreateTemplate(e);
+                }}
+                style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}
+              >
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                    gap: '20px',
+                  }}
+                >
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="tpl-name">
+                      Template Name
+                    </label>
+                    <input
+                      id="tpl-name"
+                      type="text"
+                      className="form-input"
+                      placeholder="e.g. Booking reminder"
+                      value={tplName}
+                      onChange={(e) => setTplName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="tpl-category">
+                      Category
+                    </label>
+                    <select
+                      id="tpl-category"
+                      className="form-select"
+                      value={tplCategory}
+                      onChange={(e) => setTplCategory(e.target.value as TemplateCategory)}
+                    >
+                      <option value="marketing">Marketing</option>
+                      <option value="utility">Utility</option>
+                      <option value="authentication">Authentication</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="tpl-language">
+                      Language
+                    </label>
+                    <input
+                      id="tpl-language"
+                      type="text"
+                      className="form-input"
+                      placeholder="en"
+                      value={tplLanguage}
+                      onChange={(e) => setTplLanguage(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="tpl-content">
+                    Content
+                  </label>
+                  <textarea
+                    id="tpl-content"
+                    className="form-input"
+                    style={{ minHeight: '96px', resize: 'vertical', fontFamily: 'var(--font-body)' }}
+                    placeholder="Hi {{1}}, your booking is confirmed for {{2}}. Reply STOP to opt out."
+                    value={tplContent}
+                    onChange={(e) => setTplContent(e.target.value)}
+                  />
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    New templates are saved as <strong>pending</strong> — WhatsApp templates must be
+                    approved by Meta before they can be sent.
+                  </span>
+                </div>
+
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ alignSelf: 'flex-start' }}
+                  disabled={tplBusy}
+                >
+                  <Plus size={16} /> {tplBusy ? 'Creating…' : 'Create Template'}
+                </button>
+              </form>
+
+              {templatesFullQuery.loading && !templatesFullQuery.data && (
+                <StatusNote kind="loading">Loading templates…</StatusNote>
+              )}
+              <table className="compliance-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Key</th>
+                    <th>Category</th>
+                    <th>Language</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {templatesFullQuery.data && templatesFullQuery.data.length === 0 && (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+                        No templates yet. Create one above to get started.
+                      </td>
+                    </tr>
+                  )}
+                  {(templatesFullQuery.data ?? []).map((t) => {
+                    const status = t.status ?? 'pending';
+                    const color =
+                      status === 'approved'
+                        ? 'var(--color-success)'
+                        : status === 'rejected'
+                          ? 'var(--color-danger)'
+                          : 'var(--color-warning)';
+                    return (
+                      <tr key={t.id}>
+                        <td>{t.name}</td>
+                        <td>
+                          <code>{t.template_key}</code>
+                        </td>
+                        <td style={{ textTransform: 'capitalize' }}>{t.category ?? '—'}</td>
+                        <td>{t.language ?? 'en'}</td>
+                        <td>
+                          <span
+                            className="status-badge"
+                            style={{
+                              color,
+                              backgroundColor: 'rgba(255,255,255,0.04)',
+                              border: `1px solid ${color}`,
+                              textTransform: 'capitalize',
+                            }}
+                          >
+                            {status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </>
         )}
 
         {/* ─── Tab View: AI Usage & Safety ────────────────────────── */}
         {activeTab === 'compliance' && (
           <div className="report-workspace">
+            {/* Plan / billing */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <CreditCard size={20} style={{ color: 'var(--color-primary)' }} />
+                Plan & Billing
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '-12px', marginBottom: '20px' }}>
+                Upgrade your subscription. Prices shown are ₹999 / ₹2,999 / ₹7,999 per month.
+              </p>
+
+              {billingNotice && (
+                <InlineBanner kind={billingNotice.kind}>{billingNotice.text}</InlineBanner>
+              )}
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: '20px',
+                }}
+              >
+                {BILLING_PLANS.map((p) => (
+                  <div
+                    key={p.plan}
+                    style={{
+                      padding: '24px',
+                      borderRadius: '16px',
+                      backgroundColor: p.featured ? 'rgba(0, 242, 254, 0.05)' : 'var(--bg-tertiary)',
+                      border: p.featured
+                        ? '1px solid var(--color-primary)'
+                        : '1px solid var(--border-muted)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: '13px',
+                        fontWeight: 700,
+                        letterSpacing: '0.5px',
+                        textTransform: 'uppercase',
+                        color: p.featured ? 'var(--color-primary)' : 'var(--text-muted)',
+                      }}
+                    >
+                      {p.name}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-heading)',
+                        fontSize: '28px',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {p.price}
+                      <span style={{ fontSize: '13px', fontWeight: 400, color: 'var(--text-muted)' }}>
+                        {' '}
+                        / month
+                      </span>
+                    </span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
+                      {p.tagline}
+                    </span>
+                    <button
+                      className={p.featured ? 'btn btn-primary' : 'btn btn-secondary'}
+                      style={{ justifyContent: 'center' }}
+                      disabled={billingBusyPlan !== null}
+                      onClick={() => {
+                        void handleUpgrade(p.plan);
+                      }}
+                    >
+                      {billingBusyPlan === p.plan ? 'Redirecting…' : 'Upgrade'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="report-card" style={{ width: '100%' }}>
               <div className="report-card-title">
                 <ShieldCheck size={20} style={{ color: 'var(--color-success)' }} />
@@ -2022,6 +2360,41 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Analytics ────────────────────────────────── */}
+        {activeTab === 'analytics' && (
+          <div className="report-workspace">
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <BarChart3 size={20} style={{ color: 'var(--color-primary)' }} />
+                14-Day Activity Trend
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '-12px', marginBottom: '20px' }}>
+                Daily messages, new leads, and bookings for the last 14 days (bucketed by UTC date).
+              </p>
+              <ActivityTrendChart
+                data={activityTrendQuery.data}
+                loading={activityTrendQuery.loading}
+                error={activityTrendQuery.error}
+              />
+            </div>
+
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <UserCheck size={20} style={{ color: 'var(--color-primary)' }} />
+                Lead Funnel by Stage
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '-12px', marginBottom: '20px' }}>
+                Lead counts across the pipeline: new → contacted → qualified → proposal → won.
+              </p>
+              <LeadFunnelChart
+                data={leadFunnelQuery.data}
+                loading={leadFunnelQuery.loading}
+                error={leadFunnelQuery.error}
+              />
             </div>
           </div>
         )}

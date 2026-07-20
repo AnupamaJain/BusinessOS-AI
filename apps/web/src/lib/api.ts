@@ -1,16 +1,22 @@
 import { supabase } from './supabase';
 import type {
+  ActivityTrendPoint,
   AutomationRunItem,
+  BillingPlan,
+  CheckoutResult,
   ContactRow,
   ConversationListItem,
+  CreateTemplateInput,
   DashboardKpis,
   HandoffItem,
   HandoffReasonCount,
   KnowledgeDocRow,
+  LeadFunnelStage,
   LeadItem,
   LlmModelUsage,
   LlmUsageSummary,
   MessageRow,
+  MessageTemplateFull,
   MessageTemplateRow,
   Organization,
   PackageRow,
@@ -326,6 +332,47 @@ export async function fetchMessageTemplates(): Promise<MessageTemplateRow[]> {
   return (data ?? []) as MessageTemplateRow[];
 }
 
+/* ─── Template management (list full rows + create) ───────────────── */
+
+export async function fetchTemplatesFull(): Promise<MessageTemplateFull[]> {
+  const { data, error } = await supabase
+    .from('message_templates')
+    .select('id, template_key, name, content, language, status, category, created_at')
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(`Failed to load templates: ${error.message}`);
+  return (data ?? []) as MessageTemplateFull[];
+}
+
+/* Build a WhatsApp-safe template_key: slug of the name + a short random suffix. */
+function slugifyTemplateKey(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `${slug || 'template'}_${suffix}`;
+}
+
+export async function createTemplate(input: CreateTemplateInput): Promise<void> {
+  const name = input.name.trim();
+  const content = input.content.trim();
+  if (!name) throw new Error('Template name is required');
+  if (!content) throw new Error('Template content is required');
+
+  const { error } = await supabase.from('message_templates').insert({
+    organization_id: input.organizationId,
+    template_key: slugifyTemplateKey(name),
+    name,
+    category: input.category,
+    language: (input.language || 'en').trim(),
+    content,
+    status: 'pending',
+  });
+  if (error) throw new Error(`Failed to create template: ${error.message}`);
+}
+
 /* ─── Scheduler: automation runs ──────────────────────────────────── */
 
 export async function fetchAutomationRuns(): Promise<AutomationRunItem[]> {
@@ -503,6 +550,121 @@ export async function fetchDashboardKpis(): Promise<DashboardKpis> {
     pendingPayments,
     revenuePipeline,
   };
+}
+
+/* ─── Analytics: 14-day activity trend + lead funnel ──────────────── */
+
+const TREND_DAYS = 14;
+
+/* UTC calendar date (YYYY-MM-DD) for an ISO timestamp. */
+function utcDateKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+export async function fetchActivityTrend(): Promise<ActivityTrendPoint[]> {
+  const now = new Date();
+  // Start of the earliest day in the window (UTC midnight, TREND_DAYS-1 days ago).
+  const startUtc = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() - (TREND_DAYS - 1)
+    )
+  );
+  const startIso = startUtc.toISOString();
+
+  const [messagesRes, leadsRes, bookingsRes] = await Promise.all([
+    supabase.from('messages').select('created_at').gte('created_at', startIso),
+    supabase.from('leads').select('created_at').gte('created_at', startIso),
+    supabase.from('bookings').select('created_at').gte('created_at', startIso),
+  ]);
+
+  if (messagesRes.error) throw new Error(`Failed to load activity trend (messages): ${messagesRes.error.message}`);
+  if (leadsRes.error) throw new Error(`Failed to load activity trend (leads): ${leadsRes.error.message}`);
+  if (bookingsRes.error) throw new Error(`Failed to load activity trend (bookings): ${bookingsRes.error.message}`);
+
+  // Seed an ordered map with every day in the window so gaps render as zero.
+  const buckets = new Map<string, ActivityTrendPoint>();
+  for (let i = 0; i < TREND_DAYS; i += 1) {
+    const d = new Date(startUtc.getTime() + i * 86_400_000);
+    const key = d.toISOString().slice(0, 10);
+    buckets.set(key, { date: key, messages: 0, leads: 0, bookings: 0 });
+  }
+
+  const tally = (
+    rows: Array<{ created_at: string | null }> | null,
+    field: 'messages' | 'leads' | 'bookings'
+  ): void => {
+    for (const row of rows ?? []) {
+      if (!row.created_at) continue;
+      const bucket = buckets.get(utcDateKey(row.created_at));
+      if (bucket) bucket[field] += 1;
+    }
+  };
+
+  tally(messagesRes.data as Array<{ created_at: string | null }> | null, 'messages');
+  tally(leadsRes.data as Array<{ created_at: string | null }> | null, 'leads');
+  tally(bookingsRes.data as Array<{ created_at: string | null }> | null, 'bookings');
+
+  return Array.from(buckets.values());
+}
+
+const FUNNEL_STAGES = ['new', 'contacted', 'qualified', 'proposal', 'won'];
+
+export async function fetchLeadFunnel(): Promise<LeadFunnelStage[]> {
+  const { data, error } = await supabase.from('leads').select('stage');
+  if (error) throw new Error(`Failed to load lead funnel: ${error.message}`);
+
+  const counts = new Map<string, number>();
+  for (const stage of FUNNEL_STAGES) counts.set(stage, 0);
+  for (const row of (data ?? []) as Array<{ stage: string | null }>) {
+    const stage = row.stage ?? 'new';
+    if (counts.has(stage)) counts.set(stage, (counts.get(stage) ?? 0) + 1);
+  }
+  return FUNNEL_STAGES.map((stage) => ({ stage, count: counts.get(stage) ?? 0 }));
+}
+
+/* ─── Billing / upgrade (Stripe checkout via gateway) ─────────────── */
+
+/**
+ * Start a Stripe checkout for the selected plan. Never throws — always resolves
+ * with an {ok} result so the caller can render an inline message (e.g. when
+ * billing/Stripe isn't configured on the gateway yet).
+ */
+export async function startCheckout(
+  accessToken: string,
+  plan: BillingPlan
+): Promise<CheckoutResult> {
+  try {
+    const response = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/billing/checkout`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ plan }),
+    });
+
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      /* Body may be empty or non-JSON; fall back to status. */
+    }
+    const parsed = (body ?? {}) as { ok?: boolean; url?: string; error?: string; message?: string };
+
+    if (response.ok && parsed.ok && parsed.url) {
+      return { ok: true, url: parsed.url };
+    }
+    return {
+      ok: false,
+      error: parsed.error ?? parsed.message ?? `Checkout unavailable (HTTP ${response.status})`,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
 }
 
 /* ─── Customer Memory timeline (per-contact history) ──────────────── */
