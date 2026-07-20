@@ -5,6 +5,7 @@ import { classifyIntent, evaluatePolicy, checkNoMedicalClaims, checkNoInternalLe
 import {
   getCustomerContext, upsertQualifiedLead, createHumanHandoff,
   searchProductCatalog, getOrderStatus, searchTravelPackages,
+  searchCabRoutes, searchServicePlans,
   type BusinessStore,
 } from '@business-os-ai/mcp-business-tools';
 import { logger, type IntentType } from '@business-os-ai/shared-types';
@@ -31,6 +32,10 @@ export interface AgentGraphDeps {
   createQuotation?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; pricePerPerson: number; travellers: number }) => Promise<{ url: string; number: string } | null>;
   /** Optional: create a payment link at booking-confirm; returns the checkout URL. */
   createCheckoutLink?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; amount: number; travellers: number }) => Promise<{ url: string; amountText: string } | null>;
+  /** Optional (cab-intercity vertical): reserve a cab booking; may attach a payment link. */
+  createCabBooking?: (args: { contactId: string; packageSku: string; pickupDate: string }) => Promise<{ url?: string; amountText: string; bookingNumber: string } | null>;
+  /** Optional (home-services vertical): reserve a service booking; may attach a payment link. */
+  createServiceBooking?: (args: { contactId: string; packageSku: string; startDate: string }) => Promise<{ url?: string; amountText: string; bookingNumber: string } | null>;
 }
 
 /** Upcoming selectable dates for the in-chat "calendar" (tappable list). */
@@ -69,6 +74,27 @@ function messageHasDate(msg: string): boolean {
   if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
   if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
   return false;
+}
+
+/**
+ * Cab (intercity) vertical signals: an explicit vertical hint, cab keywords, or
+ * city-pair phrasing ("Delhi to Jaipur"). Keywords are word-bounded so ordinary
+ * words that merely contain them as a substring (e.g. "skin**car**e") aren't flagged.
+ */
+const CAB_KEYWORD_RE = /\b(cab|taxi|ride|car|outstation|intercity|pick\s?up|pickup|drop)\b/i;
+/** Home-services (maid/cook/cleaning) vertical keywords, word-bounded. */
+const HOME_SERVICE_KEYWORD_RE = /\b(maid|cook|cooking|cleaning|cleaner|housekeeping|househelp|babysitter|nanny|deep\s?clean|full[-\s]?time\s?maid)\b/i;
+/** "City A to City B" phrasing — a soft cab signal, grounded against the catalogue before use. */
+const CITY_PAIR_RE = /\b([a-z]+)\s+to\s+([a-z]+)\b/i;
+/** Vehicle-class words the customer may mention. */
+const VEHICLE_CLASSES = ['sedan', 'suv', 'hatchback', 'tempo', 'innova', 'ertiga'];
+
+function hasCabKeyword(deps: AgentGraphDeps, text: string): boolean {
+  return deps.vertical === 'cab-intercity' || CAB_KEYWORD_RE.test(text);
+}
+
+function hasHomeServiceSignal(deps: AgentGraphDeps, text: string): boolean {
+  return deps.vertical === 'home-services' || HOME_SERVICE_KEYWORD_RE.test(text);
 }
 
 const INTENT_VALUES: IntentType[] = [
@@ -370,6 +396,86 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
       }
     } else {
       state.proposedResponse = "I'd love to help plan your trip! Could you tell me your preferred destination, travel dates, and budget per person? I'll find the best packages for you.";
+    }
+    return state;
+  }
+
+  // ── Cab (intercity) sales flow ──────────────────────────────────
+  // Keyword/vertical driven, OR grounded city-pair phrasing ("Delhi to Jaipur").
+  {
+    const cabKeyword = hasCabKeyword(deps, lower);
+    const cityPair = lower.match(CITY_PAIR_RE);
+    if (cabKeyword || cityPair) {
+      const fromCity = cityPair?.[1];
+      const toCity = cityPair?.[2];
+      const vehicleClass = VEHICLE_CLASSES.find((v) => lower.includes(v));
+      const input = { organizationId: state.organizationId, fromCity, toCity, vehicleClass };
+      const searchResult = await searchCabRoutes(store, input);
+      // Only commit to the cab branch if it's an explicit cab signal OR the city-pair
+      // actually resolves to real routes — this keeps skincare/travel enquiries out.
+      if (cabKeyword || searchResult.routes.length > 0) {
+        state.toolCalls.push({ tool: 'search_cab_routes', input, output: searchResult });
+        if (searchResult.routes.length > 0) {
+          const top = searchResult.routes.slice(0, 3);
+          const first = top[0]!;
+          const llmReply = hasRealLLM(deps)
+            ? await composeReplyWithLLM(deps.llm!, state, deps,
+                'Recommend the most relevant cab route(s). For each, mention the fare, vehicle class and estimated travel time. Then ask for the pickup date.',
+                { cabRoutes: top })
+            : null;
+          state.proposedResponse = llmReply ??
+            `Here are cab options I can arrange:\n${top.map((r) => `• *${r.title}* — ${r.fare}, ${r.vehicleClass}, ~${r.estimatedHours}h`).join('\n')}\n\nWhich route works for you, and when should we pick you up?`;
+
+          const leadResult = await upsertQualifiedLead(store, {
+            organizationId: state.organizationId,
+            contactId: state.contactId,
+            conversationId: state.conversationId,
+            serviceInterest: state.inboundMessage.substring(0, 500),
+            qualificationSummary: `Customer interested in cab route ${first.sku} (${first.fromCity} → ${first.toCity}).`,
+            score: 60,
+            idempotencyKey: `lead:${state.conversationId}:${state.traceId}`,
+          });
+          state.toolCalls.push({ tool: 'upsert_qualified_lead', input: { serviceInterest: state.inboundMessage }, output: leadResult });
+        } else {
+          state.proposedResponse = "Happy to arrange a cab! 🚕 Which cities are you travelling between (pickup → drop), and on what date?";
+        }
+        return state;
+      }
+    }
+  }
+
+  // ── Home services (maid/cook/cleaning) sales flow ───────────────
+  if (hasHomeServiceSignal(deps, lower)) {
+    const service = ['cooking', 'cook', 'cleaning', 'cleaner', 'housekeeping', 'babysitter', 'nanny'].find((s) => lower.includes(s));
+    const planType = lower.includes('monthly') ? 'monthly' : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? 'one-time' : undefined;
+    const normalizedService = service === 'cook' ? 'cooking' : service === 'cleaner' ? 'cleaning' : service;
+    const input = { organizationId: state.organizationId, service: normalizedService, planType };
+    const searchResult = await searchServicePlans(store, input);
+    state.toolCalls.push({ tool: 'search_service_plans', input, output: searchResult });
+
+    if (searchResult.plans.length > 0) {
+      const top = searchResult.plans.slice(0, 3);
+      const first = top[0]!;
+      const llmReply = hasRealLLM(deps)
+        ? await composeReplyWithLLM(deps.llm!, state, deps,
+            'Recommend the most relevant home-service plan(s). For each, mention the price, hours per visit and plan type. Then ask when they would like to start.',
+            { servicePlans: top })
+        : null;
+      state.proposedResponse = llmReply ??
+        `Here are plans I'd recommend:\n${top.map((p) => `• *${p.title}* — ${p.price}, ${p.hoursPerVisit}h/visit, ${p.planType}`).join('\n')}\n\nWhich plan suits you, and when would you like to start?`;
+
+      const leadResult = await upsertQualifiedLead(store, {
+        organizationId: state.organizationId,
+        contactId: state.contactId,
+        conversationId: state.conversationId,
+        serviceInterest: state.inboundMessage.substring(0, 500),
+        qualificationSummary: `Customer interested in home-service plan ${first.sku} (${first.service}, ${first.planType}).`,
+        score: 60,
+        idempotencyKey: `lead:${state.conversationId}:${state.traceId}`,
+      });
+      state.toolCalls.push({ tool: 'upsert_qualified_lead', input: { serviceInterest: state.inboundMessage }, output: leadResult });
+    } else {
+      state.proposedResponse = "I'd be glad to help! 🧹 Are you looking for cooking, cleaning or full-time help — and for which area? I'll share the best plans.";
     }
     return state;
   }

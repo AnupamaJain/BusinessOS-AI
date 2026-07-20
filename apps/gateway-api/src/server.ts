@@ -563,6 +563,11 @@ export function buildServer(env: Record<string, string | undefined> = process.en
           await messageService.persistOutbound(orgId, msg.from, state.finalResponse, result.providerMessageId, msg.conversationId);
         } else if (!result.success) {
           logger.error('Failed to send agent reply', { error: result.error, to: msg.from });
+          const errStr = result.error ?? 'send failed';
+          // Meta 190 / 131005 = expired or invalid access token — page a human,
+          // the tenant's number is effectively offline until it's refreshed.
+          const isTokenExpiry = /\b190\b|131005|expired|OAuthException|access token/i.test(errStr);
+          await recordError(isTokenExpiry ? 'token_expired' : 'whatsapp_send', errStr, { to: msg.from }, orgId, isTokenExpiry ? 'critical' : 'error');
         }
       }
 
@@ -973,6 +978,77 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         try { waitUntil(work); } catch { void work; }
       });
     }
+
+    /** Liveness + dependency health for uptime monitors (public, no secrets). */
+    app.get('/health', async (_req, res) => {
+      const t = Date.now();
+      let dbOk = false;
+      try { const { error } = await db.from('organizations').select('id').limit(1); dbOk = !error; } catch { dbOk = false; }
+      res.status(dbOk ? 200 : 503).json({
+        status: dbOk ? 'ok' : 'degraded', db: dbOk, whatsapp: activeProvider,
+        embeddings: !!embedder, ts: new Date().toISOString(), latencyMs: Date.now() - t,
+      });
+    });
+
+    // ── Team invites (real): create → email → accept ──────────────────
+    app.post('/api/team/invite', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const email = (req.body as { email?: string })?.email?.trim().toLowerCase();
+      const role = (req.body as { role?: string })?.role === 'admin' ? 'admin' : 'operator';
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { res.status(400).json({ ok: false, error: 'A valid email is required' }); return; }
+      const token = (randomUUID() + randomUUID()).replace(/-/g, '');
+      const { data, error } = await db.from('team_invites').upsert({
+        organization_id: operator.organizationId, email, role, token, invited_by: operator.userId, status: 'pending', accepted_at: null,
+      }, { onConflict: 'organization_id,email' }).select('id, email, role, status, created_at').single();
+      if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      const base = env['DASHBOARD_URL'] ?? 'https://saarthione.vercel.app';
+      const acceptUrl = `${base}/?invite=${token}`;
+      if (emailService.isConfigured) {
+        const org = await getOrgContext(operator.organizationId);
+        await emailService.send({
+          to: email, subject: `You're invited to ${org.name} on SaarthiOne`,
+          html: `<p>You've been invited to join <b>${org.name}</b> as <b>${role}</b> on SaarthiOne.</p><p><a href="${acceptUrl}">Accept your invitation</a></p><p style="color:#888;font-size:12px">Or paste this link into your browser: ${acceptUrl}</p>`,
+        }).catch(() => { /* invite row still created; email is best-effort */ });
+      }
+      res.status(200).json({ ok: true, invite: data, acceptUrl });
+    });
+
+    app.get('/api/team/invites', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await db.from('team_invites')
+        .select('id, email, role, status, created_at, accepted_at')
+        .eq('organization_id', operator.organizationId).order('created_at', { ascending: false });
+      res.status(200).json({ ok: true, invites: data ?? [] });
+    });
+
+    app.post('/api/team/invite/revoke', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const id = (req.body as { id?: string })?.id;
+      if (!id) { res.status(400).json({ ok: false, error: 'id required' }); return; }
+      await db.from('team_invites').update({ status: 'revoked' }).eq('id', id).eq('organization_id', operator.organizationId);
+      res.status(200).json({ ok: true });
+    });
+
+    /** Accept an invite — the signed-in user joins the inviting org. */
+    app.post('/api/invite/accept', async (req, res) => {
+      const auth = req.headers.authorization;
+      if (!auth?.startsWith('Bearer ')) { res.status(401).json({ ok: false, error: 'Sign in to accept the invite' }); return; }
+      const user = await verifySupabaseAccessToken({ supabaseUrl: supabaseUrl!, anonKey: anonKey!, accessToken: auth.slice(7) });
+      if (!user) { res.status(401).json({ ok: false, error: 'Invalid session' }); return; }
+      const token = (req.body as { token?: string })?.token;
+      if (!token) { res.status(400).json({ ok: false, error: 'token required' }); return; }
+      const { data: invite } = await db.from('team_invites').select('*').eq('token', token).eq('status', 'pending').maybeSingle();
+      if (!invite) { res.status(404).json({ ok: false, error: 'This invite is invalid or was already used' }); return; }
+      if (user.email && invite.email && user.email.toLowerCase() !== String(invite.email).toLowerCase()) {
+        res.status(403).json({ ok: false, error: `This invite is for ${invite.email}. Please sign in with that email.` }); return;
+      }
+      await db.from('organization_members').upsert({ organization_id: invite.organization_id, user_id: user.userId, role: invite.role }, { onConflict: 'organization_id,user_id' });
+      await db.from('team_invites').update({ status: 'accepted', accepted_at: new Date().toISOString() }).eq('id', invite.id);
+      res.status(200).json({ ok: true, organizationId: invite.organization_id, role: invite.role });
+    });
 
     const OperatorMessageSchema = z.object({
       conversationId: z.string().uuid(),

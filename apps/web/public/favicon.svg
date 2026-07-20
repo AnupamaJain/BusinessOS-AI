@@ -1,22 +1,3 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="f" x1="10" y1="10" x2="54" y2="54" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#00F2FE"/>
-      <stop offset="0.5" stop-color="#2B6CFF"/>
-      <stop offset="1" stop-color="#00FF87"/>
-    </linearGradient>
-  </defs>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="#0B1220"/>
-  <rect x="2.5" y="2.5" width="59" height="59" rx="15.5" stroke="url(#f)" stroke-opacity="0.5" stroke-width="1"/>
-  <!-- Peacock Stem -->
-  <path d="M18 50 C23 44 29 36 32 26" stroke="url(#f)" stroke-width="3" stroke-linecap="round"/>
-  <!-- Feather Vanes -->
-  <path d="M32 26 C25 21 17 26 20 36 C24 38 28 33 30 29" fill="none" stroke="#00FF87" stroke-width="2.5" stroke-linecap="round"/>
-  <path d="M32 26 C39 21 47 26 44 36 C40 38 36 33 34 29" fill="none" stroke="#00FF87" stroke-width="2.5" stroke-linecap="round"/>
-  <!-- Crown -->
-  <path d="M32 26 C28 16 26 10 32 7 C38 10 36 16 32 26 Z" fill="none" stroke="url(#f)" stroke-width="2.5"/>
-  <!-- Central Eye -->
-  <path d="M32 15 C25 21 25 29 32 34 C39 29 39 21 32 15 Z" fill="#0A4A6B" stroke="url(#f)" stroke-width="1.5"/>
-  <circle cx="32" cy="25" r="5" fill="#00F2FE"/>
-  <circle cx="32" cy="25" r="2" fill="#FFFFFF"/>
+  <image href="/saarthione-peacock-logo.png" width="64" height="64" />
 </svg>
