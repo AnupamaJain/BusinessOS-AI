@@ -42642,9 +42642,12 @@ function createApp(deps) {
             });
             continue;
           }
-          const stored = await messageService.persistInbound(defaultOrgId, msg);
+          const routed = deps.resolveInbound ? await deps.resolveInbound(msg) : null;
+          const orgId = routed?.organizationId ?? defaultOrgId;
+          const replyAdapter = routed?.replyAdapter ?? adapter;
+          const stored = await messageService.persistInbound(orgId, msg);
           if (deps.onInboundMessage) {
-            await deps.onInboundMessage(defaultOrgId, {
+            await deps.onInboundMessage(orgId, {
               providerMessageId: msg.providerMessageId,
               from: msg.from,
               text: msg.text,
@@ -42652,7 +42655,7 @@ function createApp(deps) {
               contactId: stored.contactId,
               conversationId: stored.conversationId,
               metadata: msg.metadata
-            });
+            }, replyAdapter);
           }
         }
       } catch (err) {
@@ -51299,6 +51302,33 @@ var SupabaseBusinessStore = class {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
     throw new Error(`Database operation failed: ${op}: ${error?.message}`);
   }
+  // ─── WhatsApp connections (multi-tenant Embedded Signup) ──────────
+  async getWhatsAppConnectionByPhoneId(phoneNumberId) {
+    const { data, error } = await this.db.from("whatsapp_connections").select("organization_id, waba_id, phone_number_id, display_phone_number, access_token").eq("phone_number_id", phoneNumberId).eq("status", "active").maybeSingle();
+    if (error) this.fail("getWhatsAppConnectionByPhoneId", error);
+    if (!data) return null;
+    return {
+      organizationId: data.organization_id,
+      wabaId: data.waba_id ?? void 0,
+      phoneNumberId: data.phone_number_id,
+      displayPhoneNumber: data.display_phone_number ?? void 0,
+      accessToken: data.access_token
+    };
+  }
+  async saveWhatsAppConnection(conn) {
+    const { error } = await this.db.from("whatsapp_connections").upsert({
+      organization_id: conn.organizationId,
+      provider: "meta",
+      waba_id: conn.wabaId,
+      phone_number_id: conn.phoneNumberId,
+      display_phone_number: conn.displayPhoneNumber,
+      verified_name: conn.verifiedName,
+      access_token: conn.accessToken,
+      status: "active",
+      connected_by: conn.connectedBy
+    }, { onConflict: "provider,phone_number_id" });
+    if (error) this.fail("saveWhatsAppConnection", error);
+  }
   // ─── Owner assistant ──────────────────────────────────────────────
   async getOwnerPhoneNumbers(organizationId) {
     const { data, error } = await this.db.from("organizations").select("settings").eq("id", organizationId).maybeSingle();
@@ -54418,6 +54448,22 @@ function buildServer(env = process.env) {
   }
   const idempotencyService = new SupabaseIdempotencyService(db);
   const messageService = new SupabaseMessageService(store);
+  const orgAdapterCache = /* @__PURE__ */ new Map();
+  async function resolveInbound(msg) {
+    const phoneId = msg.metadata?.["phoneNumberId"];
+    if (!phoneId) return null;
+    if (phoneNumberId && phoneId === phoneNumberId) return { organizationId: defaultOrgId, replyAdapter: adapter };
+    const cached = orgAdapterCache.get(phoneId);
+    if (cached) return cached;
+    const conn = await store.getWhatsAppConnectionByPhoneId(phoneId);
+    if (!conn) return null;
+    const resolved = {
+      organizationId: conn.organizationId,
+      replyAdapter: new MetaCloudApiAdapter({ accessToken: conn.accessToken, phoneNumberId: conn.phoneNumberId, verifyToken })
+    };
+    orgAdapterCache.set(phoneId, resolved);
+    return resolved;
+  }
   const orgCache = /* @__PURE__ */ new Map();
   async function getOrgContext(orgId) {
     const cached = orgCache.get(orgId);
@@ -54765,6 +54811,74 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       } catch {
       }
     });
+    const SignupSchema = external_exports.object({
+      code: external_exports.string().min(1),
+      phoneNumberId: external_exports.string().optional(),
+      wabaId: external_exports.string().optional()
+    });
+    app3.post("/api/onboarding/whatsapp", async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const parsed = SignupSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
+        return;
+      }
+      const appId = env["META_APP_ID"];
+      const appSecret = env["META_APP_SECRET"];
+      if (!appId || !appSecret) {
+        res.status(503).json({ error: "Meta app credentials not configured on the server." });
+        return;
+      }
+      try {
+        const tokenRes = await fetch(`https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${encodeURIComponent(parsed.data.code)}`);
+        const tokenJson = await tokenRes.json();
+        if (!tokenRes.ok || !tokenJson.access_token) {
+          res.status(400).json({ error: `Token exchange failed: ${tokenJson.error?.message ?? "unknown"}` });
+          return;
+        }
+        const accessToken2 = tokenJson.access_token;
+        let wabaId = parsed.data.wabaId;
+        let phoneNumberId2 = parsed.data.phoneNumberId;
+        if (!wabaId) {
+          const wabaRes = await fetch(`https://graph.facebook.com/v21.0/debug_token?input_token=${accessToken2}&access_token=${appId}|${appSecret}`);
+          const wabaJson = await wabaRes.json();
+          wabaId = wabaJson.data?.granular_scopes?.find((s) => s.scope === "whatsapp_business_management")?.target_ids?.[0];
+        }
+        if (wabaId && !phoneNumberId2) {
+          const phoneRes = await fetch(`https://graph.facebook.com/v21.0/${wabaId}/phone_numbers?access_token=${accessToken2}`);
+          const phoneJson = await phoneRes.json();
+          phoneNumberId2 = phoneJson.data?.[0]?.id;
+        }
+        if (!phoneNumberId2) {
+          res.status(400).json({ error: "Could not resolve the WhatsApp phone number from signup." });
+          return;
+        }
+        const numRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId2}?fields=display_phone_number,verified_name&access_token=${accessToken2}`);
+        const numJson = await numRes.json();
+        if (wabaId) {
+          await fetch(`https://graph.facebook.com/v21.0/${wabaId}/subscribed_apps`, { method: "POST", headers: { Authorization: `Bearer ${accessToken2}` } });
+        }
+        await store.saveWhatsAppConnection({
+          organizationId: operator.organizationId,
+          wabaId,
+          phoneNumberId: phoneNumberId2,
+          displayPhoneNumber: numJson.display_phone_number,
+          verifiedName: numJson.verified_name,
+          accessToken: accessToken2,
+          connectedBy: operator.userId
+        });
+        orgAdapterCache.delete(phoneNumberId2);
+        logger.info("WhatsApp connected via Embedded Signup", { organizationId: operator.organizationId, phoneNumberId: phoneNumberId2 });
+        res.status(200).json({ ok: true, displayPhoneNumber: numJson.display_phone_number, phoneNumberId: phoneNumberId2 });
+      } catch (err) {
+        logger.error("Embedded Signup failed", { error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: err instanceof Error ? err.message : "Signup failed" });
+      }
+    });
     app3.post("/webhooks/razorpay", async (req, res) => {
       if (!razorpay) {
         res.status(503).json({ error: "Razorpay not configured (set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)." });
@@ -54934,7 +55048,9 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     appSecret: env["META_APP_SECRET"] || void 0,
     corsOrigins: (env["CORS_ORIGINS"] ?? "*").split(",").map((s) => s.trim()),
     // The createApp /webhook route is the Meta channel — reply via Meta.
-    onInboundMessage: (orgId, msg) => handleInbound(orgId, msg, metaAdapter ?? adapter),
+    // A per-org reply adapter (from Embedded Signup) overrides the default when present.
+    onInboundMessage: (orgId, msg, replyAdapter) => handleInbound(orgId, msg, replyAdapter ?? metaAdapter ?? adapter),
+    resolveInbound,
     registerRoutes,
     backgroundTask: (work) => {
       try {

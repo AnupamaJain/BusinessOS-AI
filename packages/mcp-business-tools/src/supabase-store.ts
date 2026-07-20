@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
 import type {
-  BusinessStore, BusinessSummary, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, WhatsAppConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -19,6 +19,31 @@ export class SupabaseBusinessStore implements BusinessStore {
   private fail(op: string, error: { message: string } | null): never {
     logger.error(`SupabaseBusinessStore.${op} failed`, { error: error?.message });
     throw new Error(`Database operation failed: ${op}: ${error?.message}`);
+  }
+
+  // ─── WhatsApp connections (multi-tenant Embedded Signup) ──────────
+
+  async getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<WhatsAppConnection | null> {
+    const { data, error } = await this.db.from('whatsapp_connections')
+      .select('organization_id, waba_id, phone_number_id, display_phone_number, access_token')
+      .eq('phone_number_id', phoneNumberId).eq('status', 'active').maybeSingle();
+    if (error) this.fail('getWhatsAppConnectionByPhoneId', error);
+    if (!data) return null;
+    return {
+      organizationId: data.organization_id, wabaId: data.waba_id ?? undefined,
+      phoneNumberId: data.phone_number_id, displayPhoneNumber: data.display_phone_number ?? undefined,
+      accessToken: data.access_token,
+    };
+  }
+
+  async saveWhatsAppConnection(conn: WhatsAppConnection & { connectedBy?: string; verifiedName?: string }): Promise<void> {
+    const { error } = await this.db.from('whatsapp_connections').upsert({
+      organization_id: conn.organizationId, provider: 'meta', waba_id: conn.wabaId,
+      phone_number_id: conn.phoneNumberId, display_phone_number: conn.displayPhoneNumber,
+      verified_name: conn.verifiedName, access_token: conn.accessToken, status: 'active',
+      connected_by: conn.connectedBy,
+    }, { onConflict: 'provider,phone_number_id' });
+    if (error) this.fail('saveWhatsAppConnection', error);
   }
 
   // ─── Owner assistant ──────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
-import type { WhatsAppAdapter, OutboundMessage } from './adapters/types';
+import type { WhatsAppAdapter, OutboundMessage, InboundMessage } from './adapters/types';
 import type { MessagePersistence, IdempotencyStore } from './services/message-service';
 import { logger } from '@business-os-ai/shared-types';
 import { z } from 'zod';
@@ -20,7 +20,9 @@ export interface CreateAppDeps {
   idempotencyService: IdempotencyStore;
   messageService: MessagePersistence;
   defaultOrgId: string;
-  onInboundMessage?: (orgId: string, message: InboundCallbackMessage) => void | Promise<void>;
+  onInboundMessage?: (orgId: string, message: InboundCallbackMessage, replyAdapter?: WhatsAppAdapter) => void | Promise<void>;
+  /** Multi-tenant: resolve the owning org + reply adapter for an inbound message. */
+  resolveInbound?: (message: InboundMessage) => Promise<{ organizationId: string; replyAdapter: WhatsAppAdapter } | null>;
   /** Meta app secret — enables X-Hub-Signature-256 verification when set. */
   appSecret?: string;
   /** Allowed browser origins for /api/* routes (operator dashboard). */
@@ -123,12 +125,18 @@ export function createApp(deps: CreateAppDeps): express.Express {
             continue;
           }
 
+          // Multi-tenant: resolve which org owns this number (Embedded Signup);
+          // fall back to the platform default org + primary adapter.
+          const routed = deps.resolveInbound ? await deps.resolveInbound(msg) : null;
+          const orgId = routed?.organizationId ?? defaultOrgId;
+          const replyAdapter = routed?.replyAdapter ?? adapter;
+
           // Persist inbound message (resolves contact + conversation)
-          const stored = await messageService.persistInbound(defaultOrgId, msg);
+          const stored = await messageService.persistInbound(orgId, msg);
 
           // Invoke agent service (callback)
           if (deps.onInboundMessage) {
-            await deps.onInboundMessage(defaultOrgId, {
+            await deps.onInboundMessage(orgId, {
               providerMessageId: msg.providerMessageId,
               from: msg.from,
               text: msg.text,
@@ -136,7 +144,7 @@ export function createApp(deps: CreateAppDeps): express.Express {
               contactId: stored.contactId,
               conversationId: stored.conversationId,
               metadata: msg.metadata,
-            });
+            }, replyAdapter);
           }
         }
       } catch (err) {

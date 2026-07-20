@@ -21,6 +21,7 @@ import { useAuth } from './hooks/useAuth';
 import { usePolling } from './hooks/usePolling';
 import {
   claimHandoff,
+  completeWhatsappSignup,
   fetchAutomationRuns,
   fetchContacts,
   fetchContactTimeline,
@@ -41,6 +42,11 @@ import {
   resolveHandoff,
   sendOperatorMessage,
 } from './lib/api';
+import {
+  getLastSignupInfo,
+  launchWhatsAppSignup,
+  loadFacebookSdk,
+} from './lib/metaSignup';
 import type {
   AuthSession,
   DashboardKpis,
@@ -419,8 +425,42 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [teamEmail, setTeamEmail] = useState('');
   const [invitedEmails, setInvitedEmails] = useState<string[]>([]);
 
+  // WhatsApp Embedded Signup (onboarding Step 2)
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waError, setWaError] = useState<string | null>(null);
+  const [waConnectedNumber, setWaConnectedNumber] = useState<string | null>(null);
+
+  const metaAppId = import.meta.env.VITE_META_APP_ID;
+  const metaConfigId = import.meta.env.VITE_META_CONFIG_ID;
+  const embeddedSignupEnabled = Boolean(metaAppId) && Boolean(metaConfigId);
+
   const gatewayUrl = import.meta.env.VITE_GATEWAY_URL;
   const webhookUrl = `${gatewayUrl}/webhook`;
+
+  async function handleConnectWhatsapp(): Promise<void> {
+    if (!embeddedSignupEnabled) return;
+    setWaError(null);
+    setWaConnecting(true);
+    try {
+      await loadFacebookSdk(metaAppId);
+      const { code } = await launchWhatsAppSignup(metaConfigId);
+      const { phoneNumberId, wabaId } = getLastSignupInfo();
+      const result = await completeWhatsappSignup(session.access_token, {
+        code,
+        phoneNumberId,
+        wabaId,
+      });
+      if (result.ok) {
+        setWaConnectedNumber(result.displayPhoneNumber ?? 'your WhatsApp number');
+      } else {
+        setWaError(result.error ?? 'Failed to connect WhatsApp');
+      }
+    } catch (err) {
+      setWaError(err instanceof Error ? err.message : 'Failed to connect WhatsApp');
+    } finally {
+      setWaConnecting(false);
+    }
+  }
 
   const inDashboard = viewState === 'dashboard';
   const inboxActive = inDashboard && activeTab === 'inbox';
@@ -807,10 +847,86 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 Step 2: Connect Your WhatsApp Business Account
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
-                In your Meta App dashboard, configure the WhatsApp webhook to point at the platform
-                gateway below. Once Meta verifies the callback, inbound messages flow straight into
-                your Operator Inbox.
+                Connect your WhatsApp Business Account in a few clicks — Meta&apos;s secure signup
+                popup provisions your number and wires up messaging automatically. Prefer to do it by
+                hand? The manual webhook details are below.
               </p>
+
+              {/* Meta WhatsApp Embedded Signup */}
+              <div
+                style={{
+                  padding: '20px',
+                  backgroundColor: 'rgba(0, 242, 254, 0.05)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--color-primary)',
+                  marginBottom: '20px',
+                }}
+              >
+                {waConnectedNumber ? (
+                  <div>
+                    <div
+                      style={{
+                        fontSize: '15px',
+                        fontWeight: 600,
+                        color: 'var(--color-success)',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      ✅ WhatsApp connected: {waConnectedNumber}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      Inbound messages will now flow into your Operator Inbox. You can proceed to the
+                      next step.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ fontSize: '13px', color: 'var(--text-main)', fontWeight: 600 }}>
+                      Self-serve connection
+                    </div>
+                    <div>
+                      <button
+                        className="btn btn-primary"
+                        disabled={!embeddedSignupEnabled || waConnecting}
+                        style={{
+                          opacity: !embeddedSignupEnabled || waConnecting ? 0.6 : 1,
+                          cursor:
+                            !embeddedSignupEnabled || waConnecting ? 'not-allowed' : 'pointer',
+                        }}
+                        onClick={() => {
+                          void handleConnectWhatsapp();
+                        }}
+                      >
+                        {waConnecting
+                          ? '⏳ Connecting…'
+                          : '🔗 Connect WhatsApp Business Account'}
+                      </button>
+                    </div>
+                    {waError && (
+                      <div style={{ fontSize: '12px', color: 'var(--color-danger)' }}>
+                        {waError}
+                      </div>
+                    )}
+                    {!embeddedSignupEnabled && (
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                        Self-serve WhatsApp connect activates once Meta Embedded Signup is configured
+                        (VITE_META_APP_ID / VITE_META_CONFIG_ID).
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: 'var(--text-muted)',
+                  marginBottom: '12px',
+                }}
+              >
+                Or configure the webhook manually
+              </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <div

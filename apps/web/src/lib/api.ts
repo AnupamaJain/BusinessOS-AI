@@ -195,6 +195,66 @@ export async function sendOperatorMessage(
   }
 }
 
+/* ─── Onboarding: WhatsApp Embedded Signup ────────────────────────── */
+
+export interface CompleteWhatsappSignupPayload {
+  code: string;
+  phoneNumberId?: string;
+  wabaId?: string;
+}
+
+export interface CompleteWhatsappSignupResult {
+  ok: boolean;
+  displayPhoneNumber?: string;
+  error?: string;
+}
+
+/**
+ * Exchange the Meta Embedded Signup `code` (plus the phone_number_id / waba_id
+ * captured from the postMessage) for a fully-provisioned WhatsApp connection on
+ * the gateway. Never throws — always resolves with an {ok} result.
+ */
+export async function completeWhatsappSignup(
+  accessToken: string,
+  payload: CompleteWhatsappSignupPayload
+): Promise<CompleteWhatsappSignupResult> {
+  try {
+    const response = await fetch(
+      `${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/whatsapp`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code: payload.code,
+          phoneNumberId: payload.phoneNumberId,
+          wabaId: payload.wabaId,
+        }),
+      }
+    );
+
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      /* Body may be empty or non-JSON; fall back to status. */
+    }
+    const parsed = (body ?? {}) as { displayPhoneNumber?: string; error?: string; message?: string };
+
+    if (response.ok) {
+      return { ok: true, displayPhoneNumber: parsed.displayPhoneNumber };
+    }
+    return {
+      ok: false,
+      error: parsed.error ?? parsed.message ?? `HTTP ${response.status}`,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 /* ─── CRM: leads, contacts, catalog, knowledge ────────────────────── */
 
 export async function fetchLeads(): Promise<LeadItem[]> {

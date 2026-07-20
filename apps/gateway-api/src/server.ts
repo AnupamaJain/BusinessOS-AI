@@ -173,6 +173,25 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const idempotencyService = new SupabaseIdempotencyService(db);
   const messageService = new SupabaseMessageService(store);
 
+  // ── Multi-tenant: per-org Meta adapters resolved by phone_number_id ──
+  const orgAdapterCache = new Map<string, { organizationId: string; replyAdapter: WhatsAppAdapter }>();
+  async function resolveInbound(msg: InboundMessage): Promise<{ organizationId: string; replyAdapter: WhatsAppAdapter } | null> {
+    const phoneId = (msg.metadata as Record<string, unknown> | undefined)?.['phoneNumberId'] as string | undefined;
+    if (!phoneId) return null;
+    // The platform's own configured number keeps using the primary adapter/default org.
+    if (phoneNumberId && phoneId === phoneNumberId) return { organizationId: defaultOrgId, replyAdapter: adapter };
+    const cached = orgAdapterCache.get(phoneId);
+    if (cached) return cached;
+    const conn = await store.getWhatsAppConnectionByPhoneId(phoneId);
+    if (!conn) return null;
+    const resolved = {
+      organizationId: conn.organizationId,
+      replyAdapter: new MetaCloudApiAdapter({ accessToken: conn.accessToken, phoneNumberId: conn.phoneNumberId, verifyToken }) as WhatsAppAdapter,
+    };
+    orgAdapterCache.set(phoneId, resolved);
+    return resolved;
+  }
+
   // Organization context cache (name/vertical for prompts)
   const orgCache = new Map<string, { name: string; vertical?: string }>();
   async function getOrgContext(orgId: string): Promise<{ name: string; vertical?: string }> {
@@ -568,6 +587,75 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }
     });
 
+    /**
+     * WhatsApp Embedded Signup completion. The dashboard sends the OAuth `code`
+     * from Meta's Embedded Signup; we exchange it for a business token, discover
+     * the phone number, subscribe our app to the WABA, and store the connection
+     * against the operator's organization — making the platform multi-tenant.
+     */
+    const SignupSchema = z.object({
+      code: z.string().min(1),
+      phoneNumberId: z.string().optional(),
+      wabaId: z.string().optional(),
+    });
+    app.post('/api/onboarding/whatsapp', async (req, res) => {
+      const operator = await authoriseOperator(req);
+      if (!operator) { res.status(401).json({ error: 'Unauthorized' }); return; }
+      const parsed = SignupSchema.safeParse(req.body);
+      if (!parsed.success) { res.status(400).json({ error: 'Invalid request', details: parsed.error.issues }); return; }
+
+      const appId = env['META_APP_ID'];
+      const appSecret = env['META_APP_SECRET'];
+      if (!appId || !appSecret) { res.status(503).json({ error: 'Meta app credentials not configured on the server.' }); return; }
+
+      try {
+        // 1. Exchange the Embedded Signup code for a business access token.
+        const tokenRes = await fetch(`https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${encodeURIComponent(parsed.data.code)}`);
+        const tokenJson = (await tokenRes.json()) as { access_token?: string; error?: { message?: string } };
+        if (!tokenRes.ok || !tokenJson.access_token) {
+          res.status(400).json({ error: `Token exchange failed: ${tokenJson.error?.message ?? 'unknown'}` });
+          return;
+        }
+        const accessToken = tokenJson.access_token;
+
+        // 2. Resolve the WABA + phone number (use provided values, else discover).
+        let wabaId = parsed.data.wabaId;
+        let phoneNumberId = parsed.data.phoneNumberId;
+        if (!wabaId) {
+          const wabaRes = await fetch(`https://graph.facebook.com/v21.0/debug_token?input_token=${accessToken}&access_token=${appId}|${appSecret}`);
+          const wabaJson = (await wabaRes.json()) as { data?: { granular_scopes?: Array<{ scope: string; target_ids?: string[] }> } };
+          wabaId = wabaJson.data?.granular_scopes?.find((s) => s.scope === 'whatsapp_business_management')?.target_ids?.[0];
+        }
+        if (wabaId && !phoneNumberId) {
+          const phoneRes = await fetch(`https://graph.facebook.com/v21.0/${wabaId}/phone_numbers?access_token=${accessToken}`);
+          const phoneJson = (await phoneRes.json()) as { data?: Array<{ id: string }> };
+          phoneNumberId = phoneJson.data?.[0]?.id;
+        }
+        if (!phoneNumberId) { res.status(400).json({ error: 'Could not resolve the WhatsApp phone number from signup.' }); return; }
+
+        // 3. Read the display number, and subscribe our app to the WABA for webhooks.
+        const numRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}?fields=display_phone_number,verified_name&access_token=${accessToken}`);
+        const numJson = (await numRes.json()) as { display_phone_number?: string; verified_name?: string };
+        if (wabaId) {
+          await fetch(`https://graph.facebook.com/v21.0/${wabaId}/subscribed_apps`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } });
+        }
+
+        // 4. Persist the connection against the operator's org.
+        await store.saveWhatsAppConnection({
+          organizationId: operator.organizationId, wabaId, phoneNumberId,
+          displayPhoneNumber: numJson.display_phone_number, verifiedName: numJson.verified_name,
+          accessToken, connectedBy: operator.userId,
+        });
+        orgAdapterCache.delete(phoneNumberId);
+
+        logger.info('WhatsApp connected via Embedded Signup', { organizationId: operator.organizationId, phoneNumberId });
+        res.status(200).json({ ok: true, displayPhoneNumber: numJson.display_phone_number, phoneNumberId });
+      } catch (err) {
+        logger.error('Embedded Signup failed', { error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Signup failed' });
+      }
+    });
+
     /** Razorpay payment webhook — signature-verified, updates payments/orders. */
     app.post('/webhooks/razorpay', async (req, res) => {
       if (!razorpay) {
@@ -752,7 +840,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     appSecret: env['META_APP_SECRET'] || undefined,
     corsOrigins: (env['CORS_ORIGINS'] ?? '*').split(',').map((s) => s.trim()),
     // The createApp /webhook route is the Meta channel — reply via Meta.
-    onInboundMessage: (orgId, msg) => handleInbound(orgId, msg, metaAdapter ?? adapter),
+    // A per-org reply adapter (from Embedded Signup) overrides the default when present.
+    onInboundMessage: (orgId, msg, replyAdapter) => handleInbound(orgId, msg, replyAdapter ?? metaAdapter ?? adapter),
+    resolveInbound,
     registerRoutes,
     backgroundTask: (work) => {
       try {

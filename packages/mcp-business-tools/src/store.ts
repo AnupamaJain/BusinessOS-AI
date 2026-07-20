@@ -33,9 +33,22 @@ export interface BusinessSummary {
   staleContacts: Array<{ contactId: string; phone?: string; name?: string; serviceInterest: string; lastActivity: string }>;
 }
 
+/** A per-organization WhatsApp connection created via Embedded Signup. */
+export interface WhatsAppConnection {
+  organizationId: string;
+  wabaId?: string;
+  phoneNumberId: string;
+  displayPhoneNumber?: string;
+  accessToken: string;
+}
+
 export interface BusinessStore {
   /** Owner WhatsApp numbers (E.164) allowed to use the owner assistant. */
   getOwnerPhoneNumbers(organizationId: string): Promise<string[]>;
+  /** Resolve which org + credentials own a given WhatsApp phone_number_id. */
+  getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<WhatsAppConnection | null>;
+  /** Store (upsert) an org's WhatsApp connection after Embedded Signup. */
+  saveWhatsAppConnection(conn: WhatsAppConnection & { connectedBy?: string; verifiedName?: string }): Promise<void>;
   /** Aggregate business metrics for the owner briefing. */
   getBusinessSummary(organizationId: string, now: Date): Promise<BusinessSummary>;
 

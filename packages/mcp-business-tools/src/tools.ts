@@ -46,9 +46,20 @@ export class ToolDataStore implements BusinessStore {
   }
 
   ownerPhoneNumbers: string[] = [];
+  whatsappConnections: Array<import('./store').WhatsAppConnection> = [];
 
   async getOwnerPhoneNumbers(_organizationId: string): Promise<string[]> {
     return this.ownerPhoneNumbers;
+  }
+
+  async getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<import('./store').WhatsAppConnection | null> {
+    return this.whatsappConnections.find((c) => c.phoneNumberId === phoneNumberId) ?? null;
+  }
+
+  async saveWhatsAppConnection(conn: import('./store').WhatsAppConnection): Promise<void> {
+    const i = this.whatsappConnections.findIndex((c) => c.phoneNumberId === conn.phoneNumberId);
+    if (i >= 0) this.whatsappConnections[i] = conn;
+    else this.whatsappConnections.push(conn);
   }
 
   async getBusinessSummary(organizationId: string, _now: Date): Promise<import('./store').BusinessSummary> {
