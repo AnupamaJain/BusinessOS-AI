@@ -52243,14 +52243,14 @@ function checkGrounding(sources, threshold = 0.01) {
   return sources.some((s) => s.score >= threshold);
 }
 function checkNoMedicalClaims(response) {
-  const medicalTerms = ["diagnose", "cure", "treat disease", "medical condition", "prescription"];
+  const medicalTerms = [/\bdiagnos(e|is|ing)\b/, /\bcure[sd]?\b/, /\btreat\s+disease\b/, /\bmedical condition\b/, /\bprescription\b/];
   const lower = response.toLowerCase();
-  return !medicalTerms.some((term) => lower.includes(term));
+  return !medicalTerms.some((re) => re.test(lower));
 }
 function checkNoInternalLeakage(response) {
-  const leakagePatterns = ["system prompt", "internal api", "database", "sql query", "api key", "secret"];
+  const leakagePatterns = [/\bsystem prompt\b/, /\binternal api\b/, /\bdatabase\b/, /\bsql query\b/, /\bapi key\b/, /\bsecret\b/];
   const lower = response.toLowerCase();
-  return !leakagePatterns.some((p) => lower.includes(p));
+  return !leakagePatterns.some((re) => re.test(lower));
 }
 function evaluatePolicy(state) {
   if (checkOptOut(state.intent, state.inboundMessage)) {
@@ -52463,6 +52463,35 @@ async function retrieveRelevantChunks(organizationId, query, threshold = 0.7, li
 }
 
 // ../../packages/agent-core/src/graph.ts
+function upcomingDates(count = 8, startOffsetDays = 1) {
+  const out = [];
+  const now = /* @__PURE__ */ new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + startOffsetDays + i);
+    const title = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+    const iso = d.toISOString().slice(0, 10);
+    out.push({ id: `date:${iso}`, title: title.slice(0, 24), description: iso });
+  }
+  return out;
+}
+function timeSlots() {
+  return ["10:00 AM", "11:30 AM", "1:00 PM", "3:30 PM", "5:00 PM", "6:30 PM"].map((t) => ({ id: `time:${t}`, title: t }));
+}
+function isSchedulingSelection(msg) {
+  const m = msg.trim();
+  if (/^(date|time):/i.test(m)) return true;
+  if (/^\d{1,2}:\d{2}\s*(am|pm)?$/i.test(m)) return true;
+  return m.length < 40 && messageHasDate(m);
+}
+function messageHasDate(msg) {
+  const m = msg.toLowerCase();
+  if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(m)) return true;
+  if (/\b\d{1,2}(st|nd|rd|th)?\b/.test(m) && /\b(day|date|on|by)\b/.test(m)) return true;
+  if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
+  if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
+  return false;
+}
 var INTENT_VALUES = [
   "sales_enquiry",
   "product_question",
@@ -52617,6 +52646,9 @@ async function nodeClassifyIntent(state, deps) {
     state.intent = await classifyIntentWithLLM(deps.llm, state) ?? keywordIntent;
   } else {
     state.intent = keywordIntent;
+  }
+  if (isSchedulingSelection(state.inboundMessage) && !["opt_out", "unsafe_request", "complaint_or_refund", "human_request"].includes(state.intent)) {
+    state.intent = "booking_request";
   }
   logger.info("Intent classified", { traceId: state.traceId, intent: state.intent });
   return state;
@@ -52839,40 +52871,70 @@ async function nodeBookingFlow(store, state, deps) {
   } catch {
     state.errors.push("Failed to record callback request");
   }
-  if (deps.vertical === "travel") {
-    const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
-    const lower = state.inboundMessage.toLowerCase();
-    const matched = packages.find((p) => lower.includes(p.destination.toLowerCase()) || p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && lower.includes(w)));
-    const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage);
-    if (matched && isConfirming && deps.createCheckoutLink) {
-      const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+  const ctx = state.customerContext;
+  const contextText = [
+    state.inboundMessage,
+    ...state.recentMessages.slice(-8).map((m) => m.content),
+    ctx?.latestLead?.serviceInterest ?? ""
+  ].join(" ").toLowerCase();
+  const matched = packages.find((p) => contextText.includes(p.destination.toLowerCase()) || p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isTravelBooking = deps.vertical === "travel" || !!matched || /\b(trip|travel|holiday|honeymoon|tour|package|flight|hotel|destination|bali|goa|europe)\b/i.test(contextText);
+  const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage) || messageHasDate(state.inboundMessage);
+  const hasDate = messageHasDate(state.inboundMessage);
+  if (isTravelBooking) {
+    if (matched && !hasDate) {
+      offerChoices(state, {
+        list: { header: `\u{1F4C5} When would you like to travel?`, button: "Pick a date", items: upcomingDates() }
+      });
+      state.proposedResponse = `Great choice \u2014 *${matched.title}*! \u{1F334}
+When would you like to travel? Tap a date below, or type your preferred date. \u{1F447}`;
+      return state;
+    }
+    if (matched && hasDate) {
+      const travellersMatch = contextText.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
       const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
       const price = Number(String(matched.pricePerPerson).replace(/[^\d]/g, "")) || 0;
-      const link = await deps.createCheckoutLink({
-        contactId: state.contactId,
-        conversationId: state.conversationId,
-        packageSku: matched.sku,
-        title: matched.title,
-        amount: price * travellers,
-        travellers
-      });
+      const total = price * travellers;
+      const dateLabel = state.inboundMessage.replace(/^date:/i, "").trim();
+      let link = null;
+      if (deps.createCheckoutLink) {
+        link = await deps.createCheckoutLink({
+          contactId: state.contactId,
+          conversationId: state.conversationId,
+          packageSku: matched.sku,
+          title: matched.title,
+          amount: total,
+          travellers
+        });
+      }
+      const amountText = `\u20B9${total.toLocaleString("en-IN")}`;
       if (link) {
-        state.proposedResponse = `Perfect! \u{1F389} I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? "" : "s"}. Total: ${link.amountText}.
+        state.proposedResponse = `Perfect! \u{1F389} I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? "" : "s"}, travelling ${dateLabel}. Total: ${link.amountText}.
 
 \u{1F4B3} Complete your booking with this secure payment link:
 ${link.url}
 
-As soon as you pay, I'll confirm your booking and send the itinerary.`;
-        state.toolCalls.push({ tool: "create_payment_link", input: { packageSku: matched.sku, travellers }, output: link });
-        return state;
+Once you pay, I'll confirm and send your itinerary. \u2728`;
+      } else {
+        state.proposedResponse = `Wonderful! \u2728 I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? "" : "s"}, travelling ${dateLabel} \u2014 total ${amountText}. Our team will send your secure payment link and detailed itinerary shortly.
+
+Is there anything else I can help you with? \u{1F60A}`;
       }
+      state.toolCalls.push({ tool: "create_booking", input: { packageSku: matched.sku, travellers, date: dateLabel }, output: { total, link } });
+      return state;
+    }
+    if (isConfirming && !matched && packages.length > 0) {
+      state.toolCalls.push({ tool: "search_travel_packages", input: {}, output: { packages } });
+      state.proposedResponse = `I'd love to get you booked! \u2708\uFE0F Which destination shall we go with? Tap one below \u{1F447}`;
+      return state;
     }
     if (hasRealLLM(deps)) {
       const llmReply = await composeReplyWithLLM(
         deps.llm,
         state,
         deps,
-        "The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.",
+        "The customer wants to book. Warmly confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.",
         { availablePackages: packages }
       );
       if (llmReply) {
@@ -52881,8 +52943,21 @@ As soon as you pay, I'll confirm your booking and send the itinerary.`;
       }
     }
   }
-  state.proposedResponse = "I'd love to help you book! Could you let me know your preferred date and time? I'll check availability for you.";
+  if (!isTravelBooking && deps.vertical && deps.vertical !== "travel") {
+    if (!messageHasDate(state.inboundMessage)) {
+      offerChoices(state, { list: { header: "\u{1F4C5} Pick a day", button: "Choose date", items: upcomingDates(6) } });
+      state.proposedResponse = "Happy to book you in! \u{1F60A} Which day works for you? Tap a date below \u{1F447}";
+    } else {
+      offerChoices(state, { list: { header: "\u23F0 Pick a time", button: "Choose time", items: timeSlots() } });
+      state.proposedResponse = "Great! What time suits you best? \u{1F447}";
+    }
+    return state;
+  }
+  state.proposedResponse = "I'd love to help you book! \u{1F60A} Could you let me know your preferred date? I'll check availability for you.";
   return state;
+}
+function offerChoices(state, choices) {
+  state.toolCalls.push({ tool: "offer_choices", input: {}, output: choices });
 }
 function nodeUnsafeDecline(state, deps) {
   const business = deps.businessName ?? "our business";
@@ -54251,6 +54326,10 @@ function truncate(s, n) {
 function buildInteractive(state) {
   for (const tc of [...state.toolCalls].reverse()) {
     const out = tc.output;
+    if (tc.tool === "offer_choices" && out) {
+      if (out["list"]) return { list: out["list"] };
+      if (out["buttons"]) return { buttons: out["buttons"] };
+    }
     if (tc.tool === "search_travel_packages") {
       const pkgs = out?.["packages"] ?? [];
       if (pkgs.length >= 2) {

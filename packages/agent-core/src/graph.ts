@@ -33,6 +33,44 @@ export interface AgentGraphDeps {
   createCheckoutLink?: (params: { contactId: string; conversationId: string; packageSku: string; title: string; amount: number; travellers: number }) => Promise<{ url: string; amountText: string } | null>;
 }
 
+/** Upcoming selectable dates for the in-chat "calendar" (tappable list). */
+function upcomingDates(count = 8, startOffsetDays = 1): Array<{ id: string; title: string; description?: string }> {
+  const out: Array<{ id: string; title: string; description?: string }> = [];
+  const now = new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + startOffsetDays + i);
+    const title = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+    const iso = d.toISOString().slice(0, 10);
+    out.push({ id: `date:${iso}`, title: title.slice(0, 24), description: iso });
+  }
+  return out;
+}
+
+/** Standard appointment time slots (for salon/clinic-style bookings). */
+function timeSlots(): Array<{ id: string; title: string }> {
+  return ['10:00 AM', '11:30 AM', '1:00 PM', '3:30 PM', '5:00 PM', '6:30 PM']
+    .map((t) => ({ id: `time:${t}`, title: t }));
+}
+
+/** A short message that is essentially a tapped date/time selection. */
+function isSchedulingSelection(msg: string): boolean {
+  const m = msg.trim();
+  if (/^(date|time):/i.test(m)) return true;
+  if (/^\d{1,2}:\d{2}\s*(am|pm)?$/i.test(m)) return true;
+  return m.length < 40 && messageHasDate(m);
+}
+
+/** Detect whether the customer already mentioned a date, so we skip the picker. */
+function messageHasDate(msg: string): boolean {
+  const m = msg.toLowerCase();
+  if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(m)) return true;
+  if (/\b\d{1,2}(st|nd|rd|th)?\b/.test(m) && /\b(day|date|on|by)\b/.test(m)) return true;
+  if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
+  if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
+  return false;
+}
+
 const INTENT_VALUES: IntentType[] = [
   'sales_enquiry', 'product_question', 'support_question', 'order_status',
   'booking_request', 'complaint_or_refund', 'human_request', 'opt_out',
@@ -220,6 +258,12 @@ async function nodeClassifyIntent(state: AgentState, deps: AgentGraphDeps): Prom
     state.intent = (await classifyIntentWithLLM(deps.llm!, state)) ?? keywordIntent;
   } else {
     state.intent = keywordIntent;
+  }
+
+  // A bare date/time selection (e.g. tapping a date tile) continues an in-progress
+  // booking — route it to the booking flow so we don't lose the thread.
+  if (isSchedulingSelection(state.inboundMessage) && !['opt_out', 'unsafe_request', 'complaint_or_refund', 'human_request'].includes(state.intent)) {
+    state.intent = 'booking_request';
   }
 
   logger.info('Intent classified', { traceId: state.traceId, intent: state.intent });
@@ -446,35 +490,69 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     state.errors.push('Failed to record callback request');
   }
 
-  if (deps.vertical === 'travel') {
-    const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
-    const lower = state.inboundMessage.toLowerCase();
+  // Match against the WHOLE conversation (current message + recent history +
+  // the customer's last lead), so a follow-up date reply still knows the package.
+  const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages;
+  const ctx = state.customerContext as { latestLead?: { serviceInterest?: string } } | undefined;
+  const contextText = [
+    state.inboundMessage,
+    ...state.recentMessages.slice(-8).map((m) => m.content),
+    ctx?.latestLead?.serviceInterest ?? '',
+  ].join(' ').toLowerCase();
+  const matched = packages.find((p) =>
+    contextText.includes(p.destination.toLowerCase()) ||
+    p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && contextText.includes(w)));
+  const isTravelBooking = deps.vertical === 'travel' || !!matched ||
+    /\b(trip|travel|holiday|honeymoon|tour|package|flight|hotel|destination|bali|goa|europe)\b/i.test(contextText);
+  const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage) || messageHasDate(state.inboundMessage);
+  const hasDate = messageHasDate(state.inboundMessage);
 
-    // Auto payment link: if the customer is confirming a specific package, reserve it and drop a checkout link.
-    const matched = packages.find((p) =>
-      lower.includes(p.destination.toLowerCase()) ||
-      p.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && lower.includes(w)));
-    const isConfirming = /\b(book|confirm|proceed|pay|reserve|yes)\b/i.test(state.inboundMessage);
-
-    if (matched && isConfirming && deps.createCheckoutLink) {
-      const travellersMatch = state.inboundMessage.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
-      const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
-      const price = Number(String(matched.pricePerPerson).replace(/[^\d]/g, '')) || 0;
-      const link = await deps.createCheckoutLink({
-        contactId: state.contactId, conversationId: state.conversationId,
-        packageSku: matched.sku, title: matched.title, amount: price * travellers, travellers,
+  if (isTravelBooking) {
+    // 1) Package chosen but no travel date yet → show a tappable date picker.
+    if (matched && !hasDate) {
+      offerChoices(state, {
+        list: { header: `📅 When would you like to travel?`, button: 'Pick a date', items: upcomingDates() },
       });
-      if (link) {
-        state.proposedResponse = `Perfect! 🎉 I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? '' : 's'}. Total: ${link.amountText}.\n\n💳 Complete your booking with this secure payment link:\n${link.url}\n\nAs soon as you pay, I'll confirm your booking and send the itinerary.`;
-        state.toolCalls.push({ tool: 'create_payment_link', input: { packageSku: matched.sku, travellers }, output: link });
-        return state;
-      }
+      state.proposedResponse = `Great choice — *${matched.title}*! 🌴\nWhen would you like to travel? Tap a date below, or type your preferred date. 👇`;
+      return state;
     }
 
-    // Otherwise, gather booking details conversationally.
+    // 2) Package + date → reserve the booking and confirm (with a payment link when available).
+    if (matched && hasDate) {
+      const travellersMatch = contextText.match(/(\d+)\s*(?:people|persons|travellers|pax|adults?)/i);
+      const travellers = travellersMatch ? Number(travellersMatch[1]) : 2;
+      const price = Number(String(matched.pricePerPerson).replace(/[^\d]/g, '')) || 0;
+      const total = price * travellers;
+      const dateLabel = state.inboundMessage.replace(/^date:/i, '').trim();
+
+      let link: { url: string; amountText: string } | null = null;
+      if (deps.createCheckoutLink) {
+        link = await deps.createCheckoutLink({
+          contactId: state.contactId, conversationId: state.conversationId,
+          packageSku: matched.sku, title: matched.title, amount: total, travellers,
+        });
+      }
+
+      const amountText = `₹${total.toLocaleString('en-IN')}`;
+      if (link) {
+        state.proposedResponse = `Perfect! 🎉 I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? '' : 's'}, travelling ${dateLabel}. Total: ${link.amountText}.\n\n💳 Complete your booking with this secure payment link:\n${link.url}\n\nOnce you pay, I'll confirm and send your itinerary. ✨`;
+      } else {
+        state.proposedResponse = `Wonderful! ✨ I've reserved *${matched.title}* for ${travellers} traveller${travellers === 1 ? '' : 's'}, travelling ${dateLabel} — total ${amountText}. Our team will send your secure payment link and detailed itinerary shortly.\n\nIs there anything else I can help you with? 😊`;
+      }
+      state.toolCalls.push({ tool: 'create_booking', input: { packageSku: matched.sku, travellers, date: dateLabel }, output: { total, link } });
+      return state;
+    }
+
+    // 3) Wants to book but hasn't chosen a package → offer the package list.
+    if (isConfirming && !matched && packages.length > 0) {
+      state.toolCalls.push({ tool: 'search_travel_packages', input: {}, output: { packages } });
+      state.proposedResponse = `I'd love to get you booked! ✈️ Which destination shall we go with? Tap one below 👇`;
+      return state;
+    }
+
     if (hasRealLLM(deps)) {
       const llmReply = await composeReplyWithLLM(deps.llm!, state, deps,
-        'The customer wants to book. Confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.',
+        'The customer wants to book. Warmly confirm which package, travel date, and number of travellers. If they already provided all three, summarise and say a booking confirmation with payment link will follow.',
         { availablePackages: packages });
       if (llmReply) {
         state.proposedResponse = llmReply;
@@ -482,8 +560,26 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
       }
     }
   }
-  state.proposedResponse = "I'd love to help you book! Could you let me know your preferred date and time? I'll check availability for you.";
+
+  // Appointment-style verticals (salon, clinic): offer a date, then time slots.
+  if (!isTravelBooking && deps.vertical && deps.vertical !== 'travel') {
+    if (!messageHasDate(state.inboundMessage)) {
+      offerChoices(state, { list: { header: '📅 Pick a day', button: 'Choose date', items: upcomingDates(6) } });
+      state.proposedResponse = 'Happy to book you in! 😊 Which day works for you? Tap a date below 👇';
+    } else {
+      offerChoices(state, { list: { header: '⏰ Pick a time', button: 'Choose time', items: timeSlots() } });
+      state.proposedResponse = 'Great! What time suits you best? 👇';
+    }
+    return state;
+  }
+
+  state.proposedResponse = "I'd love to help you book! 😊 Could you let me know your preferred date? I'll check availability for you.";
   return state;
+}
+
+/** Attach an agent-driven choice picker (date/time/actions) for the gateway to render. */
+function offerChoices(state: AgentState, choices: { list?: { header?: string; button: string; items: Array<{ id: string; title: string; description?: string }> }; buttons?: Array<{ id: string; title: string }> }): void {
+  state.toolCalls.push({ tool: 'offer_choices', input: {}, output: choices as Record<string, unknown> });
 }
 
 function nodeUnsafeDecline(state: AgentState, deps: AgentGraphDeps): AgentState {

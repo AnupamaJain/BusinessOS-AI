@@ -56,20 +56,23 @@ export function checkGrounding(sources: AgentState['retrievedSources'], threshol
 
 /**
  * Check if the proposed response contains medical claims.
+ * Uses word-boundary matching so ordinary words that merely contain a term as a
+ * substring (e.g. "se**cure**", "man**cure**") are not falsely flagged.
  */
 export function checkNoMedicalClaims(response: string): boolean {
-  const medicalTerms = ['diagnose', 'cure', 'treat disease', 'medical condition', 'prescription'];
+  const medicalTerms = [/\bdiagnos(e|is|ing)\b/, /\bcure[sd]?\b/, /\btreat\s+disease\b/, /\bmedical condition\b/, /\bprescription\b/];
   const lower = response.toLowerCase();
-  return !medicalTerms.some((term) => lower.includes(term));
+  return !medicalTerms.some((re) => re.test(lower));
 }
 
 /**
  * Check if the response attempts to expose internal system data.
+ * Word-boundary matching avoids false positives like "data**base**"-free words.
  */
 export function checkNoInternalLeakage(response: string): boolean {
-  const leakagePatterns = ['system prompt', 'internal api', 'database', 'sql query', 'api key', 'secret'];
+  const leakagePatterns = [/\bsystem prompt\b/, /\binternal api\b/, /\bdatabase\b/, /\bsql query\b/, /\bapi key\b/, /\bsecret\b/];
   const lower = response.toLowerCase();
-  return !leakagePatterns.some((p) => lower.includes(p));
+  return !leakagePatterns.some((re) => re.test(lower));
 }
 
 /**

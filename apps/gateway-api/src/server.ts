@@ -40,6 +40,11 @@ function truncate(s: string, n: number): string {
 function buildInteractive(state: AgentState): { list?: InteractiveList; buttons?: ReplyButton[] } {
   for (const tc of [...state.toolCalls].reverse()) {
     const out = tc.output as Record<string, unknown> | undefined;
+    // Agent-driven choice picker (dates, time slots, quick actions) takes priority.
+    if (tc.tool === 'offer_choices' && out) {
+      if (out['list']) return { list: out['list'] as InteractiveList };
+      if (out['buttons']) return { buttons: out['buttons'] as ReplyButton[] };
+    }
     if (tc.tool === 'search_travel_packages') {
       const pkgs = (out?.['packages'] as Array<{ sku: string; title: string; pricePerPerson: string; durationDays: number }> | undefined) ?? [];
       if (pkgs.length >= 2) {
