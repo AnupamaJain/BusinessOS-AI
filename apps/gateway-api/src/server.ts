@@ -290,13 +290,20 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
-  // Organization context cache (name/vertical for prompts)
-  const orgCache = new Map<string, { name: string; vertical?: string }>();
-  async function getOrgContext(orgId: string): Promise<{ name: string; vertical?: string }> {
+  // Organization context cache (name/vertical/rules/team for prompts)
+  type OrgContext = { name: string; vertical?: string; businessRules?: Record<string, unknown>; enabledAgents?: string[] };
+  const orgCache = new Map<string, OrgContext>();
+  async function getOrgContext(orgId: string): Promise<OrgContext> {
     const cached = orgCache.get(orgId);
     if (cached) return cached;
-    const { data } = await db.from('organizations').select('name, vertical, settings').eq('id', orgId).maybeSingle();
-    const ctx = { name: data?.name ?? 'our business', vertical: data?.vertical ?? undefined };
+    const { data } = await db.from('organizations').select('name, vertical, settings, business_rules, enabled_agents').eq('id', orgId).maybeSingle();
+    const rules = (data?.business_rules && typeof data.business_rules === 'object') ? data.business_rules as Record<string, unknown> : {};
+    const ctx: OrgContext = {
+      name: data?.name ?? 'our business',
+      vertical: data?.vertical ?? undefined,
+      businessRules: Object.keys(rules).length ? rules : undefined,
+      enabledAgents: Array.isArray(data?.enabled_agents) ? (data!.enabled_agents as string[]) : undefined,
+    };
     orgCache.set(orgId, ctx);
     return ctx;
   }
@@ -356,7 +363,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
-  function agentDeps(orgId: string, org: { name: string; vertical?: string }): AgentGraphDeps {
+  function agentDeps(orgId: string, org: OrgContext): AgentGraphDeps {
     return {
       llm,
       embedder: embedder ?? undefined,
@@ -364,6 +371,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       retrievalThreshold: embedder ? PROD_RETRIEVAL_THRESHOLD : undefined,
       vertical: org.vertical,
       businessName: org.name,
+      businessRules: org.businessRules as AgentGraphDeps['businessRules'],
+      enabledAgents: org.enabledAgents,
       createQuotation: async ({ contactId, packageSku, pricePerPerson, travellers }) => {
         try {
           const { data: pkg } = await db.from('packages').select('id').eq('organization_id', orgId).eq('sku', packageSku).maybeSingle();
@@ -1225,6 +1234,70 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
 <a class="btn" href="${esc(upi)}">Pay ₹${amount.toLocaleString('en-IN')} via UPI app</a>
 <div class="steps">1. Scan the QR, or tap the button to open GPay / PhonePe / Paytm.<br>2. Confirm the payment of ₹${amount.toLocaleString('en-IN')}.<br>3. The business will confirm your booking once the payment reflects.</div>`}
 </div></body></html>`);
+    });
+
+    // ── AI configuration: business rules (L5) + AI team (L1) ──
+    app.get('/api/config', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await db.from('organizations').select('business_rules, enabled_agents').eq('id', op.organizationId).maybeSingle();
+      res.status(200).json({
+        ok: true,
+        rules: data?.business_rules ?? {},
+        enabledAgents: Array.isArray(data?.enabled_agents) ? data!.enabled_agents : ['sales', 'support', 'booking', 'operations'],
+      });
+    });
+
+    app.post('/api/config/rules', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const rules: Record<string, unknown> = {};
+      if (typeof b['maxDiscountPercent'] === 'number') rules['maxDiscountPercent'] = Math.max(0, Math.min(100, b['maxDiscountPercent']));
+      if (typeof b['bookingRequiresPayment'] === 'boolean') rules['bookingRequiresPayment'] = b['bookingRequiresPayment'];
+      if (typeof b['refundRequiresApproval'] === 'boolean') rules['refundRequiresApproval'] = b['refundRequiresApproval'];
+      const wh = b['workingHours'] as Record<string, unknown> | undefined;
+      if (wh && typeof wh === 'object') rules['workingHours'] = { start: strField(wh['start']) ?? undefined, end: strField(wh['end']) ?? undefined, timezone: strField(wh['timezone']) ?? 'Asia/Kolkata' };
+      if (Array.isArray(b['languages'])) rules['languages'] = (b['languages'] as unknown[]).filter((x) => typeof x === 'string').slice(0, 10);
+      if (typeof b['tone'] === 'string') rules['tone'] = (b['tone'] as string).slice(0, 40);
+      const { error } = await db.from('organizations').update({ business_rules: rules }).eq('id', op.organizationId);
+      orgCache.delete(op.organizationId);
+      if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      res.status(200).json({ ok: true });
+    });
+
+    app.post('/api/config/team', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const allowed = ['sales', 'support', 'booking', 'operations'];
+      const input = (req.body as { enabledAgents?: unknown })?.enabledAgents;
+      const arr = Array.isArray(input) ? (input as unknown[]).filter((x): x is string => typeof x === 'string' && allowed.includes(x)) : allowed;
+      const { error } = await db.from('organizations').update({ enabled_agents: arr }).eq('id', op.organizationId);
+      orgCache.delete(op.organizationId);
+      if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      res.status(200).json({ ok: true, enabledAgents: arr });
+    });
+
+    /** Test Conversation sandbox — run the fully-configured agent, no WhatsApp send. */
+    app.post('/api/agent/test', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const message = strField((req.body as { message?: unknown })?.message);
+      if (!message) { res.status(400).json({ ok: false, error: 'message required' }); return; }
+      try {
+        const org = await getOrgContext(op.organizationId);
+        const inbound: InboundMessage = { providerMessageId: `sandbox:${randomUUID()}`, from: '+000000000000', timestamp: new Date(), type: 'text', text: message, metadata: { channel: 'sandbox' } };
+        const stored = await messageService.persistInbound(op.organizationId, inbound);
+        if (!stored.contactId || !stored.conversationId) { res.status(500).json({ ok: false, error: 'sandbox init failed' }); return; }
+        const state = await executeAgentGraph(store, {
+          organizationId: op.organizationId, contactId: stored.contactId, conversationId: stored.conversationId,
+          inboundMessage: message, traceId: inbound.providerMessageId,
+        }, agentDeps(op.organizationId, org));
+        if (state.finalResponse) await messageService.persistOutbound(op.organizationId, inbound.from, state.finalResponse, `sandbox-out:${randomUUID()}`, stored.conversationId);
+        res.status(200).json({ ok: true, reply: state.finalResponse ?? '(no reply generated)', intent: state.intent });
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
     });
 
     /** Bookings awaiting payment confirmation (for the operator dashboard). */

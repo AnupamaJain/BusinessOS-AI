@@ -114,6 +114,86 @@ export function evaluatePolicy(state: AgentState): PolicyDecision {
   return { allowed: true, reason: 'policy_passed', shouldHandoff: false };
 }
 
+// ─── Layer 9: human-approval escalation helpers ─────────────────────────
+// These detect messages that must be escalated to a human before the agent
+// answers, based on per-merchant business rules. All pure/deterministic.
+
+/**
+ * Detect a discount request that exceeds the merchant's max-discount cap.
+ * Conservative: requires an explicit number that is greater than the cap —
+ * either a percentage ("30% off", "20 percent discount") or a bare number in
+ * an unmistakable discount context ("give me 30 off", "cheaper by 25").
+ * Returns false when there is no cap configured.
+ */
+export function requestsDiscountBeyondCap(message: string, maxDiscountPercent?: number): boolean {
+  if (maxDiscountPercent == null) return false;
+  const lower = message.toLowerCase();
+
+  // 1. Explicit percentages: "15%", "20 percent", "10 pct".
+  for (const m of lower.matchAll(/(\d+(?:\.\d+)?)\s*(?:%|percent|pct)/g)) {
+    if (Number(m[1]) > maxDiscountPercent) return true;
+  }
+
+  // 2. Bare number in a clear discount context ("30 off", "cheaper by 25").
+  const discountContext = /\b(discount|off|cheaper|best price|lower price|reduce|less price|deal|bargain)\b/.test(lower);
+  if (discountContext) {
+    for (const m of lower.matchAll(/(\d+(?:\.\d+)?)/g)) {
+      const n = Number(m[1]);
+      // Treat only plausible percentage magnitudes (≤100) as discounts, so
+      // prices ("best price for 5000") don't trip the guard.
+      if (n > maxDiscountPercent && n <= 100) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detect a refund (or cancellation-with-refund) request.
+ */
+export function requestsRefund(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (/\b(refund|money back|reimburse|charge\s?back)\b/.test(lower)) return true;
+  if (/\bcancel/.test(lower) && /\b(refund|money|amount|payment|charge)\b/.test(lower)) return true;
+  return false;
+}
+
+// ─── Layer 1: role gating helpers ───────────────────────────────────────
+
+/** AI-team roles a merchant can enable/disable. */
+export type AgentRole = 'sales' | 'support' | 'booking' | 'operations';
+
+/**
+ * Map a classified intent to the AI-team role that should handle it.
+ * Returns null for intents that must never be gated (safety, handoff, greeting).
+ */
+export function requiredRoleForIntent(intent: IntentType): AgentRole | null {
+  switch (intent) {
+    case 'sales_enquiry':
+      return 'sales';
+    case 'booking_request':
+      return 'booking';
+    case 'support_question':
+    case 'product_question':
+    case 'order_status':
+    case 'complaint_or_refund':
+      return 'support';
+    default:
+      // unknown/greeting, opt_out, human_request, unsafe_request → never gated
+      return null;
+  }
+}
+
+/**
+ * Whether the required role is enabled for this merchant.
+ * When `enabledAgents` is undefined or empty, nothing is gated (backward compatible).
+ * A null role (safety/handoff/greeting) is never gated.
+ */
+export function isRoleEnabled(role: AgentRole | null, enabledAgents?: string[]): boolean {
+  if (!role) return true;
+  if (!enabledAgents || enabledAgents.length === 0) return true;
+  return enabledAgents.includes(role);
+}
+
 /**
  * Simple keyword-based intent classifier (deterministic for MVP).
  * In production, this would call an LLM.
