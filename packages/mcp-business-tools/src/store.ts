@@ -42,6 +42,21 @@ export interface WhatsAppConnection {
   accessToken: string;
 }
 
+/**
+ * A per-organization payment gateway connection. Each merchant connects their
+ * OWN Razorpay account. `keySecret` / `webhookSecret` are the DECRYPTED plaintext
+ * at this type boundary; they are stored encrypted at rest.
+ */
+export interface PaymentConnection {
+  organizationId: string;
+  provider: string;
+  keyId: string;
+  keySecret: string;
+  webhookSecret?: string;
+  mode?: 'test' | 'live';
+  status: string;
+}
+
 export interface BusinessStore {
   /** Owner WhatsApp numbers (E.164) allowed to use the owner assistant. */
   getOwnerPhoneNumbers(organizationId: string): Promise<string[]>;
@@ -49,6 +64,12 @@ export interface BusinessStore {
   getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<WhatsAppConnection | null>;
   /** Store (upsert) an org's WhatsApp connection after Embedded Signup. */
   saveWhatsAppConnection(conn: WhatsAppConnection & { connectedBy?: string; verifiedName?: string }): Promise<void>;
+
+  /** Resolve an org's payment connection with decrypted secrets, or null. */
+  getPaymentConnection(organizationId: string): Promise<PaymentConnection | null>;
+  /** Store (upsert) an org's per-merchant payment credentials (secrets encrypted at rest). */
+  savePaymentConnection(organizationId: string, input: { keyId: string; keySecret: string; webhookSecret?: string; mode?: 'test' | 'live' }): Promise<void>;
+
   /** Aggregate business metrics for the owner briefing. */
   getBusinessSummary(organizationId: string, now: Date): Promise<BusinessSummary>;
 

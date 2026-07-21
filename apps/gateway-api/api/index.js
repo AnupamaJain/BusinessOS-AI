@@ -51687,6 +51687,35 @@ var SupabaseBusinessStore = class {
     }, { onConflict: "provider,phone_number_id" });
     if (error) this.fail("saveWhatsAppConnection", error);
   }
+  // ─── Payment connections (per-merchant Razorpay, secrets encrypted) ──
+  async getPaymentConnection(organizationId) {
+    const { data, error } = await this.db.from("payment_connections").select("organization_id, provider, key_id, key_secret, webhook_secret, mode, status").eq("organization_id", organizationId).maybeSingle();
+    if (error) this.fail("getPaymentConnection", error);
+    if (!data) return null;
+    return {
+      organizationId: data.organization_id,
+      provider: data.provider,
+      keyId: data.key_id,
+      keySecret: this.box.decrypt(data.key_secret),
+      webhookSecret: data.webhook_secret ? this.box.decrypt(data.webhook_secret) : void 0,
+      mode: data.mode ?? void 0,
+      status: data.status
+    };
+  }
+  async savePaymentConnection(organizationId, input) {
+    const mode = input.keyId.startsWith("rzp_test_") ? "test" : input.keyId.startsWith("rzp_live_") ? "live" : input.mode;
+    const { error } = await this.db.from("payment_connections").upsert({
+      organization_id: organizationId,
+      provider: "razorpay",
+      key_id: input.keyId,
+      key_secret: this.box.encrypt(input.keySecret),
+      webhook_secret: input.webhookSecret ? this.box.encrypt(input.webhookSecret) : null,
+      mode,
+      status: "active",
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    }, { onConflict: "organization_id" });
+    if (error) this.fail("savePaymentConnection", error);
+  }
   // ─── Owner assistant ──────────────────────────────────────────────
   async getOwnerPhoneNumbers(organizationId) {
     const { data, error } = await this.db.from("organizations").select("settings").eq("id", organizationId).maybeSingle();
@@ -55682,12 +55711,15 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
         const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
         try {
           const booking = await store.insertBooking({ organizationId: orgId, contactId, packageSku, travelDate: (/* @__PURE__ */ new Date()).toISOString(), travelerCount: travellers, totalAmount: amount });
-          if (!razorpay) {
-            logger.info("Booking reserved; Razorpay not configured \u2014 payment link deferred to team", { booking: booking.bookingNumber });
+          const orgRazorpay = await razorpayForOrg(orgId);
+          if (!orgRazorpay) {
+            const upi = await upiPageForBooking(orgId, booking.id);
+            if (upi) return { url: upi, amountText };
+            logger.info("Booking reserved; no payment method connected \u2014 link deferred to team", { booking: booking.bookingNumber });
             return null;
           }
           const contact = await store.findContactById(orgId, contactId);
-          const link = await razorpay.createPaymentLink({
+          const link = await orgRazorpay.createPaymentLink({
             organizationId: orgId,
             orderId: booking.id,
             amount,
@@ -55709,9 +55741,13 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
           const res = await createCabBooking(store, { organizationId: orgId, contactId, packageSku, pickupDate, idempotencyKey: `cab:${contactId}:${packageSku}:${pickupDate}` });
           const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, "")) || 0;
           const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
-          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const orgRazorpay = await razorpayForOrg(orgId);
+          if (!orgRazorpay || amount <= 0) {
+            const upi = amount > 0 ? await upiPageForBooking(orgId, res.bookingId) : null;
+            return upi ? { url: upi, amountText, bookingNumber: res.bookingNumber } : { amountText, bookingNumber: res.bookingNumber };
+          }
           const contact = await store.findContactById(orgId, contactId);
-          const link = await razorpay.createPaymentLink({
+          const link = await orgRazorpay.createPaymentLink({
             organizationId: orgId,
             orderId: res.bookingId,
             amount,
@@ -55733,9 +55769,13 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
           const res = await createServiceBooking(store, { organizationId: orgId, contactId, packageSku, startDate, idempotencyKey: `svc:${contactId}:${packageSku}:${startDate}` });
           const amount = Number(String(res.totalAmount).replace(/[^\d.]/g, "")) || 0;
           const amountText = `\u20B9${amount.toLocaleString("en-IN")}`;
-          if (!razorpay || amount <= 0) return { amountText, bookingNumber: res.bookingNumber };
+          const orgRazorpay = await razorpayForOrg(orgId);
+          if (!orgRazorpay || amount <= 0) {
+            const upi = amount > 0 ? await upiPageForBooking(orgId, res.bookingId) : null;
+            return upi ? { url: upi, amountText, bookingNumber: res.bookingNumber } : { amountText, bookingNumber: res.bookingNumber };
+          }
           const contact = await store.findContactById(orgId, contactId);
-          const link = await razorpay.createPaymentLink({
+          const link = await orgRazorpay.createPaymentLink({
             organizationId: orgId,
             orderId: res.bookingId,
             amount,
@@ -55985,6 +56025,32 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
     webhookSecret: env["RAZORPAY_WEBHOOK_SECRET"],
     supabase: db
   }) : null;
+  const razorpayCache = /* @__PURE__ */ new Map();
+  async function razorpayForOrg(orgId) {
+    const cached = razorpayCache.get(orgId);
+    if (cached !== void 0) return cached;
+    let svc = null;
+    try {
+      const conn = await store.getPaymentConnection(orgId);
+      if (conn?.keyId && conn.keySecret && conn.status === "active") {
+        svc = new RazorpayPaymentService({ keyId: conn.keyId, keySecret: conn.keySecret, webhookSecret: conn.webhookSecret, supabase: db });
+      }
+    } catch (err) {
+      logger.warn("razorpayForOrg lookup failed", { orgId, error: err instanceof Error ? err.message : String(err) });
+    }
+    if (!svc) svc = razorpay;
+    razorpayCache.set(orgId, svc);
+    return svc;
+  }
+  async function upiPageForBooking(orgId, bookingId) {
+    try {
+      const { data: o } = await db.from("organizations").select("upi_vpa").eq("id", orgId).maybeSingle();
+      if (!o?.upi_vpa) return null;
+      return `${publicBaseUrl}/pay/upi/${bookingId}`;
+    } catch {
+      return null;
+    }
+  }
   const registerRoutes = (app3) => {
     app3.get("/doc/quote/:id", async (req, res) => {
       try {
@@ -56134,6 +56200,168 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         res.status(500).json({ error: err instanceof Error ? err.message : "Signup failed" });
       }
     });
+    const strField = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+    app3.post("/api/onboarding/profile", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const b = req.body ?? {};
+      const legalName = strField(b["legalName"]);
+      if (!legalName) {
+        res.status(400).json({ ok: false, error: "Business name is required" });
+        return;
+      }
+      const { error } = await db.from("organizations").update({
+        legal_name: legalName,
+        business_type: strField(b["businessType"]),
+        contact_name: strField(b["contactName"]),
+        contact_phone: strField(b["contactPhone"]),
+        city: strField(b["city"]),
+        gst_number: strField(b["gstNumber"]),
+        pan: strField(b["pan"])
+      }).eq("id", op.organizationId);
+      if (error) {
+        res.status(500).json({ ok: false, error: error.message });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    });
+    app3.post("/api/onboarding/payment", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const b = req.body ?? {};
+      const keyId = (b.keyId ?? "").trim();
+      const keySecret = (b.keySecret ?? "").trim();
+      if (!keyId || !keySecret) {
+        res.status(400).json({ ok: false, error: "Razorpay Key ID and Key Secret are required" });
+        return;
+      }
+      if (!/^rzp_(test|live)_/.test(keyId)) {
+        res.status(400).json({ ok: false, error: "That does not look like a Razorpay key (expected rzp_test_\u2026 or rzp_live_\u2026)" });
+        return;
+      }
+      try {
+        const probe = await fetch("https://api.razorpay.com/v1/payment_links?count=1", {
+          headers: { Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}` }
+        });
+        if (probe.status === 401) {
+          res.status(400).json({ ok: false, error: "Razorpay rejected these credentials \u2014 double-check the Key ID and Secret." });
+          return;
+        }
+      } catch {
+      }
+      const mode = keyId.startsWith("rzp_live_") ? "live" : "test";
+      try {
+        await store.savePaymentConnection(op.organizationId, { keyId, keySecret, webhookSecret: strField(b.webhookSecret) ?? void 0, mode });
+        razorpayCache.delete(op.organizationId);
+        res.status(200).json({ ok: true, mode });
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+    app3.post("/api/onboarding/upi", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const b = req.body ?? {};
+      const vpa = (b.upiVpa ?? "").trim();
+      if (!vpa || !/^[\w.-]{2,}@[\w.-]{2,}$/.test(vpa)) {
+        res.status(400).json({ ok: false, error: "Enter a valid UPI ID, e.g. yourname@okhdfcbank" });
+        return;
+      }
+      const { error } = await db.from("organizations").update({ upi_vpa: vpa, upi_payee_name: strField(b.payeeName) }).eq("id", op.organizationId);
+      if (error) {
+        res.status(500).json({ ok: false, error: error.message });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    });
+    app3.post("/api/onboarding/terms", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const version3 = strField(req.body?.termsVersion) ?? "v1";
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const { error } = await db.from("organizations").update({ terms_accepted_at: now, terms_version: version3, whatsapp_consent_at: now }).eq("id", op.organizationId);
+      if (error) {
+        res.status(500).json({ ok: false, error: error.message });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    });
+    app3.post("/api/onboarding/complete", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const status = env["REQUIRE_MERCHANT_APPROVAL"] === "true" ? "pending_review" : "active";
+      const { error } = await db.from("organizations").update({ onboarding_status: status }).eq("id", op.organizationId);
+      if (error) {
+        res.status(500).json({ ok: false, error: error.message });
+        return;
+      }
+      res.status(200).json({ ok: true, status });
+    });
+    app3.get("/api/onboarding/state", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const { data: org } = await db.from("organizations").select("legal_name, terms_accepted_at, onboarding_status, upi_vpa").eq("id", op.organizationId).maybeSingle();
+      const conn = await store.getPaymentConnection(op.organizationId).catch(() => null);
+      res.status(200).json({
+        ok: true,
+        profileComplete: !!org?.legal_name,
+        paymentConnected: !!conn,
+        upiConnected: !!org?.upi_vpa,
+        termsAccepted: !!org?.terms_accepted_at,
+        status: org?.onboarding_status ?? "active"
+      });
+    });
+    app3.get("/pay/upi/:bookingId", async (req, res) => {
+      const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+      const { data: booking } = await db.from("bookings").select("booking_number, total_amount, organization_id, status").eq("id", req.params.bookingId).maybeSingle();
+      if (!booking) {
+        res.status(404).type("html").send("<h1>Payment not found</h1>");
+        return;
+      }
+      const { data: org } = await db.from("organizations").select("name, upi_vpa, upi_payee_name").eq("id", booking.organization_id).maybeSingle();
+      if (!org?.upi_vpa) {
+        res.status(400).type("html").send("<h1>UPI is not set up for this business</h1>");
+        return;
+      }
+      const amount = Number(booking.total_amount || 0);
+      const payee = org.upi_payee_name || org.name || "Merchant";
+      const note = `Booking ${booking.booking_number}`;
+      const upi = `upi://pay?pa=${encodeURIComponent(org.upi_vpa)}&pn=${encodeURIComponent(payee)}&am=${amount}&cu=INR&tn=${encodeURIComponent(note)}&tr=${encodeURIComponent(booking.booking_number)}`;
+      const paid = booking.status === "confirmed" || booking.status === "paid";
+      res.status(200).type("html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pay ${esc(payee)}</title>
+<style>*{box-sizing:border-box;margin:0}body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f16;color:#eef2f7;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
+.card{background:#0e1420;border:1px solid rgba(255,255,255,.1);border-radius:20px;max-width:380px;width:100%;padding:28px;text-align:center}
+.amt{font-size:40px;font-weight:800;margin:8px 0 2px}.muted{color:#94a3b8;font-size:14px}
+.vpa{background:#0b0e15;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px;margin:18px 0;font-family:monospace;font-size:15px;word-break:break-all}
+.btn{display:block;background:linear-gradient(135deg,#00e5ff,#4facfe);color:#00232b;font-weight:800;padding:15px;border-radius:12px;text-decoration:none;font-size:16px;margin-top:6px}
+.ok{color:#25d366;font-weight:700;font-size:18px;margin:10px 0}.steps{text-align:left;color:#94a3b8;font-size:13px;line-height:1.7;margin-top:20px}</style></head>
+<body><div class="card">
+<div class="muted">Pay to</div><div style="font-size:18px;font-weight:700">${esc(payee)}</div>
+<div class="amt">\u20B9${amount.toLocaleString("en-IN")}</div><div class="muted">${esc(note)}</div>
+${paid ? '<div class="ok">\u2705 Payment received \u2014 booking confirmed</div>' : `
+<div class="vpa">${esc(org.upi_vpa)}</div>
+<a class="btn" href="${esc(upi)}">Pay \u20B9${amount.toLocaleString("en-IN")} via UPI app</a>
+<div class="steps">1. Tap the button to open GPay / PhonePe / Paytm / any UPI app.<br>2. Confirm the payment of \u20B9${amount.toLocaleString("en-IN")}.<br>3. The business will confirm your booking once the payment reflects.</div>`}
+</div></body></html>`);
+    });
     app3.post("/api/billing/checkout", async (req, res) => {
       const operator = await authoriseOperator(req);
       if (!operator) {
@@ -56250,6 +56478,34 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }
       try {
         const result = await razorpay.handleWebhookEvent(req.body);
+        if (result.bookingConfirmed && result.orderId && result.organizationId) {
+          const work = sendBookingConfirmation(result.organizationId, result.orderId);
+          try {
+            (0, import_functions.waitUntil)(work);
+          } catch {
+          }
+        }
+        res.status(200).json(result);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+    app3.post("/webhooks/razorpay/:orgId", async (req, res) => {
+      const orgId = req.params.orgId;
+      const svc = await razorpayForOrg(orgId);
+      if (!svc) {
+        res.status(503).json({ error: "No payment connection for this merchant" });
+        return;
+      }
+      const signature = req.headers["x-razorpay-signature"];
+      const rawBody = req.rawBody;
+      if (!rawBody || typeof signature !== "string" || !svc.verifyWebhookSignature(rawBody, signature)) {
+        logger.warn("Razorpay per-merchant webhook rejected: invalid signature", { orgId });
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+      try {
+        const result = await svc.handleWebhookEvent(req.body);
         if (result.bookingConfirmed && result.orderId && result.organizationId) {
           const work = sendBookingConfirmation(result.organizationId, result.orderId);
           try {

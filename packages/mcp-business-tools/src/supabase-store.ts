@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
 import { SecretBox, maskPhone } from './crypto';
 import type {
-  BusinessStore, BusinessSummary, WhatsAppConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, WhatsAppConnection, PaymentConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -48,6 +48,48 @@ export class SupabaseBusinessStore implements BusinessStore {
       connected_by: conn.connectedBy,
     }, { onConflict: 'provider,phone_number_id' });
     if (error) this.fail('saveWhatsAppConnection', error);
+  }
+
+  // ─── Payment connections (per-merchant Razorpay, secrets encrypted) ──
+
+  async getPaymentConnection(organizationId: string): Promise<PaymentConnection | null> {
+    const { data, error } = await this.db.from('payment_connections')
+      .select('organization_id, provider, key_id, key_secret, webhook_secret, mode, status')
+      .eq('organization_id', organizationId).maybeSingle();
+    if (error) this.fail('getPaymentConnection', error);
+    if (!data) return null;
+    return {
+      organizationId: data.organization_id,
+      provider: data.provider,
+      keyId: data.key_id,
+      keySecret: this.box.decrypt(data.key_secret),
+      webhookSecret: data.webhook_secret ? this.box.decrypt(data.webhook_secret) : undefined,
+      mode: (data.mode ?? undefined) as 'test' | 'live' | undefined,
+      status: data.status,
+    };
+  }
+
+  async savePaymentConnection(
+    organizationId: string,
+    input: { keyId: string; keySecret: string; webhookSecret?: string; mode?: 'test' | 'live' },
+  ): Promise<void> {
+    // Derive mode from the Razorpay key prefix when possible; fall back to input.
+    const mode: 'test' | 'live' | undefined = input.keyId.startsWith('rzp_test_')
+      ? 'test'
+      : input.keyId.startsWith('rzp_live_')
+        ? 'live'
+        : input.mode;
+    const { error } = await this.db.from('payment_connections').upsert({
+      organization_id: organizationId,
+      provider: 'razorpay',
+      key_id: input.keyId,
+      key_secret: this.box.encrypt(input.keySecret),
+      webhook_secret: input.webhookSecret ? this.box.encrypt(input.webhookSecret) : null,
+      mode,
+      status: 'active',
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'organization_id' });
+    if (error) this.fail('savePaymentConnection', error);
   }
 
   // ─── Owner assistant ──────────────────────────────────────────────

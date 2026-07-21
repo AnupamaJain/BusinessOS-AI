@@ -51,9 +51,32 @@ export class ToolDataStore implements BusinessStore {
 
   ownerPhoneNumbers: string[] = [];
   whatsappConnections: Array<import('./store').WhatsAppConnection> = [];
+  paymentConnections: Array<import('./store').PaymentConnection> = [];
 
   async getOwnerPhoneNumbers(_organizationId: string): Promise<string[]> {
     return this.ownerPhoneNumbers;
+  }
+
+  async getPaymentConnection(organizationId: string): Promise<import('./store').PaymentConnection | null> {
+    return this.paymentConnections.find((c) => c.organizationId === organizationId) ?? null;
+  }
+
+  async savePaymentConnection(
+    organizationId: string,
+    input: { keyId: string; keySecret: string; webhookSecret?: string; mode?: 'test' | 'live' },
+  ): Promise<void> {
+    const mode: 'test' | 'live' | undefined = input.keyId.startsWith('rzp_test_')
+      ? 'test'
+      : input.keyId.startsWith('rzp_live_')
+        ? 'live'
+        : input.mode;
+    const conn: import('./store').PaymentConnection = {
+      organizationId, provider: 'razorpay', keyId: input.keyId, keySecret: input.keySecret,
+      webhookSecret: input.webhookSecret, mode, status: 'active',
+    };
+    const i = this.paymentConnections.findIndex((c) => c.organizationId === organizationId);
+    if (i >= 0) this.paymentConnections[i] = conn;
+    else this.paymentConnections.push(conn);
   }
 
   async getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<import('./store').WhatsAppConnection | null> {

@@ -54,6 +54,11 @@ import {
   updateOrganizationVertical,
   inviteTeamMember,
   acceptTeamInvite,
+  saveMerchantProfile,
+  connectPayment,
+  connectUpi,
+  acceptTerms,
+  completeOnboarding,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import {
@@ -471,6 +476,36 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [completingOnboarding, setCompletingOnboarding] = useState(false);
   const [onboardingIsNarrow, setOnboardingIsNarrow] = useState(false);
 
+  // Onboarding Step 1 — business profile
+  const [profileLegalName, setProfileLegalName] = useState('');
+  const [profileBusinessType, setProfileBusinessType] = useState('Travel');
+  const [profileContactName, setProfileContactName] = useState('');
+  const [profileContactPhone, setProfileContactPhone] = useState('');
+  const [profileCity, setProfileCity] = useState('');
+  const [profileGst, setProfileGst] = useState('');
+  const [profilePan, setProfilePan] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  // Onboarding Step 4 — payments (own Razorpay account)
+  const [rzpKeyId, setRzpKeyId] = useState('');
+  const [rzpKeySecret, setRzpKeySecret] = useState('');
+  const [rzpWebhookSecret, setRzpWebhookSecret] = useState('');
+  const [paymentConnecting, setPaymentConnecting] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentMode, setPaymentMode] = useState<'test' | 'live' | null>(null);
+  // Onboarding Step 4 — UPI (gateway-free) alternative
+  const [upiVpa, setUpiVpa] = useState('');
+  const [upiPayee, setUpiPayee] = useState('');
+  const [upiConnecting, setUpiConnecting] = useState(false);
+  const [upiError, setUpiError] = useState<string | null>(null);
+  const [upiConnected, setUpiConnected] = useState(false);
+
+  // Onboarding Step 7 — review & agree
+  const [termsAgreed, setTermsAgreed] = useState(false);
+  const [completeError, setCompleteError] = useState<string | null>(null);
+  const [onboardingSubmitted, setOnboardingSubmitted] = useState(false);
+
   // WhatsApp Embedded Signup (onboarding Step 2)
   const [waConnecting, setWaConnecting] = useState(false);
   const [waError, setWaError] = useState<string | null>(null);
@@ -571,7 +606,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const complianceActive = inDashboard && activeTab === 'compliance';
   const analyticsActive = inDashboard && activeTab === 'analytics';
   const kbActive =
-    (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 3);
+    (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 5);
 
   /* Live data (10s polling while the relevant view is active) */
   const orgQuery = usePolling(fetchOrganization, [session.user.id], 60_000, true);
@@ -631,16 +666,105 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const selectedContactId = currentConv?.contact_id ?? null;
   const orgId = org?.id ?? null;
 
+  /* Per-merchant Razorpay webhook URL (shown on the payments onboarding step). */
+  const razorpayWebhookUrl = `${gatewayUrl ?? 'https://<your-gateway-domain>'}/webhooks/razorpay/${
+    orgId ?? '<your-org-id>'
+  }`;
+
+  async function handleSaveProfile(): Promise<void> {
+    const required: Array<[string, string]> = [
+      [profileLegalName, 'Legal / business name'],
+      [profileContactName, 'Contact person'],
+      [profileContactPhone, 'Contact phone'],
+      [profileCity, 'City'],
+    ];
+    const missing = required.find(([value]) => !value.trim());
+    if (missing) {
+      setProfileError(`${missing[1]} is required.`);
+      return;
+    }
+    setProfileError(null);
+    setProfileSaving(true);
+    const result = await saveMerchantProfile(session.access_token, {
+      legalName: profileLegalName.trim(),
+      businessType: profileBusinessType,
+      contactName: profileContactName.trim(),
+      contactPhone: profileContactPhone.trim(),
+      city: profileCity.trim(),
+      gstNumber: profileGst.trim() || undefined,
+      pan: profilePan.trim() || undefined,
+    });
+    setProfileSaving(false);
+    if (!result.ok) {
+      setProfileError(result.error ?? 'Could not save your profile. Try again.');
+      return;
+    }
+    setOnboardingStep(2);
+  }
+
+  async function handleConnectPayment(): Promise<void> {
+    if (!rzpKeyId.trim() || !rzpKeySecret.trim()) {
+      setPaymentError('Enter both your Razorpay Key ID and Key Secret.');
+      return;
+    }
+    setPaymentError(null);
+    setPaymentConnecting(true);
+    const result = await connectPayment(session.access_token, {
+      keyId: rzpKeyId.trim(),
+      keySecret: rzpKeySecret.trim(),
+      webhookSecret: rzpWebhookSecret.trim() || undefined,
+    });
+    setPaymentConnecting(false);
+    if (!result.ok) {
+      setPaymentError(result.error ?? 'Could not connect your Razorpay account.');
+      return;
+    }
+    setPaymentMode(result.mode ?? 'test');
+  }
+
+  async function handleConnectUpi(): Promise<void> {
+    const vpa = upiVpa.trim();
+    if (!/^[\w.-]{2,}@[\w.-]{2,}$/.test(vpa)) {
+      setUpiError('Enter a valid UPI ID, e.g. yourname@okhdfcbank');
+      return;
+    }
+    setUpiError(null);
+    setUpiConnecting(true);
+    const result = await connectUpi(session.access_token, { upiVpa: vpa, payeeName: upiPayee.trim() || undefined });
+    setUpiConnecting(false);
+    if (!result.ok) {
+      setUpiError(result.error ?? 'Could not save your UPI ID.');
+      return;
+    }
+    setUpiConnected(true);
+  }
+
   async function handleCompleteOnboarding(): Promise<void> {
+    if (!termsAgreed) return;
+    setCompleteError(null);
     setCompletingOnboarding(true);
     try {
       // Best-effort persistence of the chosen vertical; never block the user.
       if (orgId) {
         await updateOrganizationVertical(orgId, selectedVertical);
       }
+      const terms = await acceptTerms(session.access_token, { termsVersion: 'v1-2026-07' });
+      if (!terms.ok) {
+        setCompleteError(terms.error ?? 'Could not record your agreement. Try again.');
+        return;
+      }
+      const result = await completeOnboarding(session.access_token);
+      if (!result.ok) {
+        setCompleteError(result.error ?? 'Could not complete setup. Try again.');
+        return;
+      }
+      if (result.status === 'pending_review') {
+        setOnboardingSubmitted(true);
+      } else {
+        setViewState('dashboard');
+      }
     } finally {
       setCompletingOnboarding(false);
-      setViewState('dashboard');
     }
   }
 
@@ -821,6 +945,54 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
 
   /* ─── Onboarding wizard ─────────────────────────────────────────── */
 
+  if (viewState === 'onboarding' && onboardingSubmitted) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '100vh',
+          padding: onboardingIsNarrow ? '20px 12px' : '40px',
+          backgroundColor: 'var(--bg-primary)',
+        }}
+      >
+        <div
+          className="report-card"
+          style={{
+            maxWidth: '520px',
+            width: '100%',
+            textAlign: 'center',
+            border: '1px solid var(--border-glow)',
+            boxShadow: '0 0 30px rgba(0, 242, 254, 0.1)',
+          }}
+        >
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎉</div>
+          <h2
+            style={{
+              fontSize: '20px',
+              fontWeight: 700,
+              marginBottom: '12px',
+              fontFamily: 'var(--font-heading)',
+            }}
+          >
+            Submitted! Your account is under review
+          </h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1.5, marginBottom: '24px' }}>
+            Thanks for setting up {profileLegalName.trim() || 'your business'}. Our team is reviewing
+            your details — we&apos;ll email you at{' '}
+            <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{session.user.email}</span>{' '}
+            the moment your account is activated.
+          </p>
+          <button className="btn btn-secondary" onClick={() => setViewState('landing')}>
+            Back to home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (viewState === 'onboarding') {
     return (
       <div
@@ -864,7 +1036,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             style={{
               display: 'flex',
               justifyContent: 'space-between',
-              marginBottom: '40px',
+              marginBottom: '12px',
               position: 'relative',
             }}
           >
@@ -879,12 +1051,15 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 zIndex: 0,
               }}
             />
-            {[1, 2, 3, 4].map((step) => {
+            {[1, 2, 3, 4, 5, 6, 7].map((step) => {
               const stepLabels: Record<number, string> = {
-                1: 'Select Vertical',
-                2: 'WhatsApp Webhook',
-                3: 'Knowledge Base',
-                4: 'Team Invites',
+                1: 'Business Profile',
+                2: 'Choose Vertical',
+                3: 'Connect WhatsApp',
+                4: 'Connect Payments',
+                5: 'Knowledge Base',
+                6: 'Team Invites',
+                7: 'Review & Agree',
               };
               const done = onboardingStep > step;
               const active = onboardingStep === step;
@@ -938,6 +1113,32 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             })}
           </div>
 
+          {/* Compact progress caption */}
+          <div
+            style={{
+              fontSize: '12px',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textAlign: 'center',
+              marginBottom: '32px',
+            }}
+          >
+            Step {onboardingStep} of 7 ·{' '}
+            <span style={{ color: 'var(--color-primary)' }}>
+              {(
+                {
+                  1: 'Business Profile',
+                  2: 'Choose Vertical',
+                  3: 'Connect WhatsApp',
+                  4: 'Connect Payments',
+                  5: 'Knowledge Base',
+                  6: 'Team Invites',
+                  7: 'Review & Agree',
+                } as Record<number, string>
+              )[onboardingStep] ?? ''}
+            </span>
+          </div>
+
           {/* Step Content */}
           {onboardingStep === 1 && (
             <div>
@@ -949,7 +1150,176 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 1: Choose Your Business Vertical Template
+                Step 1: Tell Us About Your Business
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
+                This is the legal identity we&apos;ll use for your WhatsApp Business profile, invoices,
+                and payment settlements. You can update these details later.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                    Legal / business name <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  </span>
+                  <input
+                    className="chat-input"
+                    placeholder="Acme Travels Pvt. Ltd."
+                    value={profileLegalName}
+                    onChange={(e) => {
+                      setProfileLegalName(e.target.value);
+                      if (profileError) setProfileError(null);
+                    }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                    Business type <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  </span>
+                  <select
+                    className="chat-input"
+                    value={profileBusinessType}
+                    onChange={(e) => setProfileBusinessType(e.target.value)}
+                    style={{ appearance: 'auto' }}
+                  >
+                    {[
+                      'Travel',
+                      'Salon',
+                      'Clinic',
+                      'Restaurant',
+                      'Education',
+                      'Retail',
+                      'Intercity Cab',
+                      'Home Services',
+                      'Other',
+                    ].map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: onboardingIsNarrow ? '1fr' : '1fr 1fr',
+                    gap: '14px',
+                  }}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Contact person <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="Priya Sharma"
+                      value={profileContactName}
+                      onChange={(e) => {
+                        setProfileContactName(e.target.value);
+                        if (profileError) setProfileError(null);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Contact phone <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="+91 98765 43210"
+                      value={profileContactPhone}
+                      onChange={(e) => {
+                        setProfileContactPhone(e.target.value);
+                        if (profileError) setProfileError(null);
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                    City <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  </span>
+                  <input
+                    className="chat-input"
+                    placeholder="Jaipur"
+                    value={profileCity}
+                    onChange={(e) => {
+                      setProfileCity(e.target.value);
+                      if (profileError) setProfileError(null);
+                    }}
+                  />
+                </label>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: onboardingIsNarrow ? '1fr' : '1fr 1fr',
+                    gap: '14px',
+                  }}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      GST number <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="22AAAAA0000A1Z5"
+                      value={profileGst}
+                      onChange={(e) => setProfileGst(e.target.value)}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      PAN <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="AAAAA0000A"
+                      value={profilePan}
+                      onChange={(e) => setProfilePan(e.target.value)}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {profileError && (
+                <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginTop: '16px' }}>
+                  {profileError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '32px' }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={profileSaving}
+                  style={{
+                    opacity: profileSaving ? 0.6 : 1,
+                    cursor: profileSaving ? 'not-allowed' : 'pointer',
+                  }}
+                  onClick={() => {
+                    void handleSaveProfile();
+                  }}
+                >
+                  {profileSaving ? 'Saving…' : 'Next: Choose Vertical'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {onboardingStep === 2 && (
+            <div>
+              <h2
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  marginBottom: '16px',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                Step 2: Choose Your Business Vertical Template
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Templates include pre-configured intent classifiers, RAG boundaries, and
@@ -1077,18 +1447,21 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               <div
                 style={{
                   display: 'flex',
-                  justifyContent: 'flex-end',
+                  justifyContent: 'space-between',
                   marginTop: '32px',
                 }}
               >
-                <button className="btn btn-primary" onClick={() => setOnboardingStep(2)}>
-                  Next: Connect WhatsApp Webhook
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(1)}>
+                  Back
+                </button>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(3)}>
+                  Next: Connect WhatsApp
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 2 && (
+          {onboardingStep === 3 && (
             <div>
               <h2
                 style={{
@@ -1098,7 +1471,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 2: Connect Your WhatsApp Business Account
+                Step 3: Connect Your WhatsApp Business Account
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Connect your WhatsApp Business Account in a few clicks — Meta&apos;s secure signup
@@ -1254,17 +1627,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(1)}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(2)}>
                   Back
                 </button>
-                <button className="btn btn-primary" onClick={() => setOnboardingStep(3)}>
-                  Next: Knowledge Base
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(4)}>
+                  Next: Connect Payments
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 3 && (
+          {onboardingStep === 4 && (
             <div>
               <h2
                 style={{
@@ -1274,7 +1647,237 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 3: Knowledge Base Status
+                Step 4: Connect Payments
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
+                Connect your <strong>own</strong> Razorpay account so payments go directly to you. Use{' '}
+                <code>rzp_test_</code> keys to try it in sandbox, <code>rzp_live_</code> for
+                production. This step is optional — you can set it up later.
+              </p>
+
+              <div
+                style={{
+                  padding: '20px',
+                  backgroundColor: paymentMode ? 'rgba(0, 242, 254, 0.05)' : 'var(--bg-tertiary)',
+                  borderRadius: '12px',
+                  border: paymentMode
+                    ? '1px solid var(--color-primary)'
+                    : '1px solid var(--border-muted)',
+                  marginBottom: '20px',
+                }}
+              >
+                {paymentMode ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        alignSelf: 'flex-start',
+                        fontSize: '13px',
+                        fontWeight: 700,
+                        color: 'var(--color-success)',
+                        border: '1px solid var(--color-success)',
+                        borderRadius: '8px',
+                        padding: '4px 10px',
+                      }}
+                    >
+                      <Check size={14} strokeWidth={3} /> Connected ({paymentMode} mode)
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      Payments will settle directly to your Razorpay account. You can proceed to the
+                      next step.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span
+                        style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}
+                      >
+                        Razorpay Key ID <span style={{ color: 'var(--color-danger)' }}>*</span>
+                      </span>
+                      <input
+                        className="chat-input"
+                        placeholder="rzp_test_XXXXXXXXXXXX"
+                        value={rzpKeyId}
+                        onChange={(e) => {
+                          setRzpKeyId(e.target.value);
+                          if (paymentError) setPaymentError(null);
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span
+                        style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}
+                      >
+                        Key Secret <span style={{ color: 'var(--color-danger)' }}>*</span>
+                      </span>
+                      <input
+                        className="chat-input"
+                        type="password"
+                        placeholder="••••••••••••••••"
+                        value={rzpKeySecret}
+                        onChange={(e) => {
+                          setRzpKeySecret(e.target.value);
+                          if (paymentError) setPaymentError(null);
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span
+                        style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}
+                      >
+                        Webhook secret <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                      </span>
+                      <input
+                        className="chat-input"
+                        type="password"
+                        placeholder="Razorpay webhook signing secret"
+                        value={rzpWebhookSecret}
+                        onChange={(e) => setRzpWebhookSecret(e.target.value)}
+                      />
+                    </label>
+                    {paymentError && (
+                      <div style={{ fontSize: '12px', color: 'var(--color-danger)' }}>
+                        {paymentError}
+                      </div>
+                    )}
+                    <div>
+                      <button
+                        className="btn btn-primary"
+                        disabled={paymentConnecting}
+                        style={{
+                          opacity: paymentConnecting ? 0.6 : 1,
+                          cursor: paymentConnecting ? 'not-allowed' : 'pointer',
+                        }}
+                        onClick={() => {
+                          void handleConnectPayment();
+                        }}
+                      >
+                        {paymentConnecting ? '⏳ Connecting…' : '🔗 Connect Razorpay'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  padding: '16px',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-muted)',
+                  marginBottom: '8px',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--text-muted)',
+                    marginBottom: '8px',
+                  }}
+                >
+                  Your Razorpay webhook URL
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '8px',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <code style={{ fontSize: '13px', wordBreak: 'break-all' }}>{razorpayWebhookUrl}</code>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 12px', fontSize: '12px', flexShrink: 0 }}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(razorpayWebhookUrl);
+                    }}
+                  >
+                    <Copy size={12} /> Copy
+                  </button>
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                  Add this as a webhook in your Razorpay dashboard so we can reconcile payments.
+                </div>
+              </div>
+
+              {/* ── OR: accept UPI directly (gateway-free) ── */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '22px 0 14px' }}>
+                <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-muted)' }} />
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>OR ACCEPT UPI DIRECTLY</span>
+                <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-muted)' }} />
+              </div>
+              <div style={{ padding: '18px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: upiConnected ? '1px solid var(--color-success)' : '1px solid var(--border-muted)' }}>
+                {upiConnected ? (
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Check size={16} strokeWidth={3} /> UPI ID connected — {upiVpa.trim()}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                      No gateway needed — customers pay by UPI straight into your ID (GPay / PhonePe / Paytm). Zero fees.
+                      Note: UPI payments don’t auto-confirm, so you’ll mark bookings as paid once the money reflects.
+                    </div>
+                    <input
+                      type="text"
+                      className="chat-input"
+                      placeholder="Your UPI ID — e.g. yourname@okhdfcbank"
+                      value={upiVpa}
+                      onChange={(e) => { setUpiVpa(e.target.value); if (upiError) setUpiError(null); }}
+                      style={{ width: '100%', marginBottom: '10px' }}
+                    />
+                    <input
+                      type="text"
+                      className="chat-input"
+                      placeholder="Payee name shown to customers (optional)"
+                      value={upiPayee}
+                      onChange={(e) => setUpiPayee(e.target.value)}
+                      style={{ width: '100%', marginBottom: '12px' }}
+                    />
+                    {upiError && (
+                      <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginBottom: '10px' }}>{upiError}</div>
+                    )}
+                    <button className="btn btn-secondary" disabled={upiConnecting} onClick={() => { void handleConnectUpi(); }}>
+                      {upiConnecting ? '⏳ Saving…' : '💸 Save UPI ID'}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px', gap: '12px', flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(3)}>
+                  Back
+                </button>
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setOnboardingStep(5)}
+                  >
+                    Skip for now — set up later
+                  </button>
+                  <button className="btn btn-primary" onClick={() => setOnboardingStep(5)}>
+                    Next: Knowledge Base
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {onboardingStep === 5 && (
+            <div>
+              <h2
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  marginBottom: '16px',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                Step 5: Knowledge Base Status
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 These documents are ingested into the retrieval index and ground every AI answer.
@@ -1325,17 +1928,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(2)}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(4)}>
                   Back
                 </button>
-                <button className="btn btn-primary" onClick={() => setOnboardingStep(4)}>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(6)}>
                   Next: Invite Team Members
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 4 && (
+          {onboardingStep === 6 && (
             <div>
               <h2
                 style={{
@@ -1345,7 +1948,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 4: Invite Support & Sales Operators
+                Step 6: Invite Support & Sales Operators
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Invite team members to manage your inbox queue, claim handoffs, and monitor safety
@@ -1450,25 +2053,151 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
                 <button
                   className="btn btn-secondary"
-                  disabled={completingOnboarding}
-                  onClick={() => setOnboardingStep(3)}
+                  onClick={() => setOnboardingStep(5)}
                 >
                   Back
                 </button>
                 <button
                   className="btn btn-primary"
+                  onClick={() => setOnboardingStep(7)}
+                >
+                  Next: Review &amp; Agree
+                </button>
+              </div>
+            </div>
+          )}
+
+          {onboardingStep === 7 && (
+            <div>
+              <h2
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  marginBottom: '16px',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                Step 7: Review &amp; Agree
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
+                Here&apos;s a summary of what you&apos;ve set up. Confirm the details and agree to our
+                terms to finish.
+              </p>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                  padding: '16px',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-muted)',
+                  marginBottom: '20px',
+                }}
+              >
+                {[
+                  { label: 'Business name', value: profileLegalName.trim() || '—' },
+                  { label: 'Business type', value: profileBusinessType },
+                  {
+                    label: 'Vertical template',
+                    value: selectedVertical,
+                  },
+                  {
+                    label: 'WhatsApp',
+                    value: waConnectedNumber ? `Connected · ${waConnectedNumber}` : 'Not connected',
+                    ok: Boolean(waConnectedNumber),
+                  },
+                  {
+                    label: 'Payments',
+                    value: paymentMode ? `Connected · ${paymentMode} mode` : 'Not connected',
+                    ok: Boolean(paymentMode),
+                  },
+                ].map((row) => (
+                  <div
+                    key={row.label}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{row.label}</span>
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        textAlign: 'right',
+                        wordBreak: 'break-word',
+                        color:
+                          'ok' in row
+                            ? row.ok
+                              ? 'var(--color-success)'
+                              : 'var(--text-muted)'
+                            : 'var(--text-main)',
+                      }}
+                    >
+                      {row.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <label
+                style={{
+                  display: 'flex',
+                  gap: '10px',
+                  alignItems: 'flex-start',
+                  padding: '14px 16px',
+                  backgroundColor: termsAgreed ? 'rgba(0, 242, 254, 0.06)' : 'var(--bg-tertiary)',
+                  borderRadius: '12px',
+                  border: termsAgreed
+                    ? '1px solid var(--color-primary)'
+                    : '1px solid var(--border-muted)',
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={termsAgreed}
+                  onChange={(e) => {
+                    setTermsAgreed(e.target.checked);
+                    if (completeError) setCompleteError(null);
+                  }}
+                  style={{ marginTop: '2px', flexShrink: 0, width: '16px', height: '16px' }}
+                />
+                <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>
+                  I agree to the Terms of Service and confirm I have consent to message my customers
+                  on WhatsApp.
+                </span>
+              </label>
+
+              {completeError && (
+                <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginTop: '12px' }}>
+                  {completeError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
+                <button
+                  className="btn btn-secondary"
                   disabled={completingOnboarding}
+                  onClick={() => setOnboardingStep(6)}
+                >
+                  Back
+                </button>
+                <button
+                  className="btn btn-primary"
+                  disabled={!termsAgreed || completingOnboarding}
                   style={{
-                    opacity: completingOnboarding ? 0.6 : 1,
-                    cursor: completingOnboarding ? 'not-allowed' : 'pointer',
+                    opacity: !termsAgreed || completingOnboarding ? 0.6 : 1,
+                    cursor: !termsAgreed || completingOnboarding ? 'not-allowed' : 'pointer',
                   }}
                   onClick={() => {
                     void handleCompleteOnboarding();
                   }}
                 >
-                  {completingOnboarding
-                    ? 'Saving…'
-                    : 'Complete Onboarding & Launch Dashboard'}
+                  {completingOnboarding ? 'Submitting…' : 'Complete setup'}
                 </button>
               </div>
             </div>

@@ -349,6 +349,156 @@ export async function completeWhatsappSignup(
   }
 }
 
+/* ─── Onboarding: merchant profile, payments, terms, completion ───── */
+
+export interface MerchantProfile {
+  legalName: string;
+  businessType: string;
+  contactName: string;
+  contactPhone: string;
+  city: string;
+  gstNumber?: string;
+  pan?: string;
+}
+
+/**
+ * Persist the merchant's business profile (step 1 of onboarding). Never throws —
+ * always resolves with an {ok} result so the caller can render an inline error
+ * and block advancing.
+ */
+export async function saveMerchantProfile(
+  token: string,
+  profile: MerchantProfile
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/profile`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/**
+ * Connect the merchant's own Razorpay account (step 4). Returns the detected
+ * `mode` ('test'/'live') on success. Never throws.
+ */
+export async function connectPayment(
+  token: string,
+  creds: { keyId: string; keySecret: string; webhookSecret?: string }
+): Promise<{ ok: boolean; mode?: 'test' | 'live'; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/payment`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      mode?: 'test' | 'live';
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, mode: body.mode };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/**
+ * Connect the merchant's own UPI ID (gateway-free). Customers pay directly into
+ * this VPA; confirmation is manual (no auto webhook). Never throws.
+ */
+export async function connectUpi(
+  token: string,
+  creds: { upiVpa: string; payeeName?: string }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/upi`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Record the merchant's acceptance of the terms of service (step 7). Never throws. */
+export async function acceptTerms(
+  token: string,
+  body: { termsVersion: string }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/terms`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const parsed = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || parsed.ok === false) return { ok: false, error: parsed.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/**
+ * Finalize onboarding (step 7). Returns the resulting account `status`
+ * ('active' → go straight to dashboard; 'pending_review' → await activation).
+ * Never throws.
+ */
+export async function completeOnboarding(
+  token: string
+): Promise<{ ok: boolean; status?: string; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/complete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      status?: string;
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, status: body.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Best-effort read of the current onboarding progress. Returns {} on any error. */
+export async function fetchOnboardingState(token: string): Promise<{
+  profileComplete?: boolean;
+  paymentConnected?: boolean;
+  termsAccepted?: boolean;
+  status?: string;
+}> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/onboarding/state`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return {};
+    return (await res.json().catch(() => ({}))) as {
+      profileComplete?: boolean;
+      paymentConnected?: boolean;
+      termsAccepted?: boolean;
+      status?: string;
+    };
+  } catch {
+    return {};
+  }
+}
+
 /* ─── CRM: leads, contacts, catalog, knowledge ────────────────────── */
 
 export async function fetchLeads(): Promise<LeadItem[]> {
