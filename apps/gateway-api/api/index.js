@@ -56362,6 +56362,54 @@ ${paid ? '<div class="ok">\u2705 Payment received \u2014 booking confirmed</div>
 <div class="steps">1. Tap the button to open GPay / PhonePe / Paytm / any UPI app.<br>2. Confirm the payment of \u20B9${amount.toLocaleString("en-IN")}.<br>3. The business will confirm your booking once the payment reflects.</div>`}
 </div></body></html>`);
     });
+    app3.get("/api/bookings/pending", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const { data } = await db.from("bookings").select("id, booking_number, total_amount, currency, status, metadata, created_at, contacts(name)").eq("organization_id", op.organizationId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(100);
+      const bookings = (data ?? []).map((b) => {
+        const c = b.contacts;
+        const name = Array.isArray(c) ? c[0]?.name : c?.name;
+        const meta = b.metadata ?? {};
+        return {
+          id: b.id,
+          bookingNumber: b.booking_number,
+          amount: Number(b.total_amount || 0),
+          status: b.status,
+          customerName: name ?? null,
+          createdAt: b.created_at,
+          summary: meta["type"] === "cab-route" ? `${meta["fromCity"]} \u2192 ${meta["toCity"]} (${meta["vehicleClass"]})` : meta["type"] === "home-service" ? `${meta["service"]} \xB7 ${meta["planType"]}` : "Booking"
+        };
+      });
+      res.status(200).json({ ok: true, bookings });
+    });
+    app3.post("/api/bookings/:id/confirm", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const bookingId = req.params.id;
+      const { data: booking } = await db.from("bookings").select("id, status").eq("id", bookingId).eq("organization_id", op.organizationId).maybeSingle();
+      if (!booking) {
+        res.status(404).json({ ok: false, error: "Booking not found" });
+        return;
+      }
+      if (booking.status === "confirmed" || booking.status === "paid") {
+        res.status(200).json({ ok: true, alreadyConfirmed: true });
+        return;
+      }
+      await db.from("bookings").update({ status: "confirmed" }).eq("id", bookingId).eq("organization_id", op.organizationId);
+      await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: op.organizationId, action: "booking_marked_paid", entityType: "booking", entityId: bookingId, actorType: "user", details: { by: op.userId, method: "manual" }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+      const work = sendBookingConfirmation(op.organizationId, bookingId);
+      try {
+        (0, import_functions.waitUntil)(work);
+      } catch {
+      }
+      res.status(200).json({ ok: true });
+    });
     app3.post("/api/billing/checkout", async (req, res) => {
       const operator = await authoriseOperator(req);
       if (!operator) {

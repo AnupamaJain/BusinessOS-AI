@@ -1090,6 +1090,46 @@ ${paid ? '<div class="ok">✅ Payment received — booking confirmed</div>' : `
 </div></body></html>`);
     });
 
+    /** Bookings awaiting payment confirmation (for the operator dashboard). */
+    app.get('/api/bookings/pending', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await db.from('bookings')
+        .select('id, booking_number, total_amount, currency, status, metadata, created_at, contacts(name)')
+        .eq('organization_id', op.organizationId)
+        .in('status', ['pending', 'pending_payment'])
+        .order('created_at', { ascending: false }).limit(100);
+      const bookings = (data ?? []).map((b) => {
+        const c = b.contacts as { name?: string } | { name?: string }[] | null;
+        const name = Array.isArray(c) ? c[0]?.name : c?.name;
+        const meta = (b.metadata ?? {}) as Record<string, unknown>;
+        return {
+          id: b.id, bookingNumber: b.booking_number, amount: Number(b.total_amount || 0),
+          status: b.status, customerName: name ?? null, createdAt: b.created_at,
+          summary: meta['type'] === 'cab-route' ? `${meta['fromCity']} → ${meta['toCity']} (${meta['vehicleClass']})`
+            : meta['type'] === 'home-service' ? `${meta['service']} · ${meta['planType']}` : 'Booking',
+        };
+      });
+      res.status(200).json({ ok: true, bookings });
+    });
+
+    /** Operator marks a booking as paid → confirm + WhatsApp confirmation (for UPI/manual). */
+    app.post('/api/bookings/:id/confirm', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const bookingId = req.params.id;
+      const { data: booking } = await db.from('bookings')
+        .select('id, status').eq('id', bookingId).eq('organization_id', op.organizationId).maybeSingle();
+      if (!booking) { res.status(404).json({ ok: false, error: 'Booking not found' }); return; }
+      if (booking.status === 'confirmed' || booking.status === 'paid') { res.status(200).json({ ok: true, alreadyConfirmed: true }); return; }
+      await db.from('bookings').update({ status: 'confirmed' }).eq('id', bookingId).eq('organization_id', op.organizationId);
+      await store.insertAuditEvent({ id: randomUUID(), organizationId: op.organizationId, action: 'booking_marked_paid', entityType: 'booking', entityId: bookingId, actorType: 'user', details: { by: op.userId, method: 'manual' }, createdAt: new Date().toISOString() });
+      // Notify the customer on WhatsApp (off the response path).
+      const work = sendBookingConfirmation(op.organizationId, bookingId);
+      try { waitUntil(work); } catch { void work; }
+      res.status(200).json({ ok: true });
+    });
+
     /** Platform billing — create a Stripe checkout session for a plan. */
     app.post('/api/billing/checkout', async (req, res) => {
       const operator = await authoriseOperator(req);

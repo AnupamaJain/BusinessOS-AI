@@ -16,6 +16,7 @@ import {
   Globe,
   LogOut,
   BarChart3,
+  Wallet,
   Plus,
   CreditCard,
   Check,
@@ -59,6 +60,8 @@ import {
   connectUpi,
   acceptTerms,
   completeOnboarding,
+  fetchPendingBookings,
+  confirmBookingPaid,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import {
@@ -77,7 +80,7 @@ import type {
 } from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
-type TabKey = 'inbox' | 'crm' | 'scheduler' | 'compliance' | 'kb' | 'analytics';
+type TabKey = 'inbox' | 'crm' | 'payments' | 'scheduler' | 'compliance' | 'kb' | 'analytics';
 
 const ERROR_COLOR = '#ff6b6b';
 
@@ -602,6 +605,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const inDashboard = viewState === 'dashboard';
   const inboxActive = inDashboard && activeTab === 'inbox';
   const crmActive = inDashboard && activeTab === 'crm';
+  const paymentsActive = inDashboard && activeTab === 'payments';
   const schedulerActive = inDashboard && activeTab === 'scheduler';
   const complianceActive = inDashboard && activeTab === 'compliance';
   const analyticsActive = inDashboard && activeTab === 'analytics';
@@ -620,6 +624,20 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     inboxActive && !!selectedConvId
   );
   const leadsQuery = usePolling(fetchLeads, [], 10_000, crmActive);
+  const pendingBookingsQuery = usePolling(
+    () => fetchPendingBookings(session.access_token),
+    [],
+    15_000,
+    paymentsActive,
+  );
+  const [confirmingBookingId, setConfirmingBookingId] = useState<string | null>(null);
+
+  async function handleConfirmBookingPaid(bookingId: string): Promise<void> {
+    setConfirmingBookingId(bookingId);
+    const result = await confirmBookingPaid(session.access_token, bookingId);
+    setConfirmingBookingId(null);
+    if (result.ok) void pendingBookingsQuery.refetch();
+  }
   const productsQuery = usePolling(fetchProducts, [], 10_000, crmActive);
   const packagesQuery = usePolling(fetchPackages, [], 10_000, crmActive);
   const kbDocsQuery = usePolling(fetchKnowledgeDocs, [], 10_000, kbActive);
@@ -2247,6 +2265,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </div>
 
           <div
+            className={`nav-item ${activeTab === 'payments' ? 'active' : ''}`}
+            onClick={() => setActiveTab('payments')}
+          >
+            <Wallet className="nav-icon" />
+            <span>Payments</span>
+          </div>
+
+          <div
             className={`nav-item ${activeTab === 'scheduler' ? 'active' : ''}`}
             onClick={() => setActiveTab('scheduler')}
           >
@@ -2309,6 +2335,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           <h1 className="header-title">
             {activeTab === 'inbox' && 'Escalated Handoff Queue'}
             {activeTab === 'crm' && 'CRM Context & Product Directory'}
+            {activeTab === 'payments' && 'Payments — Bookings Awaiting Confirmation'}
             {activeTab === 'scheduler' && 'Consent-Safe Auto Campaigns'}
             {activeTab === 'compliance' && 'AI Usage & Safety Observability'}
             {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
@@ -2806,6 +2833,53 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Payments ─────────────────────────────────── */}
+        {activeTab === 'payments' && (
+          <div className="report-card">
+            <div className="report-card-title">Bookings awaiting payment confirmation</div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+              UPI and manual payments don’t confirm automatically. When the money reflects in your
+              account, mark the booking as paid — the customer gets an instant WhatsApp confirmation.
+            </p>
+            {pendingBookingsQuery.loading && !pendingBookingsQuery.data && (
+              <StatusNote kind="loading">Loading bookings…</StatusNote>
+            )}
+            {pendingBookingsQuery.error && <StatusNote kind="error">{pendingBookingsQuery.error}</StatusNote>}
+            {pendingBookingsQuery.data && pendingBookingsQuery.data.length === 0 && (
+              <StatusNote kind="empty">No bookings are waiting for payment. 🎉</StatusNote>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {(pendingBookingsQuery.data ?? []).map((b) => (
+                <div
+                  key={b.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
+                    backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px',
+                    border: '1px solid var(--border-muted)', flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: '180px' }}>
+                    <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                      {b.customerName ?? 'Customer'} ·{' '}
+                      <span style={{ fontFamily: 'monospace', color: 'var(--color-primary)' }}>{b.bookingNumber}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{b.summary}</div>
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: '16px' }}>₹{b.amount.toLocaleString('en-IN')}</div>
+                  <button
+                    className="btn btn-primary"
+                    disabled={confirmingBookingId === b.id}
+                    onClick={() => { void handleConfirmBookingPaid(b.id); }}
+                    style={{ padding: '8px 16px', fontSize: '13px' }}
+                  >
+                    {confirmingBookingId === b.id ? '⏳ Confirming…' : '✓ Mark paid'}
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}

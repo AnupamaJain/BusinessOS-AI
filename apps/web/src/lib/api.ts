@@ -410,6 +410,45 @@ export async function connectPayment(
   }
 }
 
+/* ─── Bookings awaiting payment (manual/UPI confirmation) ─────────── */
+
+export interface PendingBooking {
+  id: string;
+  bookingNumber: string;
+  amount: number;
+  status: string;
+  customerName: string | null;
+  createdAt: string;
+  summary: string;
+}
+
+export async function fetchPendingBookings(token: string): Promise<PendingBooking[]> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/bookings/pending`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { bookings?: PendingBooking[] };
+    return body.bookings ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Operator marks a booking as paid → confirms it + notifies the customer. */
+export async function confirmBookingPaid(token: string, bookingId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/bookings/${bookingId}/confirm`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 /**
  * Connect the merchant's own UPI ID (gateway-free). Customers pay directly into
  * this VPA; confirmation is manual (no auto webhook). Never throws.
