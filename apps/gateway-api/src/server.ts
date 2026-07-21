@@ -129,6 +129,33 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const db = createServiceClient(supabaseUrl, serviceKey);
   const store = new SupabaseBusinessStore(db, env['ENCRYPTION_KEY']);
 
+  /**
+   * Tenant-scoped data access. Every query is automatically filtered (reads /
+   * updates / deletes) or stamped (inserts) with organization_id, so business
+   * logic never passes it by hand — removing the "forgot the org_id filter"
+   * class of cross-tenant bug on the service-role path. Composite (organization_id, id)
+   * foreign keys enforce the same boundary at the storage layer. Use for
+   * org-scoped tables (not `organizations`, which is keyed by id).
+   */
+  function tenantDb(orgId: string) {
+    return {
+      from(table: string) {
+        // The service client has no Database generic, so a dynamic table name is
+        // loosely typed — same as the raw db.from() calls this replaces. The
+        // returned builders stay chainable (.eq/.in/.order/.maybeSingle/…).
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+        const t = db.from(table) as any;
+        return {
+          select: (cols = '*') => t.select(cols).eq('organization_id', orgId),
+          insert: (row: Record<string, unknown> | Record<string, unknown>[]) =>
+            t.insert(Array.isArray(row) ? row.map((r) => ({ ...r, organization_id: orgId })) : { ...row, organization_id: orgId }),
+          update: (patch: Record<string, unknown>) => t.update(patch).eq('organization_id', orgId),
+          delete: () => t.delete().eq('organization_id', orgId),
+        };
+      },
+    };
+  }
+
   // ── LLM gateway with per-tenant usage persisted to llm_usage ──
   const llm = createGatewayFromEnv(env, {
     allowMockFallback: true,
@@ -748,9 +775,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
    */
   async function sendBookingConfirmation(orgId: string, bookingId: string): Promise<void> {
     try {
-      const { data: booking } = await db.from('bookings')
+      const { data: booking } = await tenantDb(orgId).from('bookings')
         .select('booking_number, contact_id, metadata, total_amount')
-        .eq('organization_id', orgId).eq('id', bookingId).maybeSingle();
+        .eq('id', bookingId).maybeSingle();
       if (!booking?.contact_id) return;
       const contact = await store.findContactById(orgId, booking.contact_id); // real (decrypted) phone
       if (!contact?.phone) return;
@@ -771,8 +798,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   /** Business Brain: distil durable facts about a customer from a new lead. */
   async function writeLeadMemory(orgId: string, contactId: string, leadId: string): Promise<void> {
     try {
-      const { data: lead } = await db.from('leads')
-        .select('service_interest, budget_range, purchase_timeline').eq('organization_id', orgId).eq('id', leadId).maybeSingle();
+      const { data: lead } = await tenantDb(orgId).from('leads')
+        .select('service_interest, budget_range, purchase_timeline').eq('id', leadId).maybeSingle();
       if (!lead) return;
       const facts: string[] = [];
       if (lead.service_interest) facts.push(`Interested in: ${String(lead.service_interest).slice(0, 200)}`);
@@ -822,8 +849,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
   /** The most recent booking for a contact that is still awaiting payment, if any. */
   async function latestPendingBookingForContact(orgId: string, contactId: string): Promise<{ id: string; bookingNumber: string } | null> {
-    const { data } = await db.from('bookings')
-      .select('id, booking_number').eq('organization_id', orgId).eq('contact_id', contactId)
+    const { data } = await tenantDb(orgId).from('bookings')
+      .select('id, booking_number').eq('contact_id', contactId)
       .in('status', ['pending', 'pending_payment']).order('created_at', { ascending: false }).limit(1);
     const b = (data ?? [])[0];
     return b ? { id: b.id, bookingNumber: b.booking_number } : null;
@@ -835,15 +862,15 @@ export function buildServer(env: Record<string, string | undefined> = process.en
    * Returns the confirmed booking number, or null if none matched.
    */
   async function confirmLatestPendingBooking(orgId: string, nameHint: string | null, actorUserId?: string): Promise<string | null> {
-    const { data } = await db.from('bookings')
-      .select('id, booking_number, contacts(name)').eq('organization_id', orgId)
+    const { data } = await tenantDb(orgId).from('bookings')
+      .select('id, booking_number, contacts(name)')
       .in('status', ['pending', 'pending_payment']).order('created_at', { ascending: false }).limit(15);
     const rows = data ?? [];
     let target = nameHint ? undefined : rows[0];
     if (nameHint) {
       // With a name hint, only confirm a booking that actually matches it —
       // never fall back to a random pending booking.
-      target = rows.find((b) => {
+      target = rows.find((b: { contacts?: unknown }) => {
         const c = b.contacts as { name?: string } | { name?: string }[] | null;
         const name = Array.isArray(c) ? c[0]?.name : c?.name;
         return name && name.toLowerCase().includes(nameHint.toLowerCase());
@@ -1304,12 +1331,11 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
     app.get('/api/bookings/pending', async (req, res) => {
       const op = await authoriseOperator(req);
       if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
-      const { data } = await db.from('bookings')
+      const { data } = await tenantDb(op.organizationId).from('bookings')
         .select('id, booking_number, total_amount, currency, status, metadata, created_at, contacts(name)')
-        .eq('organization_id', op.organizationId)
         .in('status', ['pending', 'pending_payment'])
         .order('created_at', { ascending: false }).limit(100);
-      const bookings = (data ?? []).map((b) => {
+      const bookings = (data ?? []).map((b: { id: string; booking_number: string; total_amount: number | null; status: string; metadata: unknown; created_at: string; contacts?: unknown }) => {
         const c = b.contacts as { name?: string } | { name?: string }[] | null;
         const name = Array.isArray(c) ? c[0]?.name : c?.name;
         const meta = (b.metadata ?? {}) as Record<string, unknown>;

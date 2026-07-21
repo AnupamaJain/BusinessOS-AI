@@ -60219,6 +60219,19 @@ function buildServer(env = process.env) {
   const cronSecret = env["CRON_SECRET"];
   const db = createServiceClient(supabaseUrl, serviceKey);
   const store = new SupabaseBusinessStore(db, env["ENCRYPTION_KEY"]);
+  function tenantDb(orgId) {
+    return {
+      from(table) {
+        const t = db.from(table);
+        return {
+          select: (cols = "*") => t.select(cols).eq("organization_id", orgId),
+          insert: (row) => t.insert(Array.isArray(row) ? row.map((r) => ({ ...r, organization_id: orgId })) : { ...row, organization_id: orgId }),
+          update: (patch) => t.update(patch).eq("organization_id", orgId),
+          delete: () => t.delete().eq("organization_id", orgId)
+        };
+      }
+    };
+  }
   const llm = createGatewayFromEnv(env, {
     allowMockFallback: true,
     usageSink: async (record) => {
@@ -60765,7 +60778,7 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
   }
   async function sendBookingConfirmation(orgId, bookingId) {
     try {
-      const { data: booking } = await db.from("bookings").select("booking_number, contact_id, metadata, total_amount").eq("organization_id", orgId).eq("id", bookingId).maybeSingle();
+      const { data: booking } = await tenantDb(orgId).from("bookings").select("booking_number, contact_id, metadata, total_amount").eq("id", bookingId).maybeSingle();
       if (!booking?.contact_id) return;
       const contact = await store.findContactById(orgId, booking.contact_id);
       if (!contact?.phone) return;
@@ -60784,7 +60797,7 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
   }
   async function writeLeadMemory(orgId, contactId, leadId) {
     try {
-      const { data: lead } = await db.from("leads").select("service_interest, budget_range, purchase_timeline").eq("organization_id", orgId).eq("id", leadId).maybeSingle();
+      const { data: lead } = await tenantDb(orgId).from("leads").select("service_interest, budget_range, purchase_timeline").eq("id", leadId).maybeSingle();
       if (!lead) return;
       const facts = [];
       if (lead.service_interest) facts.push(`Interested in: ${String(lead.service_interest).slice(0, 200)}`);
@@ -60826,12 +60839,12 @@ ${convo}` }]
     }
   }
   async function latestPendingBookingForContact(orgId, contactId) {
-    const { data } = await db.from("bookings").select("id, booking_number").eq("organization_id", orgId).eq("contact_id", contactId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(1);
+    const { data } = await tenantDb(orgId).from("bookings").select("id, booking_number").eq("contact_id", contactId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(1);
     const b = (data ?? [])[0];
     return b ? { id: b.id, bookingNumber: b.booking_number } : null;
   }
   async function confirmLatestPendingBooking(orgId, nameHint, actorUserId) {
-    const { data } = await db.from("bookings").select("id, booking_number, contacts(name)").eq("organization_id", orgId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(15);
+    const { data } = await tenantDb(orgId).from("bookings").select("id, booking_number, contacts(name)").in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(15);
     const rows = data ?? [];
     let target = nameHint ? void 0 : rows[0];
     if (nameHint) {
@@ -61311,7 +61324,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(401).json({ ok: false, error: "Unauthorized" });
         return;
       }
-      const { data } = await db.from("bookings").select("id, booking_number, total_amount, currency, status, metadata, created_at, contacts(name)").eq("organization_id", op.organizationId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(100);
+      const { data } = await tenantDb(op.organizationId).from("bookings").select("id, booking_number, total_amount, currency, status, metadata, created_at, contacts(name)").in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(100);
       const bookings = (data ?? []).map((b) => {
         const c = b.contacts;
         const name = Array.isArray(c) ? c[0]?.name : c?.name;
