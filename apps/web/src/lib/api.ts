@@ -1,8 +1,11 @@
 import { supabase } from './supabase';
 import type {
   ActivityTrendPoint,
+  AgentConfig,
+  AgentTestResult,
   AutomationRunItem,
   BillingPlan,
+  BusinessRules,
   CheckoutResult,
   ContactNote,
   ContactRow,
@@ -980,6 +983,93 @@ export async function startCheckout(
       ok: false,
       error: parsed.error ?? parsed.message ?? `Checkout unavailable (HTTP ${response.status})`,
     };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/* ─── AI Team & Business Rules (agent config via gateway) ─────────── */
+
+/**
+ * Read the operator's current agent config (business rules + enabled agents).
+ * Operator-authed. Never throws — always resolves with an {ok} result.
+ */
+export async function fetchAgentConfig(token: string): Promise<AgentConfig> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/config`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      rules?: BusinessRules;
+      enabledAgents?: string[];
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, rules: body.rules ?? {}, enabledAgents: body.enabledAgents ?? [] };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Persist the business rules. Body is the rules object itself. Never throws. */
+export async function saveBusinessRules(
+  token: string,
+  rules: BusinessRules
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/config/rules`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(rules),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Persist the set of enabled agents (lowercased role ids). Never throws. */
+export async function saveEnabledAgents(
+  token: string,
+  enabledAgents: string[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/config/team`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabledAgents }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/**
+ * Send a message to the configured AI and get its reply (+ detected intent).
+ * Used by the onboarding "Test your AI" step and the dashboard AI Settings tab.
+ * Never throws.
+ */
+export async function testAgent(token: string, message: string): Promise<AgentTestResult> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/agent/test`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      reply?: string;
+      intent?: string;
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, reply: body.reply, intent: body.intent };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }

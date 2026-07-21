@@ -13,6 +13,7 @@ import {
   Copy,
   Clock,
   Settings,
+  Sliders,
   Globe,
   LogOut,
   BarChart3,
@@ -65,6 +66,10 @@ import {
   completeOnboarding,
   fetchPendingBookings,
   confirmBookingPaid,
+  fetchAgentConfig,
+  saveBusinessRules,
+  saveEnabledAgents,
+  testAgent,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import { decodeUpiQrFromFile } from './lib/qr';
@@ -86,7 +91,83 @@ import type {
 } from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
-type TabKey = 'inbox' | 'crm' | 'payments' | 'scheduler' | 'compliance' | 'kb' | 'analytics';
+type TabKey =
+  | 'inbox'
+  | 'crm'
+  | 'payments'
+  | 'scheduler'
+  | 'compliance'
+  | 'kb'
+  | 'analytics'
+  | 'ai-settings';
+
+/* AI team roles offered on the "AI Team & Rules" step / settings panel. */
+const AGENT_ROLES: Array<{ id: string; label: string; emoji: string; role: string }> = [
+  { id: 'sales', label: 'Sales', emoji: '💼', role: 'Qualifies leads, shares pricing & packages, nudges toward a booking.' },
+  { id: 'support', label: 'Support', emoji: '🎧', role: "Answers from your knowledge base; won't quote prices and hands off refunds." },
+  { id: 'booking', label: 'Booking', emoji: '📅', role: 'Checks availability, collects details and confirms bookings & payments.' },
+  { id: 'operations', label: 'Operations', emoji: '⚙️', role: 'Handles post-sale updates, reschedules and order/status queries.' },
+];
+
+const LANGUAGE_OPTIONS = ['English', 'Hindi', 'Tamil', 'Telugu', 'Bengali', 'Marathi'];
+const TONE_OPTIONS = ['Friendly', 'Professional', 'Casual'];
+
+/* Small on/off switch (module-scope, reused by team + rules controls). */
+function ToggleSwitch({
+  on,
+  onChange,
+  label,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!on)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        cursor: 'pointer',
+        textAlign: 'left',
+        width: '100%',
+      }}
+      aria-pressed={on}
+    >
+      <span
+        style={{
+          flexShrink: 0,
+          width: '38px',
+          height: '22px',
+          borderRadius: '999px',
+          backgroundColor: on ? 'var(--color-primary)' : 'var(--bg-tertiary)',
+          border: '1px solid var(--border-muted)',
+          position: 'relative',
+          transition: 'background-color 0.15s',
+        }}
+      >
+        <span
+          style={{
+            position: 'absolute',
+            top: '2px',
+            left: on ? '18px' : '2px',
+            width: '16px',
+            height: '16px',
+            borderRadius: '50%',
+            backgroundColor: on ? '#000' : 'var(--text-muted)',
+            transition: 'left 0.15s',
+          }}
+        />
+      </span>
+      <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>{label}</span>
+    </button>
+  );
+}
 
 const ERROR_COLOR = '#ff6b6b';
 
@@ -547,10 +628,425 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [savingNote, setSavingNote] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
 
-  // Onboarding Step 7 — review & agree
+  // Onboarding Step 9 — review & agree
   const [termsAgreed, setTermsAgreed] = useState(false);
   const [completeError, setCompleteError] = useState<string | null>(null);
   const [onboardingSubmitted, setOnboardingSubmitted] = useState(false);
+
+  // AI Team & Business Rules (onboarding Step 3 + dashboard AI Settings tab)
+  const [enabledAgents, setEnabledAgents] = useState<string[]>(
+    AGENT_ROLES.map((r) => r.id)
+  );
+  const [ruleMaxDiscount, setRuleMaxDiscount] = useState('10');
+  const [ruleBookingRequiresPayment, setRuleBookingRequiresPayment] = useState(true);
+  const [ruleRefundRequiresApproval, setRuleRefundRequiresApproval] = useState(true);
+  const [ruleHoursStart, setRuleHoursStart] = useState('09:00');
+  const [ruleHoursEnd, setRuleHoursEnd] = useState('21:00');
+  const [ruleTimezone, setRuleTimezone] = useState('Asia/Kolkata');
+  const [ruleLanguages, setRuleLanguages] = useState<string[]>(['English', 'Hindi']);
+  const [ruleTone, setRuleTone] = useState('Friendly');
+  const [aiConfigSaving, setAiConfigSaving] = useState(false);
+  const [aiConfigError, setAiConfigError] = useState<string | null>(null);
+  const [aiConfigNotice, setAiConfigNotice] = useState<string | null>(null);
+  const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
+  const [aiConfigLoading, setAiConfigLoading] = useState(false);
+
+  // "Test your AI" mini-chat (onboarding Step 8 + AI Settings tab)
+  const [testChat, setTestChat] = useState<
+    Array<{ role: 'user' | 'ai'; text: string; intent?: string }>
+  >([]);
+  const [testDraft, setTestDraft] = useState('');
+  const [testSending, setTestSending] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  function toggleAgent(id: string): void {
+    setAiConfigNotice(null);
+    setEnabledAgents((prev) =>
+      prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]
+    );
+  }
+
+  function toggleLanguage(lang: string): void {
+    setAiConfigNotice(null);
+    setRuleLanguages((prev) =>
+      prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang]
+    );
+  }
+
+  function buildBusinessRules() {
+    const parsed = Number(ruleMaxDiscount);
+    return {
+      maxDiscountPercent:
+        ruleMaxDiscount.trim() !== '' && Number.isFinite(parsed) ? parsed : undefined,
+      bookingRequiresPayment: ruleBookingRequiresPayment,
+      refundRequiresApproval: ruleRefundRequiresApproval,
+      workingHours: { start: ruleHoursStart, end: ruleHoursEnd, timezone: ruleTimezone },
+      languages: ruleLanguages,
+      tone: ruleTone,
+    };
+  }
+
+  /* Save team + rules together. Returns true on success. `advanceTo` (onboarding)
+     moves to the next step; otherwise an inline "Saved" notice is shown. */
+  async function handleSaveAiConfig(advanceTo?: number): Promise<boolean> {
+    setAiConfigError(null);
+    setAiConfigNotice(null);
+    setAiConfigSaving(true);
+    const teamRes = await saveEnabledAgents(session.access_token, enabledAgents);
+    const rulesRes = teamRes.ok
+      ? await saveBusinessRules(session.access_token, buildBusinessRules())
+      : teamRes;
+    setAiConfigSaving(false);
+    if (!teamRes.ok) {
+      setAiConfigError(teamRes.error ?? 'Could not save your AI team. Try again.');
+      return false;
+    }
+    if (!rulesRes.ok) {
+      setAiConfigError(rulesRes.error ?? 'Could not save your business rules. Try again.');
+      return false;
+    }
+    if (advanceTo) setOnboardingStep(advanceTo);
+    else setAiConfigNotice('Saved. Your AI will use these rules on its next reply.');
+    return true;
+  }
+
+  async function handleSendTestMessage(): Promise<void> {
+    const message = testDraft.trim();
+    if (!message || testSending) return;
+    setTestError(null);
+    setTestChat((prev) => [...prev, { role: 'user', text: message }]);
+    setTestDraft('');
+    setTestSending(true);
+    const res = await testAgent(session.access_token, message);
+    setTestSending(false);
+    if (!res.ok) {
+      setTestError(res.error ?? 'The AI could not respond. Try again.');
+      return;
+    }
+    setTestChat((prev) => [
+      ...prev,
+      { role: 'ai', text: res.reply ?? '(no reply)', intent: res.intent },
+    ]);
+  }
+
+  /* Shared UI: AI team toggles + business rules. Reused by the onboarding
+     step and the dashboard AI Settings tab (same underlying state). */
+  function renderAiTeamAndRules(): ReactNode {
+    const fieldLabel = (text: string) => (
+      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>{text}</span>
+    );
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+        {/* Your AI Team */}
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>Your AI Team</div>
+          <p style={{ color: 'var(--text-muted)', fontSize: '12px', margin: '0 0 14px' }}>
+            Turn agents on or off. Each stays in its lane so replies are safe and on-brand.
+          </p>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: onboardingIsNarrow ? '1fr' : '1fr 1fr',
+              gap: '12px',
+            }}
+          >
+            {AGENT_ROLES.map((agent) => {
+              const on = enabledAgents.includes(agent.id);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  onClick={() => toggleAgent(agent.id)}
+                  aria-pressed={on}
+                  style={{
+                    textAlign: 'left',
+                    padding: '14px',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    backgroundColor: on ? 'rgba(0, 242, 254, 0.06)' : 'var(--bg-tertiary)',
+                    border: on ? '1px solid var(--color-primary)' : '1px solid var(--border-muted)',
+                    boxShadow: on ? '0 0 12px rgba(0, 242, 254, 0.12)' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 700 }}>
+                      <span style={{ marginRight: '8px' }}>{agent.emoji}</span>
+                      {agent.label}
+                    </span>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        padding: '3px 8px',
+                        borderRadius: '999px',
+                        color: on ? '#000' : 'var(--text-muted)',
+                        backgroundColor: on ? 'var(--color-primary)' : 'var(--bg-primary)',
+                        border: on ? 'none' : '1px solid var(--border-muted)',
+                      }}
+                    >
+                      {on ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    {agent.role}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Business Rules */}
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>Business Rules</div>
+          <p style={{ color: 'var(--text-muted)', fontSize: '12px', margin: '0 0 14px' }}>
+            Guardrails the AI must respect on every conversation.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxWidth: '220px' }}>
+              {fieldLabel('Max discount the AI may offer (%)')}
+              <input
+                className="chat-input"
+                type="number"
+                min={0}
+                max={100}
+                value={ruleMaxDiscount}
+                onChange={(e) => {
+                  setAiConfigNotice(null);
+                  setRuleMaxDiscount(e.target.value);
+                }}
+              />
+            </label>
+
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+                padding: '14px',
+                backgroundColor: 'var(--bg-tertiary)',
+                borderRadius: '12px',
+                border: '1px solid var(--border-muted)',
+              }}
+            >
+              <ToggleSwitch
+                on={ruleBookingRequiresPayment}
+                onChange={(v) => {
+                  setAiConfigNotice(null);
+                  setRuleBookingRequiresPayment(v);
+                }}
+                label="Bookings require payment before confirming"
+              />
+              <ToggleSwitch
+                on={ruleRefundRequiresApproval}
+                onChange={(v) => {
+                  setAiConfigNotice(null);
+                  setRuleRefundRequiresApproval(v);
+                }}
+                label="Refunds require human approval"
+              />
+            </div>
+
+            <div>
+              {fieldLabel('Working hours')}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: onboardingIsNarrow ? '1fr' : '1fr 1fr 1.4fr',
+                  gap: '10px',
+                  marginTop: '6px',
+                }}
+              >
+                <input
+                  className="chat-input"
+                  type="time"
+                  value={ruleHoursStart}
+                  onChange={(e) => {
+                    setAiConfigNotice(null);
+                    setRuleHoursStart(e.target.value);
+                  }}
+                />
+                <input
+                  className="chat-input"
+                  type="time"
+                  value={ruleHoursEnd}
+                  onChange={(e) => {
+                    setAiConfigNotice(null);
+                    setRuleHoursEnd(e.target.value);
+                  }}
+                />
+                <input
+                  className="chat-input"
+                  placeholder="Asia/Kolkata"
+                  value={ruleTimezone}
+                  onChange={(e) => {
+                    setAiConfigNotice(null);
+                    setRuleTimezone(e.target.value);
+                  }}
+                />
+              </div>
+            </div>
+
+            <div>
+              {fieldLabel('Languages the AI may reply in')}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
+                {LANGUAGE_OPTIONS.map((lang) => {
+                  const on = ruleLanguages.includes(lang);
+                  return (
+                    <button
+                      key={lang}
+                      type="button"
+                      onClick={() => toggleLanguage(lang)}
+                      aria-pressed={on}
+                      style={{
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        padding: '6px 12px',
+                        borderRadius: '999px',
+                        cursor: 'pointer',
+                        color: on ? '#000' : 'var(--text-muted)',
+                        backgroundColor: on ? 'var(--color-primary)' : 'var(--bg-tertiary)',
+                        border: on ? 'none' : '1px solid var(--border-muted)',
+                      }}
+                    >
+                      {lang}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxWidth: '220px' }}>
+              {fieldLabel('Tone of voice')}
+              <select
+                className="chat-input"
+                value={ruleTone}
+                onChange={(e) => {
+                  setAiConfigNotice(null);
+                  setRuleTone(e.target.value);
+                }}
+                style={{ appearance: 'auto' }}
+              >
+                {TONE_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* Shared UI: WhatsApp-style "Test your AI" chat. */
+  function renderTestChat(seedHint: string): ReactNode {
+    return (
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            padding: '16px',
+            minHeight: '180px',
+            maxHeight: '340px',
+            overflowY: 'auto',
+            backgroundColor: 'var(--bg-primary)',
+            borderRadius: '12px',
+            border: '1px solid var(--border-muted)',
+          }}
+        >
+          {testChat.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: '13px', margin: 'auto', textAlign: 'center' }}>
+              {seedHint}
+            </div>
+          )}
+          {testChat.map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: '80%',
+                padding: '9px 13px',
+                borderRadius: '14px',
+                fontSize: '13px',
+                lineHeight: 1.4,
+                whiteSpace: 'pre-wrap',
+                backgroundColor: msg.role === 'user' ? 'var(--color-primary)' : 'var(--bg-tertiary)',
+                color: msg.role === 'user' ? '#000' : 'var(--text-main)',
+                border: msg.role === 'user' ? 'none' : '1px solid var(--border-muted)',
+              }}
+            >
+              {msg.text}
+              {msg.role === 'ai' && msg.intent && (
+                <div style={{ marginTop: '6px' }}>
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      color: 'var(--color-primary)',
+                      backgroundColor: 'rgba(0, 242, 254, 0.1)',
+                      border: '1px solid var(--border-glow)',
+                    }}
+                  >
+                    intent: {msg.intent}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
+          {testSending && (
+            <div style={{ alignSelf: 'flex-start', color: 'var(--text-muted)', fontSize: '13px' }}>
+              AI is typing…
+            </div>
+          )}
+        </div>
+
+        {testError && (
+          <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginTop: '10px' }}>
+            {testError}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+          <input
+            className="chat-input"
+            style={{ flex: 1 }}
+            placeholder="Type a customer message…"
+            value={testDraft}
+            onChange={(e) => setTestDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void handleSendTestMessage();
+              }
+            }}
+          />
+          <button
+            className="btn btn-primary"
+            disabled={testSending || !testDraft.trim()}
+            style={{
+              opacity: testSending || !testDraft.trim() ? 0.6 : 1,
+              cursor: testSending || !testDraft.trim() ? 'not-allowed' : 'pointer',
+            }}
+            onClick={() => {
+              void handleSendTestMessage();
+            }}
+          >
+            <Send size={14} /> Send
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // WhatsApp Embedded Signup (onboarding Step 2)
   const [waConnecting, setWaConnecting] = useState(false);
@@ -652,8 +1148,47 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const schedulerActive = inDashboard && activeTab === 'scheduler';
   const complianceActive = inDashboard && activeTab === 'compliance';
   const analyticsActive = inDashboard && activeTab === 'analytics';
+  const aiSettingsActive = inDashboard && activeTab === 'ai-settings';
   const kbActive =
-    (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 5);
+    (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 6);
+
+  /* Load the saved agent config when the AI Settings tab opens (once). */
+  useEffect(() => {
+    if (!aiSettingsActive || aiConfigLoaded) return;
+    let cancelled = false;
+    setAiConfigLoading(true);
+    setAiConfigError(null);
+    void fetchAgentConfig(session.access_token).then((res) => {
+      if (cancelled) return;
+      setAiConfigLoading(false);
+      if (!res.ok) {
+        setAiConfigError(res.error ?? 'Could not load your AI settings.');
+        return;
+      }
+      const rules = res.rules ?? {};
+      if (Array.isArray(res.enabledAgents)) setEnabledAgents(res.enabledAgents);
+      if (typeof rules.maxDiscountPercent === 'number') {
+        setRuleMaxDiscount(String(rules.maxDiscountPercent));
+      }
+      if (typeof rules.bookingRequiresPayment === 'boolean') {
+        setRuleBookingRequiresPayment(rules.bookingRequiresPayment);
+      }
+      if (typeof rules.refundRequiresApproval === 'boolean') {
+        setRuleRefundRequiresApproval(rules.refundRequiresApproval);
+      }
+      if (rules.workingHours?.start) setRuleHoursStart(rules.workingHours.start);
+      if (rules.workingHours?.end) setRuleHoursEnd(rules.workingHours.end);
+      if (rules.workingHours?.timezone) setRuleTimezone(rules.workingHours.timezone);
+      if (Array.isArray(rules.languages) && rules.languages.length > 0) {
+        setRuleLanguages(rules.languages);
+      }
+      if (rules.tone) setRuleTone(rules.tone);
+      setAiConfigLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [aiSettingsActive, aiConfigLoaded, session.access_token]);
 
   /* Live data (10s polling while the relevant view is active) */
   const orgQuery = usePolling(fetchOrganization, [session.user.id], 60_000, true);
@@ -1181,15 +1716,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 zIndex: 0,
               }}
             />
-            {[1, 2, 3, 4, 5, 6, 7].map((step) => {
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((step) => {
               const stepLabels: Record<number, string> = {
                 1: 'Business Profile',
                 2: 'Choose Vertical',
-                3: 'Connect WhatsApp',
-                4: 'Connect Payments',
-                5: 'Knowledge Base',
-                6: 'Team Invites',
-                7: 'Review & Agree',
+                3: 'AI Team & Rules',
+                4: 'Connect WhatsApp',
+                5: 'Connect Payments',
+                6: 'Knowledge Base',
+                7: 'Team Invites',
+                8: 'Test Your AI',
+                9: 'Review & Agree',
               };
               const done = onboardingStep > step;
               const active = onboardingStep === step;
@@ -1253,17 +1790,19 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               marginBottom: '32px',
             }}
           >
-            Step {onboardingStep} of 7 ·{' '}
+            Step {onboardingStep} of 9 ·{' '}
             <span style={{ color: 'var(--color-primary)' }}>
               {(
                 {
                   1: 'Business Profile',
                   2: 'Choose Vertical',
-                  3: 'Connect WhatsApp',
-                  4: 'Connect Payments',
-                  5: 'Knowledge Base',
-                  6: 'Team Invites',
-                  7: 'Review & Agree',
+                  3: 'AI Team & Rules',
+                  4: 'Connect WhatsApp',
+                  5: 'Connect Payments',
+                  6: 'Knowledge Base',
+                  7: 'Team Invites',
+                  8: 'Test Your AI',
+                  9: 'Review & Agree',
                 } as Record<number, string>
               )[onboardingStep] ?? ''}
             </span>
@@ -1585,7 +2124,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   Back
                 </button>
                 <button className="btn btn-primary" onClick={() => setOnboardingStep(3)}>
-                  Next: Connect WhatsApp
+                  Next: AI Team &amp; Rules
                 </button>
               </div>
             </div>
@@ -1601,7 +2140,57 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 3: Connect Your WhatsApp Business Account
+                Step 3: Configure Your AI Team &amp; Rules
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
+                Choose which AI agents handle your customers and set the guardrails they must follow.
+                You can change all of this later from the AI Settings tab.
+              </p>
+
+              {renderAiTeamAndRules()}
+
+              {aiConfigError && (
+                <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginTop: '16px' }}>
+                  {aiConfigError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
+                <button
+                  className="btn btn-secondary"
+                  disabled={aiConfigSaving}
+                  onClick={() => setOnboardingStep(2)}
+                >
+                  Back
+                </button>
+                <button
+                  className="btn btn-primary"
+                  disabled={aiConfigSaving}
+                  style={{
+                    opacity: aiConfigSaving ? 0.6 : 1,
+                    cursor: aiConfigSaving ? 'not-allowed' : 'pointer',
+                  }}
+                  onClick={() => {
+                    void handleSaveAiConfig(4);
+                  }}
+                >
+                  {aiConfigSaving ? 'Saving…' : 'Next: Connect WhatsApp'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {onboardingStep === 4 && (
+            <div>
+              <h2
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  marginBottom: '16px',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                Step 4: Connect Your WhatsApp Business Account
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Connect your WhatsApp Business Account in a few clicks — Meta&apos;s secure signup
@@ -1757,17 +2346,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(2)}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(3)}>
                   Back
                 </button>
-                <button className="btn btn-primary" onClick={() => setOnboardingStep(4)}>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(5)}>
                   Next: Connect Payments
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 4 && (
+          {onboardingStep === 5 && (
             <div>
               <h2
                 style={{
@@ -1777,7 +2366,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 4: Connect Payments
+                Step 5: Connect Payments
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Connect your <strong>own</strong> Razorpay account so payments go directly to you. Use{' '}
@@ -2002,17 +2591,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px', gap: '12px', flexWrap: 'wrap' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(3)}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(4)}>
                   Back
                 </button>
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-secondary"
-                    onClick={() => setOnboardingStep(5)}
+                    onClick={() => setOnboardingStep(6)}
                   >
                     Skip for now — set up later
                   </button>
-                  <button className="btn btn-primary" onClick={() => setOnboardingStep(5)}>
+                  <button className="btn btn-primary" onClick={() => setOnboardingStep(6)}>
                     Next: Knowledge Base
                   </button>
                 </div>
@@ -2020,7 +2609,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             </div>
           )}
 
-          {onboardingStep === 5 && (
+          {onboardingStep === 6 && (
             <div>
               <h2
                 style={{
@@ -2030,7 +2619,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 5: Knowledge Base Status
+                Step 6: Knowledge Base Status
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 These documents are ingested into the retrieval index and ground every AI answer.
@@ -2081,17 +2670,17 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
-                <button className="btn btn-secondary" onClick={() => setOnboardingStep(4)}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(5)}>
                   Back
                 </button>
-                <button className="btn btn-primary" onClick={() => setOnboardingStep(6)}>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(7)}>
                   Next: Invite Team Members
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 6 && (
+          {onboardingStep === 7 && (
             <div>
               <h2
                 style={{
@@ -2101,7 +2690,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 6: Invite Support & Sales Operators
+                Step 7: Invite Support & Sales Operators
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Invite team members to manage your inbox queue, claim handoffs, and monitor safety
@@ -2206,21 +2795,21 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
                 <button
                   className="btn btn-secondary"
-                  onClick={() => setOnboardingStep(5)}
+                  onClick={() => setOnboardingStep(6)}
                 >
                   Back
                 </button>
                 <button
                   className="btn btn-primary"
-                  onClick={() => setOnboardingStep(7)}
+                  onClick={() => setOnboardingStep(8)}
                 >
-                  Next: Review &amp; Agree
+                  Next: Test Your AI
                 </button>
               </div>
             </div>
           )}
 
-          {onboardingStep === 7 && (
+          {onboardingStep === 8 && (
             <div>
               <h2
                 style={{
@@ -2230,7 +2819,37 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                Step 7: Review &amp; Agree
+                Step 8: Test Your AI
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '20px' }}>
+                This is your configured AI, using your catalog, knowledge and rules. Happy with it?
+                Continue to go live.
+              </p>
+
+              {renderTestChat("Try: 'Hi, do you have a Delhi to Jaipur cab?'")}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '32px' }}>
+                <button className="btn btn-secondary" onClick={() => setOnboardingStep(7)}>
+                  Back
+                </button>
+                <button className="btn btn-primary" onClick={() => setOnboardingStep(9)}>
+                  Continue to Review
+                </button>
+              </div>
+            </div>
+          )}
+
+          {onboardingStep === 9 && (
+            <div>
+              <h2
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  marginBottom: '16px',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                Step 9: Review &amp; Agree
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
                 Here&apos;s a summary of what you&apos;ve set up. Confirm the details and agree to our
@@ -2335,7 +2954,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 <button
                   className="btn btn-secondary"
                   disabled={completingOnboarding}
-                  onClick={() => setOnboardingStep(6)}
+                  onClick={() => setOnboardingStep(8)}
                 >
                   Back
                 </button>
@@ -2438,6 +3057,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             <BookOpen className="nav-icon" />
             <span>Knowledge Base</span>
           </div>
+
+          <div
+            className={`nav-item ${activeTab === 'ai-settings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('ai-settings')}
+          >
+            <Sliders className="nav-icon" />
+            <span>AI Settings</span>
+          </div>
         </nav>
 
         <div
@@ -2475,6 +3102,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'compliance' && 'AI Usage & Safety Observability'}
             {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
+            {activeTab === 'ai-settings' && 'AI Team, Business Rules & Live Test'}
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span className="tenant-badge">
@@ -3833,6 +4461,70 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: AI Settings ──────────────────────────────── */}
+        {activeTab === 'ai-settings' && (
+          <div
+            className="report-workspace"
+            style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '20px' }}
+          >
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <Sliders size={20} style={{ color: 'var(--color-primary)' }} />
+                AI Team &amp; Business Rules
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 20px' }}>
+                Edit which agents are live and the guardrails they follow. Changes apply to every new
+                reply once saved.
+              </p>
+
+              {aiConfigLoading && !aiConfigLoaded && (
+                <StatusNote kind="loading">Loading your AI settings…</StatusNote>
+              )}
+
+              {renderAiTeamAndRules()}
+
+              {aiConfigError && (
+                <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginTop: '16px' }}>
+                  {aiConfigError}
+                </div>
+              )}
+              {aiConfigNotice && (
+                <div style={{ fontSize: '12px', color: 'var(--color-primary)', marginTop: '16px' }}>
+                  {aiConfigNotice}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={aiConfigSaving}
+                  style={{
+                    opacity: aiConfigSaving ? 0.6 : 1,
+                    cursor: aiConfigSaving ? 'not-allowed' : 'pointer',
+                  }}
+                  onClick={() => {
+                    void handleSaveAiConfig();
+                  }}
+                >
+                  {aiConfigSaving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
+
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <MessageSquare size={20} style={{ color: 'var(--color-primary)' }} />
+                Test Your AI
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 20px' }}>
+                Send a message the way a customer would. Replies use your live catalog, knowledge and
+                the rules above.
+              </p>
+              {renderTestChat("Try: 'What are your charges for a Delhi to Jaipur cab?'")}
             </div>
           </div>
         )}

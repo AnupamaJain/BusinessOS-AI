@@ -208,6 +208,37 @@ export interface CheckoutResult {
   error?: string;
 }
 
+/* ─── AI Team & Business Rules (agent config) ─────────────────────── */
+
+export interface WorkingHours {
+  start?: string;
+  end?: string;
+  timezone?: string;
+}
+
+export interface BusinessRules {
+  maxDiscountPercent?: number;
+  bookingRequiresPayment?: boolean;
+  refundRequiresApproval?: boolean;
+  workingHours?: WorkingHours;
+  languages?: string[];
+  tone?: string;
+}
+
+export interface AgentConfig {
+  ok: boolean;
+  rules?: BusinessRules;
+  enabledAgents?: string[];
+  error?: string;
+}
+
+export interface AgentTestResult {
+  ok: boolean;
+  reply?: string;
+  intent?: string;
+  error?: string;
+}
+
 /* ─── Customer Memory timeline ────────────────────────────────────── */
 
 export interface TimelineEvent {
