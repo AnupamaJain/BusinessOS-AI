@@ -88,13 +88,42 @@ function isSchedulingSelection(msg: string): boolean {
 
 /** Detect whether the customer already mentioned a date, so we skip the picker. */
 function messageHasDate(msg: string): boolean {
-  const m = msg.toLowerCase();
-  if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
-  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(m)) return true;
-  if (/\b\d{1,2}(st|nd|rd|th)?\b/.test(m) && /\b(day|date|on|by)\b/.test(m)) return true;
-  if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
-  if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
-  return false;
+  return extractDate(msg) !== null;
+}
+
+/**
+ * Pull just the DATE out of a message — a tapped picker id, a relative day, or
+ * a "30 Jul"/"12-07" phrase — so bookings never echo the whole sentence back as
+ * the date. Returns a clean, human-readable date string, or null if none.
+ */
+function extractDate(msg: string): string | null {
+  const raw = msg.trim();
+  const months = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+
+  // 1) Date-picker selection: "date:2026-07-30"
+  const picker = raw.match(/date:(\d{4}-\d{2}-\d{2})/i);
+  if (picker?.[1]) {
+    const d = new Date(`${picker[1]}T00:00:00`);
+    return isNaN(d.getTime()) ? picker[1] : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+  const m = raw.toLowerCase();
+  // 2) Relative days
+  const rel = m.match(/\b(day after tomorrow|tomorrow|today|tonight|this weekend|next weekend|weekend|next week|this week|next (?:mon|tue|wed|thu|fri|sat|sun)[a-z]*|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*day)\b/);
+  if (rel?.[0]) return rel[0].replace(/\b\w/g, (c) => c.toUpperCase());
+  // 3) "30 jul" / "30th july"
+  const dMonth = m.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:of\\s*)?(${months})[a-z]*`, 'i'));
+  if (dMonth?.[1] && dMonth[2]) return `${dMonth[1]} ${cap(dMonth[2])}`;
+  // 4) "july 30" / "jul 30th"
+  const monthD = m.match(new RegExp(`\\b(${months})[a-z]*\\s*(\\d{1,2})(?:st|nd|rd|th)?`, 'i'));
+  if (monthD?.[1] && monthD[2]) return `${cap(monthD[1])} ${monthD[2]}`;
+  // 5) Numeric date: "12/07", "12-07-2026"
+  const numeric = raw.match(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/);
+  if (numeric?.[0]) return numeric[0];
+  // 6) "on the 30th"
+  const dayOnly = m.match(/\b(?:on|by|for)\s+(?:the\s+)?(\d{1,2})(st|nd|rd|th)\b/);
+  if (dayOnly?.[1] && dayOnly[2]) return `the ${dayOnly[1]}${dayOnly[2]}`;
+  return null;
 }
 
 /**
@@ -829,7 +858,7 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     }
     // 2) Route + date → reserve and confirm (with a payment link when available).
     if (matchedCab && hasDate) {
-      const pickupDate = state.inboundMessage.replace(/^date:/i, '').trim();
+      const pickupDate = extractDate(state.inboundMessage) ?? extractDate(contextText) ?? 'your selected date';
       const booking = deps.createCabBooking
         ? await deps.createCabBooking({ contactId: state.contactId, packageSku: matchedCab.sku, pickupDate })
         : null;
@@ -868,7 +897,7 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     }
     // 2) Plan + start date → reserve and confirm (with a payment link when available).
     if (matchedPlan && hasDate) {
-      const startDate = state.inboundMessage.replace(/^date:/i, '').trim();
+      const startDate = extractDate(state.inboundMessage) ?? extractDate(contextText) ?? 'your selected date';
       const booking = deps.createServiceBooking
         ? await deps.createServiceBooking({ contactId: state.contactId, packageSku: matchedPlan.sku, startDate })
         : null;

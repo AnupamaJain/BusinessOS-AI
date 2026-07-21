@@ -57676,13 +57676,29 @@ function isSchedulingSelection(msg) {
   return m.length < 40 && messageHasDate(m);
 }
 function messageHasDate(msg) {
-  const m = msg.toLowerCase();
-  if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
-  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(m)) return true;
-  if (/\b\d{1,2}(st|nd|rd|th)?\b/.test(m) && /\b(day|date|on|by)\b/.test(m)) return true;
-  if (/\b\d{1,2}[/-]\d{1,2}\b/.test(m)) return true;
-  if (/date:\d{4}-\d{2}-\d{2}/.test(m)) return true;
-  return false;
+  return extractDate(msg) !== null;
+}
+function extractDate(msg) {
+  const raw = msg.trim();
+  const months = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  const picker = raw.match(/date:(\d{4}-\d{2}-\d{2})/i);
+  if (picker?.[1]) {
+    const d = /* @__PURE__ */ new Date(`${picker[1]}T00:00:00`);
+    return isNaN(d.getTime()) ? picker[1] : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  }
+  const m = raw.toLowerCase();
+  const rel = m.match(/\b(day after tomorrow|tomorrow|today|tonight|this weekend|next weekend|weekend|next week|this week|next (?:mon|tue|wed|thu|fri|sat|sun)[a-z]*|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*day)\b/);
+  if (rel?.[0]) return rel[0].replace(/\b\w/g, (c) => c.toUpperCase());
+  const dMonth = m.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:of\\s*)?(${months})[a-z]*`, "i"));
+  if (dMonth?.[1] && dMonth[2]) return `${dMonth[1]} ${cap(dMonth[2])}`;
+  const monthD = m.match(new RegExp(`\\b(${months})[a-z]*\\s*(\\d{1,2})(?:st|nd|rd|th)?`, "i"));
+  if (monthD?.[1] && monthD[2]) return `${cap(monthD[1])} ${monthD[2]}`;
+  const numeric = raw.match(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/);
+  if (numeric?.[0]) return numeric[0];
+  const dayOnly = m.match(/\b(?:on|by|for)\s+(?:the\s+)?(\d{1,2})(st|nd|rd|th)\b/);
+  if (dayOnly?.[1] && dayOnly[2]) return `the ${dayOnly[1]}${dayOnly[2]}`;
+  return null;
 }
 var CAB_KEYWORD_RE = /\b(cab|taxi|ride|car|outstation|intercity|pick\s?up|pickup|drop)\b/i;
 var HOME_SERVICE_KEYWORD_RE = /\b(maid|cook|cooking|cleaning|cleaner|housekeeping|househelp|babysitter|nanny|deep\s?clean|full[-\s]?time\s?maid)\b/i;
@@ -58323,7 +58339,7 @@ When should we pick you up? Tap a date below, or type your preferred date. \u{1F
       return state;
     }
     if (matchedCab && hasDate) {
-      const pickupDate = state.inboundMessage.replace(/^date:/i, "").trim();
+      const pickupDate = extractDate(state.inboundMessage) ?? extractDate(contextText) ?? "your selected date";
       const booking = deps.createCabBooking ? await deps.createCabBooking({ contactId: state.contactId, packageSku: matchedCab.sku, pickupDate }) : null;
       if (booking?.url) {
         state.proposedResponse = `Perfect! \u{1F695} I've reserved *${matchedCab.title}* for ${pickupDate}. Fare: ${booking.amountText} (Booking ${booking.bookingNumber}).
@@ -58358,7 +58374,7 @@ When would you like to start? Tap a date below, or type your preferred date. \u{
       return state;
     }
     if (matchedPlan && hasDate) {
-      const startDate = state.inboundMessage.replace(/^date:/i, "").trim();
+      const startDate = extractDate(state.inboundMessage) ?? extractDate(contextText) ?? "your selected date";
       const booking = deps.createServiceBooking ? await deps.createServiceBooking({ contactId: state.contactId, packageSku: matchedPlan.sku, startDate }) : null;
       if (booking?.url) {
         state.proposedResponse = `Perfect! \u{1F9F9} I've booked *${matchedPlan.title}* starting ${startDate}. Amount: ${booking.amountText} (Booking ${booking.bookingNumber}).

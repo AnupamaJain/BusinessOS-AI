@@ -65,6 +65,10 @@ describe('Cab (intercity) journey', () => {
     expect(state.intent).toBe('booking_request');
     expect(createCabBooking).toHaveBeenCalledTimes(1);
     expect(createCabBooking.mock.calls[0]![0]).toMatchObject({ contactId: CONTACT, packageSku: 'CAB-DEL-JAI-SEDAN' });
+    // The pickup date is a clean date, not the whole message echoed back.
+    const passedPickup = createCabBooking.mock.calls[0]![0].pickupDate;
+    expect(passedPickup).toBe('Tomorrow');
+    expect(passedPickup).not.toContain('Book the');
     expect(state.toolCalls.some((t) => t.tool === 'create_cab_booking')).toBe(true);
     expect(state.finalResponse).toContain('https://pay.example.com/cab/abc123');
     expect(state.finalResponse).toContain('BK-55501');
