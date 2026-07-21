@@ -60577,7 +60577,7 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         if (tc.tool !== "upsert_qualified_lead") continue;
         const out = tc.output;
         if (!out?.leadId) continue;
-        const mem = writeLeadMemory(orgId, msg.contactId, out.leadId);
+        const mem = writeLeadMemory(orgId, msg.contactId, out.leadId).then(() => distillCustomerMemory(orgId, msg.contactId, msg.conversationId));
         try {
           (0, import_functions.waitUntil)(mem);
         } catch {
@@ -60648,6 +60648,35 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         await store.addContactNote(orgId, { contactId, kind: "memory", body });
       }
     } catch {
+    }
+  }
+  async function distillCustomerMemory(orgId, contactId, conversationId) {
+    try {
+      const { data: msgs } = await db.from("messages").select("direction, content").eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(16);
+      const convo = (msgs ?? []).reverse().map((m) => `${m.direction === "inbound" ? "Customer" : "Business"}: ${m.content}`).join("\n").slice(0, 3e3);
+      if (convo.length < 40) return;
+      const existing = (await store.getContactNotes(orgId, contactId)).filter((n) => n.kind === "memory").map((n) => n.body);
+      const completion = await llm.generateCompletion({
+        organizationId: orgId,
+        maxTokens: 260,
+        messages: [{ role: "user", content: `From this WhatsApp conversation, extract DURABLE facts about the CUSTOMER for a small-business CRM \u2014 only stable preferences/attributes (e.g. "Prefers beach destinations", "Budget around \u20B91 lakh", "Travels with family", "Prefers Hindi", "Vegetarian"). Ignore one-off logistics, specific dates, greetings, and anything transient. Do NOT repeat any of these existing facts: ${JSON.stringify(existing)}. Return ONLY a JSON array of short strings (max 5); return [] if nothing new.
+
+Conversation:
+${convo}` }]
+      });
+      const raw = completion.content.replace(/```json|```/g, "");
+      const start = raw.indexOf("[");
+      const end = raw.lastIndexOf("]");
+      if (start === -1 || end === -1) return;
+      const facts = JSON.parse(raw.slice(start, end + 1));
+      if (!Array.isArray(facts)) return;
+      for (const f of facts.slice(0, 5)) {
+        if (typeof f === "string" && f.trim().length > 3) {
+          await store.addContactNote(orgId, { contactId, kind: "memory", body: f.trim().slice(0, 200) });
+        }
+      }
+    } catch (err) {
+      logger.warn("memory distillation failed", { orgId, error: err instanceof Error ? err.message : String(err) });
     }
   }
   async function latestPendingBookingForContact(orgId, contactId) {

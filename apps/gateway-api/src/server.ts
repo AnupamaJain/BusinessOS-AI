@@ -692,7 +692,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         if (tc.tool !== 'upsert_qualified_lead') continue;
         const out = tc.output as { leadId?: string } | undefined;
         if (!out?.leadId) continue;
-        const mem = writeLeadMemory(orgId, msg.contactId, out.leadId);
+        const mem = writeLeadMemory(orgId, msg.contactId, out.leadId)
+          .then(() => distillCustomerMemory(orgId, msg.contactId!, msg.conversationId!));
         try { waitUntil(mem); } catch { void mem; }
         if (hubspot.isConfigured) {
           const work = syncLeadToHubSpot(orgId, out.leadId);
@@ -772,6 +773,42 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         await store.addContactNote(orgId, { contactId, kind: 'memory', body }); // dedups identical facts
       }
     } catch { /* memory is best-effort */ }
+  }
+
+  /**
+   * Business Brain (LLM): read the recent conversation and extract DURABLE,
+   * free-form customer facts ("prefers beaches", "travels with family",
+   * "budget ~₹1L") as memory notes. Runs off the reply path, only when a lead
+   * is qualified (bounds cost), and dedups against what's already stored.
+   */
+  async function distillCustomerMemory(orgId: string, contactId: string, conversationId: string): Promise<void> {
+    try {
+      const { data: msgs } = await db.from('messages')
+        .select('direction, content').eq('conversation_id', conversationId)
+        .order('created_at', { ascending: false }).limit(16);
+      const convo = (msgs ?? []).reverse()
+        .map((m) => `${m.direction === 'inbound' ? 'Customer' : 'Business'}: ${m.content}`)
+        .join('\n').slice(0, 3000);
+      if (convo.length < 40) return;
+      const existing = (await store.getContactNotes(orgId, contactId)).filter((n) => n.kind === 'memory').map((n) => n.body);
+      const completion = await llm.generateCompletion({
+        organizationId: orgId, maxTokens: 260,
+        messages: [{ role: 'user', content:
+          `From this WhatsApp conversation, extract DURABLE facts about the CUSTOMER for a small-business CRM — only stable preferences/attributes (e.g. "Prefers beach destinations", "Budget around ₹1 lakh", "Travels with family", "Prefers Hindi", "Vegetarian"). Ignore one-off logistics, specific dates, greetings, and anything transient. Do NOT repeat any of these existing facts: ${JSON.stringify(existing)}. Return ONLY a JSON array of short strings (max 5); return [] if nothing new.\n\nConversation:\n${convo}` }],
+      });
+      const raw = completion.content.replace(/```json|```/g, '');
+      const start = raw.indexOf('['); const end = raw.lastIndexOf(']');
+      if (start === -1 || end === -1) return;
+      const facts = JSON.parse(raw.slice(start, end + 1)) as unknown;
+      if (!Array.isArray(facts)) return;
+      for (const f of facts.slice(0, 5)) {
+        if (typeof f === 'string' && f.trim().length > 3) {
+          await store.addContactNote(orgId, { contactId, kind: 'memory', body: f.trim().slice(0, 200) });
+        }
+      }
+    } catch (err) {
+      logger.warn('memory distillation failed', { orgId, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /** The most recent booking for a contact that is still awaiting payment, if any. */
