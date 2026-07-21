@@ -7,7 +7,8 @@
  *  - SupabaseBusinessStore (production, Postgres via Supabase) in supabase-store.ts
  */
 
-export interface ContactRecord { id: string; organizationId: string; phone: string; name?: string; email?: string; }
+export interface ContactRecord { id: string; organizationId: string; phone: string; name?: string; email?: string; tags?: string[]; preferredLanguage?: string; lastSeenAt?: string; }
+export interface ContactNote { id: string; contactId: string; kind: 'memory' | 'note'; body: string; createdAt: string; }
 export interface ConsentRow { contactId: string; organizationId: string; consentType: string; action: string; }
 export interface LeadRecord { id: string; organizationId: string; contactId: string; conversationId: string; stage: string; serviceInterest: string; budgetRange?: string; purchaseTimeline?: string; qualificationSummary?: string; score?: number; idempotencyKey: string; }
 export interface HandoffRecord { id: string; organizationId: string; conversationId: string; contactId: string; reason: string; priority: string; status: string; summary: string; idempotencyKey: string; }
@@ -79,6 +80,14 @@ export interface BusinessStore {
   upsertContactByPhone(organizationId: string, phone: string, name?: string): Promise<ContactRecord>;
   listConsent(organizationId: string, contactId: string): Promise<ConsentRow[]>;
   insertConsent(row: ConsentRow & { source?: string }): Promise<void>;
+
+  // Business Brain — per-customer memory + notes, engagement recency
+  /** Append a memory (AI fact) or operator note. Memories are deduped on exact body per contact. */
+  addContactNote(organizationId: string, input: { contactId: string; kind: 'memory' | 'note'; body: string; createdBy?: string }): Promise<void>;
+  /** All notes for a contact, newest first. */
+  getContactNotes(organizationId: string, contactId: string): Promise<ContactNote[]>;
+  /** Stamp the contact's last_seen_at to now. */
+  updateContactLastSeen(organizationId: string, contactId: string): Promise<void>;
 
   // Leads
   latestLeadForContact(organizationId: string, contactId: string): Promise<LeadRecord | undefined>;

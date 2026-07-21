@@ -1,4 +1,5 @@
 import express from 'express';
+import QRCode from 'qrcode';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { createApp, type InboundCallbackMessage } from './app';
@@ -499,6 +500,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       return;
     }
 
+    // Business Brain: stamp "last seen" for this customer (best-effort).
+    try { await store.updateContactLastSeen(orgId, msg.contactId); } catch { /* non-critical */ }
+
     // ── Document / OCR extraction: customer sent an image or document ──
     if ((msg.type === 'image' || msg.type === 'document') && ocrService.isConfigured) {
       try {
@@ -507,6 +511,36 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         if (meta['channel'] === 'meta' && typeof meta['mediaId'] === 'string') {
           const dl = await downloadMetaMedia(meta['mediaId']);
           if (dl) image = { imageBase64: dl.base64, mimeType: dl.mime };
+        }
+        // If the customer has a booking awaiting payment, treat an image as a
+        // payment screenshot: read the amount/ref and flag it for the merchant.
+        const pendingForReceipt = image ? await latestPendingBookingForContact(orgId, msg.contactId) : null;
+        if (image && pendingForReceipt) {
+          const receipt = await ocrService.extractPaymentReceipt(image);
+          const d = (receipt.ok && receipt.data) ? receipt.data : {};
+          const amount = d['amount'] ?? '';
+          const ref = d['reference'] ?? '';
+          const summary = `Payment screenshot for ${pendingForReceipt.bookingNumber}${amount ? ` — ₹${String(amount).replace(/[^\d.,]/g, '')}` : ''}${ref ? ` · ref ${ref}` : ''}${d['date'] ? ` · ${d['date']}` : ''}`;
+          try {
+            await store.addContactNote(orgId, { contactId: msg.contactId, kind: 'note', body: `${summary} — verify & mark paid.` });
+            await store.insertAuditEvent({ id: randomUUID(), organizationId: orgId, action: 'payment_receipt_uploaded', entityType: 'booking', entityId: pendingForReceipt.id, actorType: 'agent', details: { fields: d, providerMessageId: msg.providerMessageId }, createdAt: new Date().toISOString() });
+          } catch { /* note/audit best-effort */ }
+          // Nudge the merchant (owner numbers) to verify.
+          try {
+            const owners = await store.getOwnerPhoneNumbers(orgId);
+            const cust = await store.findContactById(orgId, msg.contactId);
+            const orgAdapter = await adapterForOrg(orgId);
+            for (const owner of owners.slice(0, 5)) {
+              const confirmHint = cust?.name ? `Confirm ${cust.name}` : 'Paid';
+              const notify = `💰 ${cust?.name ?? 'A customer'} sent a payment screenshot for ${pendingForReceipt.bookingNumber}${amount ? ` (₹${String(amount).replace(/[^\d.,]/g, '')})` : ''}${ref ? `, ref ${ref}` : ''}. Reply “${confirmHint}”, or mark it paid in your dashboard.`;
+              await orgAdapter.sendMessage(orgId, { to: owner, type: 'text', text: notify, idempotencyKey: `receiptnotify:${msg.providerMessageId}:${owner}` });
+            }
+          } catch { /* notify best-effort */ }
+          const reply = `🙏 Thanks! We’ve received your payment details${amount ? ` (₹${String(amount).replace(/[^\d.,]/g, '')})` : ''} and will confirm your booking shortly.`;
+          const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: 'text', text: reply, idempotencyKey: `receipt:${msg.providerMessageId}` });
+          if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, msg.from, reply, r.providerMessageId, msg.conversationId);
+          await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+          return;
         }
         if (image) {
           const result = await ocrService.extractPassport(image);
@@ -558,8 +592,14 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         const summary = await store.getBusinessSummary(orgId, new Date());
 
         let reply: string;
+        // Merchant marks a UPI/manual payment as received: "Paid", "Confirm Rahul".
+        const confirmNameMatch = ownerQuestion.match(/\bconfirm(?:ed)?\s+([a-z][\w.'-]*(?:\s+[a-z][\w.'-]*)?)/i);
+        const wantsPayConfirm = /\b(paid|payment\s*(?:done|received|complete)|mark(?:ed)?\s*paid|received\s*(?:the\s*)?payment)\b/i.test(ownerQuestion) || !!confirmNameMatch;
+        const payBookingNo = wantsPayConfirm ? await confirmLatestPendingBooking(orgId, confirmNameMatch?.[1]?.trim() ?? null) : null;
+        if (payBookingNo) {
+          reply = `✅ Marked ${payBookingNo} as paid and sent the customer their confirmation. 🎉`;
         // If the owner confirms a follow-up ("yes"/"follow up"), actually reach the cold leads.
-        if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
+        } else if (isOwnerConfirmation(ownerQuestion) && summary.staleContacts.length > 0) {
           let sent = 0;
           const today = new Date().toISOString().slice(0, 10);
           // Cold leads are outside the 24h window → business-initiated requires an
@@ -646,17 +686,17 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         }
       }
 
-      // Mirror any lead the agent qualified into HubSpot — off the reply path so
-      // CRM latency never delays the customer.
-      if (hubspot.isConfigured) {
-        for (const tc of state.toolCalls) {
-          if (tc.tool === 'upsert_qualified_lead') {
-            const out = tc.output as { leadId?: string } | undefined;
-            if (out?.leadId) {
-              const work = syncLeadToHubSpot(orgId, out.leadId);
-              try { waitUntil(work); } catch { void work; }
-            }
-          }
+      // On a newly qualified lead: distil customer memory (Business Brain) and,
+      // if configured, mirror into HubSpot. Both off the reply path.
+      for (const tc of state.toolCalls) {
+        if (tc.tool !== 'upsert_qualified_lead') continue;
+        const out = tc.output as { leadId?: string } | undefined;
+        if (!out?.leadId) continue;
+        const mem = writeLeadMemory(orgId, msg.contactId, out.leadId);
+        try { waitUntil(mem); } catch { void mem; }
+        if (hubspot.isConfigured) {
+          const work = syncLeadToHubSpot(orgId, out.leadId);
+          try { waitUntil(work); } catch { void work; }
         }
       }
 
@@ -716,6 +756,59 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     } catch (err) {
       logger.warn('Booking confirmation send failed', { orgId, bookingId, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /** Business Brain: distil durable facts about a customer from a new lead. */
+  async function writeLeadMemory(orgId: string, contactId: string, leadId: string): Promise<void> {
+    try {
+      const { data: lead } = await db.from('leads')
+        .select('service_interest, budget_range, purchase_timeline').eq('organization_id', orgId).eq('id', leadId).maybeSingle();
+      if (!lead) return;
+      const facts: string[] = [];
+      if (lead.service_interest) facts.push(`Interested in: ${String(lead.service_interest).slice(0, 200)}`);
+      if (lead.budget_range) facts.push(`Budget: ${lead.budget_range}`);
+      if (lead.purchase_timeline) facts.push(`Timeline: ${lead.purchase_timeline}`);
+      for (const body of facts) {
+        await store.addContactNote(orgId, { contactId, kind: 'memory', body }); // dedups identical facts
+      }
+    } catch { /* memory is best-effort */ }
+  }
+
+  /** The most recent booking for a contact that is still awaiting payment, if any. */
+  async function latestPendingBookingForContact(orgId: string, contactId: string): Promise<{ id: string; bookingNumber: string } | null> {
+    const { data } = await db.from('bookings')
+      .select('id, booking_number').eq('organization_id', orgId).eq('contact_id', contactId)
+      .in('status', ['pending', 'pending_payment']).order('created_at', { ascending: false }).limit(1);
+    const b = (data ?? [])[0];
+    return b ? { id: b.id, bookingNumber: b.booking_number } : null;
+  }
+
+  /**
+   * Confirm the org's latest pending booking (optionally matching a customer
+   * name) as paid — for the merchant "Paid"/"Confirm <name>" WhatsApp reply.
+   * Returns the confirmed booking number, or null if none matched.
+   */
+  async function confirmLatestPendingBooking(orgId: string, nameHint: string | null, actorUserId?: string): Promise<string | null> {
+    const { data } = await db.from('bookings')
+      .select('id, booking_number, contacts(name)').eq('organization_id', orgId)
+      .in('status', ['pending', 'pending_payment']).order('created_at', { ascending: false }).limit(15);
+    const rows = data ?? [];
+    let target = nameHint ? undefined : rows[0];
+    if (nameHint) {
+      // With a name hint, only confirm a booking that actually matches it —
+      // never fall back to a random pending booking.
+      target = rows.find((b) => {
+        const c = b.contacts as { name?: string } | { name?: string }[] | null;
+        const name = Array.isArray(c) ? c[0]?.name : c?.name;
+        return name && name.toLowerCase().includes(nameHint.toLowerCase());
+      });
+    }
+    if (!target) return null;
+    await db.from('bookings').update({ status: 'confirmed' }).eq('id', target.id).eq('organization_id', orgId);
+    await store.insertAuditEvent({ id: randomUUID(), organizationId: orgId, action: 'booking_marked_paid', entityType: 'booking', entityId: target.id, actorType: 'user', details: { by: actorUserId ?? 'merchant-whatsapp', method: 'whatsapp' }, createdAt: new Date().toISOString() });
+    const work = sendBookingConfirmation(orgId, target.id);
+    try { waitUntil(work); } catch { void work; }
+    return target.booking_number;
   }
 
   // ── Auth helpers for internal/operator routes ──
@@ -1073,20 +1166,27 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       const note = `Booking ${booking.booking_number}`;
       const upi = `upi://pay?pa=${encodeURIComponent(org.upi_vpa)}&pn=${encodeURIComponent(payee)}&am=${amount}&cu=INR&tn=${encodeURIComponent(note)}&tr=${encodeURIComponent(booking.booking_number)}`;
       const paid = booking.status === 'confirmed' || booking.status === 'paid';
+      // Scannable QR (for desktop / another device); the button covers same-device.
+      let qrSvg = '';
+      if (!paid) {
+        try { qrSvg = await QRCode.toString(upi, { type: 'svg', margin: 1, color: { dark: '#0b0f16', light: '#ffffff' } }); } catch { qrSvg = ''; }
+      }
       res.status(200).type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pay ${esc(payee)}</title>
 <style>*{box-sizing:border-box;margin:0}body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f16;color:#eef2f7;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
 .card{background:#0e1420;border:1px solid rgba(255,255,255,.1);border-radius:20px;max-width:380px;width:100%;padding:28px;text-align:center}
 .amt{font-size:40px;font-weight:800;margin:8px 0 2px}.muted{color:#94a3b8;font-size:14px}
 .vpa{background:#0b0e15;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px;margin:18px 0;font-family:monospace;font-size:15px;word-break:break-all}
 .btn{display:block;background:linear-gradient(135deg,#00e5ff,#4facfe);color:#00232b;font-weight:800;padding:15px;border-radius:12px;text-decoration:none;font-size:16px;margin-top:6px}
-.ok{color:#25d366;font-weight:700;font-size:18px;margin:10px 0}.steps{text-align:left;color:#94a3b8;font-size:13px;line-height:1.7;margin-top:20px}</style></head>
+.ok{color:#25d366;font-weight:700;font-size:18px;margin:10px 0}.steps{text-align:left;color:#94a3b8;font-size:13px;line-height:1.7;margin-top:20px}
+.qr{background:#fff;border-radius:14px;padding:12px;width:200px;margin:18px auto 6px}.qr svg{width:100%;height:auto;display:block}</style></head>
 <body><div class="card">
 <div class="muted">Pay to</div><div style="font-size:18px;font-weight:700">${esc(payee)}</div>
 <div class="amt">₹${amount.toLocaleString('en-IN')}</div><div class="muted">${esc(note)}</div>
 ${paid ? '<div class="ok">✅ Payment received — booking confirmed</div>' : `
+${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12px">Scan with any UPI app</div>` : ''}
 <div class="vpa">${esc(org.upi_vpa)}</div>
 <a class="btn" href="${esc(upi)}">Pay ₹${amount.toLocaleString('en-IN')} via UPI app</a>
-<div class="steps">1. Tap the button to open GPay / PhonePe / Paytm / any UPI app.<br>2. Confirm the payment of ₹${amount.toLocaleString('en-IN')}.<br>3. The business will confirm your booking once the payment reflects.</div>`}
+<div class="steps">1. Scan the QR, or tap the button to open GPay / PhonePe / Paytm.<br>2. Confirm the payment of ₹${amount.toLocaleString('en-IN')}.<br>3. The business will confirm your booking once the payment reflects.</div>`}
 </div></body></html>`);
     });
 

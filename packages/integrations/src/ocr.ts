@@ -215,6 +215,26 @@ export class OcrService {
       fields: ['full_name', 'id_number', 'date_of_birth']
     });
   }
+
+  extractPaymentReceipt(image: {
+    imageBase64?: string;
+    imageUrl?: string;
+    mimeType?: string;
+  }): Promise<ExtractResult> {
+    return this.extract({
+      ...image,
+      documentHint:
+        'Indian UPI / payment-app screenshot (GPay, PhonePe, Paytm, BHIM, or bank UPI)',
+      fields: [
+        'amount',
+        'reference',
+        'date',
+        'upi_id',
+        'status',
+        'payer_name'
+      ]
+    });
+  }
 }
 
 /**

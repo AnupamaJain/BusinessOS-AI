@@ -14,7 +14,7 @@ import type {
   CreateServiceBookingInput, CreateServiceBookingOutput,
 } from './schemas';
 import type {
-  BusinessStore, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, ContactRecord, ContactNote, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -29,6 +29,7 @@ const DEFAULT_TRAVEL_PACKAGES: Omit<PackageRecord, 'organizationId'>[] = [
 
 export class ToolDataStore implements BusinessStore {
   contacts: ContactRecord[] = [];
+  contactNotes: Array<ContactNote & { organizationId: string; createdBy?: string }> = [];
   consentRecords: ConsentRow[] = [];
   leads: LeadRecord[] = [];
   handoffs: HandoffRecord[] = [];
@@ -43,7 +44,7 @@ export class ToolDataStore implements BusinessStore {
   bookings: BookingRecord[] = [];
 
   clear(): void {
-    this.contacts = []; this.consentRecords = []; this.leads = []; this.handoffs = [];
+    this.contacts = []; this.contactNotes = []; this.consentRecords = []; this.leads = []; this.handoffs = [];
     this.messages = []; this.auditEvents = []; this.automationRuns = [];
     this.conversations = []; this.products = []; this.templates = [];
     this.orders = []; this.packages = []; this.bookings = [];
@@ -123,6 +124,35 @@ export class ToolDataStore implements BusinessStore {
   }
   async insertConsent(row: ConsentRow & { source?: string }) {
     this.consentRecords.push(row);
+  }
+
+  async addContactNote(organizationId: string, input: { contactId: string; kind: 'memory' | 'note'; body: string; createdBy?: string }) {
+    // Dedup exact-duplicate memory bodies per contact so the agent doesn't repeat facts.
+    if (input.kind === 'memory') {
+      const dup = this.contactNotes.find(
+        (n) => n.organizationId === organizationId && n.contactId === input.contactId &&
+               n.kind === 'memory' && n.body === input.body,
+      );
+      if (dup) return;
+    }
+    this.contactNotes.push({
+      id: randomUUID(), organizationId, contactId: input.contactId,
+      kind: input.kind, body: input.body, createdBy: input.createdBy,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  async getContactNotes(organizationId: string, contactId: string): Promise<ContactNote[]> {
+    // Newest first. Break createdAt ties by insertion order (later push = newer),
+    // so rapid inserts sharing a millisecond timestamp still order correctly.
+    return this.contactNotes
+      .map((n, i) => ({ n, i }))
+      .filter(({ n }) => n.organizationId === organizationId && n.contactId === contactId)
+      .sort((a, b) => (a.n.createdAt < b.n.createdAt ? 1 : a.n.createdAt > b.n.createdAt ? -1 : b.i - a.i))
+      .map(({ n }) => ({ id: n.id, contactId: n.contactId, kind: n.kind, body: n.body, createdAt: n.createdAt }));
+  }
+  async updateContactLastSeen(organizationId: string, contactId: string) {
+    const contact = this.contacts.find((c) => c.id === contactId && c.organizationId === organizationId);
+    if (contact) contact.lastSeenAt = new Date().toISOString();
   }
 
   async latestLeadForContact(organizationId: string, contactId: string) {

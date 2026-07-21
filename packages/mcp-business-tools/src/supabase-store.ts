@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
 import { SecretBox, maskPhone } from './crypto';
 import type {
-  BusinessStore, BusinessSummary, WhatsAppConnection, PaymentConnection, ContactRecord, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, WhatsAppConnection, PaymentConnection, ContactRecord, ContactNote, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -196,17 +196,28 @@ export class SupabaseBusinessStore implements BusinessStore {
     };
   }
 
+  /** Map a contacts row to a ContactRecord, including the Business Brain enrichment columns when present. */
+  private mapContact(data: Record<string, any>): ContactRecord {
+    return {
+      id: data.id, organizationId: data.organization_id, phone: this.realPhone(data),
+      name: data.name ?? undefined, email: data.email ?? undefined,
+      tags: Array.isArray(data.tags) ? data.tags : undefined,
+      preferredLanguage: data.preferred_language ?? undefined,
+      lastSeenAt: data.last_seen_at ?? undefined,
+    };
+  }
+
   async findContactById(organizationId: string, contactId: string): Promise<ContactRecord | undefined> {
     const { data, error } = await this.db.from('contacts')
-      .select('id, organization_id, phone_number, phone_enc, name, email')
+      .select('id, organization_id, phone_number, phone_enc, name, email, tags, preferred_language, last_seen_at')
       .eq('organization_id', organizationId).eq('id', contactId).maybeSingle();
     if (error) this.fail('findContactById', error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+    return data ? this.mapContact(data) : undefined;
   }
 
   async findContactByPhone(organizationId: string, phone: string): Promise<ContactRecord | undefined> {
     const normalized = this.normalizePhone(phone);
-    const select = 'id, organization_id, phone_number, phone_enc, name, email';
+    const select = 'id, organization_id, phone_number, phone_enc, name, email, tags, preferred_language, last_seen_at';
 
     // Encrypted lookup: match on the keyed blind index (phone_number is masked).
     if (this.box.enabled) {
@@ -216,7 +227,7 @@ export class SupabaseBusinessStore implements BusinessStore {
           .select(select)
           .eq('organization_id', organizationId).eq('phone_bidx', bidx).maybeSingle();
         if (error) this.fail('findContactByPhone', error);
-        if (data) return { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined };
+        if (data) return this.mapContact(data);
       }
       // Fall through to the plaintext lookup for legacy rows not yet backfilled.
     }
@@ -225,7 +236,7 @@ export class SupabaseBusinessStore implements BusinessStore {
       .select(select)
       .eq('organization_id', organizationId).eq('phone_number', normalized).maybeSingle();
     if (error) this.fail('findContactByPhone', error);
-    return data ? { id: data.id, organizationId: data.organization_id, phone: this.realPhone(data), name: data.name ?? undefined, email: data.email ?? undefined } : undefined;
+    return data ? this.mapContact(data) : undefined;
   }
 
   async upsertContactByPhone(organizationId: string, phone: string, name?: string): Promise<ContactRecord> {
@@ -256,6 +267,48 @@ export class SupabaseBusinessStore implements BusinessStore {
       consent_type: row.consentType, action: row.action, source: row.source ?? 'whatsapp_conversation',
     });
     if (error) this.fail('insertConsent', error);
+  }
+
+  // ─── Business Brain — notes, memory & engagement recency ───────────
+
+  async addContactNote(
+    organizationId: string,
+    input: { contactId: string; kind: 'memory' | 'note'; body: string; createdBy?: string },
+  ): Promise<void> {
+    // Memories are durable AI facts; skip if the exact same fact already exists
+    // for this contact so the agent doesn't record it repeatedly.
+    if (input.kind === 'memory') {
+      const { data, error } = await this.db.from('contact_notes')
+        .select('id')
+        .eq('organization_id', organizationId).eq('contact_id', input.contactId)
+        .eq('kind', 'memory').eq('body', input.body).limit(1).maybeSingle();
+      if (error) this.fail('addContactNote.dedup', error);
+      if (data) return;
+    }
+    const { error } = await this.db.from('contact_notes').insert({
+      organization_id: organizationId, contact_id: input.contactId,
+      kind: input.kind, body: input.body, created_by: input.createdBy ?? null,
+    });
+    if (error) this.fail('addContactNote', error);
+  }
+
+  async getContactNotes(organizationId: string, contactId: string): Promise<ContactNote[]> {
+    const { data, error } = await this.db.from('contact_notes')
+      .select('id, contact_id, kind, body, created_at')
+      .eq('organization_id', organizationId).eq('contact_id', contactId)
+      .order('created_at', { ascending: false });
+    if (error) this.fail('getContactNotes', error);
+    return (data ?? []).map((r) => ({
+      id: r.id, contactId: r.contact_id, kind: r.kind as 'memory' | 'note',
+      body: r.body, createdAt: r.created_at,
+    }));
+  }
+
+  async updateContactLastSeen(organizationId: string, contactId: string): Promise<void> {
+    const { error } = await this.db.from('contacts')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('organization_id', organizationId).eq('id', contactId);
+    if (error) this.fail('updateContactLastSeen', error);
   }
 
   // ─── Leads ────────────────────────────────────────────────────────

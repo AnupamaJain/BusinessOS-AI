@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import {
   MessageSquare,
   ShieldCheck,
@@ -32,6 +32,9 @@ import {
   fetchActivityTrend,
   fetchAutomationRuns,
   fetchContacts,
+  fetchContactNotes,
+  addContactNote,
+  deleteContactNote,
   fetchContactTimeline,
   fetchConversations,
   fetchDashboardKpis,
@@ -64,6 +67,7 @@ import {
   confirmBookingPaid,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
+import { decodeUpiQrFromFile } from './lib/qr';
 import {
   getLastSignupInfo,
   launchWhatsAppSignup,
@@ -72,6 +76,8 @@ import {
 import type {
   AuthSession,
   BillingPlan,
+  ContactNote,
+  ContactRow,
   DashboardKpis,
   HandoffItem,
   MessageRow,
@@ -83,6 +89,35 @@ type ViewState = 'landing' | 'onboarding' | 'dashboard';
 type TabKey = 'inbox' | 'crm' | 'payments' | 'scheduler' | 'compliance' | 'kb' | 'analytics';
 
 const ERROR_COLOR = '#ff6b6b';
+
+/* Lead stages that count as an open opportunity (Business Brain follow-ups). */
+const OPEN_LEAD_STAGES = ['new', 'contacted', 'qualified', 'proposal', 'negotiation'];
+
+/* Whole days between an ISO timestamp and now (floored, never negative). */
+function daysSince(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
+}
+
+/* Compact relative time, e.g. "3 days ago" / "just now". */
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return 'never';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min${mins === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+  const years = Math.floor(months / 12);
+  return `${years} year${years === 1 ? '' : 's'} ago`;
+}
 
 const BILLING_PLANS: Array<{
   plan: BillingPlan;
@@ -503,6 +538,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [upiConnecting, setUpiConnecting] = useState(false);
   const [upiError, setUpiError] = useState<string | null>(null);
   const [upiConnected, setUpiConnected] = useState(false);
+  const [qrReading, setQrReading] = useState(false);
+  const [qrNotice, setQrNotice] = useState<string | null>(null);
+
+  // CRM — Customer Memory & Notes (Business Brain)
+  const [crmContactId, setCrmContactId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
 
   // Onboarding Step 7 — review & agree
   const [termsAgreed, setTermsAgreed] = useState(false);
@@ -624,6 +667,13 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     inboxActive && !!selectedConvId
   );
   const leadsQuery = usePolling(fetchLeads, [], 10_000, crmActive);
+  const crmContactsQuery = usePolling(fetchContacts, [], 15_000, crmActive);
+  const notesQuery = usePolling<ContactNote[]>(
+    () => (crmContactId ? fetchContactNotes(crmContactId) : Promise.resolve([])),
+    [crmContactId],
+    15_000,
+    crmActive && !!crmContactId
+  );
   const pendingBookingsQuery = usePolling(
     () => fetchPendingBookings(session.access_token),
     [],
@@ -755,6 +805,68 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
       return;
     }
     setUpiConnected(true);
+  }
+
+  /* Decode an uploaded QR image client-side → fill the UPI ID and save it via
+   * the same connectUpi flow as manual entry. Never throws; shows inline copy. */
+  async function handleQrUpload(e: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = ''; // allow re-selecting the same file
+    if (!file) return;
+
+    setQrNotice(null);
+    setUpiError(null);
+    setQrReading(true);
+    const result = await decodeUpiQrFromFile(file);
+    setQrReading(false);
+
+    if (!result) {
+      setUpiError("Couldn't read a UPI QR — please type your UPI ID instead.");
+      return;
+    }
+
+    setUpiVpa(result.vpa);
+    if (result.payee) setUpiPayee(result.payee);
+    setQrNotice(`✓ QR read — UPI ID: ${result.vpa}`);
+
+    setUpiConnecting(true);
+    const saved = await connectUpi(session.access_token, {
+      upiVpa: result.vpa,
+      payeeName: result.payee,
+    });
+    setUpiConnecting(false);
+    if (!saved.ok) {
+      setUpiError(saved.error ?? 'Could not save your UPI ID.');
+      return;
+    }
+    setUpiConnected(true);
+  }
+
+  async function handleAddNote(): Promise<void> {
+    if (!crmContactId) return;
+    const body = noteDraft.trim();
+    if (!body) return;
+    setSavingNote(true);
+    setNoteError(null);
+    try {
+      await addContactNote(crmContactId, body);
+      setNoteDraft('');
+      await notesQuery.refetch();
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : 'Failed to add note');
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  async function handleDeleteNote(id: string): Promise<void> {
+    setNoteError(null);
+    try {
+      await deleteContactNote(id);
+      await notesQuery.refetch();
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : 'Failed to delete note');
+    }
   }
 
   async function handleCompleteOnboarding(): Promise<void> {
@@ -1830,6 +1942,11 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-muted)' }} />
               </div>
               <div style={{ padding: '18px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: upiConnected ? '1px solid var(--color-success)' : '1px solid var(--border-muted)' }}>
+                {qrNotice && (
+                  <div style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600, marginBottom: '10px' }}>
+                    {qrNotice}
+                  </div>
+                )}
                 {upiConnected ? (
                   <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <Check size={16} strokeWidth={3} /> UPI ID connected — {upiVpa.trim()}
@@ -1859,9 +1976,27 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                     {upiError && (
                       <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginBottom: '10px' }}>{upiError}</div>
                     )}
-                    <button className="btn btn-secondary" disabled={upiConnecting} onClick={() => { void handleConnectUpi(); }}>
-                      {upiConnecting ? '⏳ Saving…' : '💸 Save UPI ID'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="btn btn-secondary" disabled={upiConnecting} onClick={() => { void handleConnectUpi(); }}>
+                        {upiConnecting ? '⏳ Saving…' : '💸 Save UPI ID'}
+                      </button>
+                      <label
+                        className="btn btn-secondary"
+                        style={{ cursor: qrReading ? 'default' : 'pointer', opacity: qrReading ? 0.7 : 1, margin: 0 }}
+                      >
+                        {qrReading ? '⏳ Reading QR…' : '📷 Upload your QR code'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={qrReading || upiConnecting}
+                          onChange={(e) => { void handleQrUpload(e); }}
+                          style={{ display: 'none' }}
+                        />
+                      </label>
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      Have a UPI QR image (GPay / PhonePe / Paytm)? Upload it and we’ll read your UPI ID automatically.
+                    </div>
                   </>
                 )}
               </div>
@@ -2750,6 +2885,231 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            {/* Customer Memory & Notes — the "Business Brain" */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title">
+                <BookOpen size={20} style={{ color: 'var(--color-primary)' }} />
+                Customer Memory &amp; Notes
+              </div>
+
+              {crmContactsQuery.loading && !crmContactsQuery.data && (
+                <StatusNote kind="loading">Loading customers…</StatusNote>
+              )}
+              {crmContactsQuery.error && <StatusNote kind="error">{crmContactsQuery.error}</StatusNote>}
+              {crmContactsQuery.data && crmContactsQuery.data.length === 0 && (
+                <StatusNote kind="empty">No customers yet.</StatusNote>
+              )}
+
+              {crmContactsQuery.data && crmContactsQuery.data.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '20px' }}>
+                  {crmContactsQuery.data.map((c) => {
+                    const active = c.id === crmContactId;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => { setCrmContactId(c.id); setNoteError(null); setNoteDraft(''); }}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: '10px',
+                          fontSize: '13px',
+                          cursor: 'pointer',
+                          border: active ? '1px solid var(--color-primary)' : '1px solid var(--border-muted)',
+                          backgroundColor: active ? 'rgba(0, 242, 254, 0.1)' : 'var(--bg-tertiary)',
+                          color: active ? 'var(--color-primary)' : 'var(--text-main)',
+                          fontWeight: active ? 600 : 400,
+                        }}
+                      >
+                        {c.name ?? c.phone_number}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {(() => {
+                const contact: ContactRow | undefined = (crmContactsQuery.data ?? []).find((c) => c.id === crmContactId);
+                if (!contact) {
+                  return (
+                    <StatusNote kind="empty">Select a customer above to view their memory &amp; notes.</StatusNote>
+                  );
+                }
+
+                const memories = (notesQuery.data ?? []).filter((n) => n.kind === 'memory');
+                const notes = (notesQuery.data ?? []).filter((n) => n.kind === 'note');
+                const tags = contact.tags ?? [];
+
+                // Suggested follow-up: open opportunity + gone quiet > 3 days.
+                const openLead = (leadsQuery.data ?? []).find(
+                  (l) => l.contact_id === contact.id && OPEN_LEAD_STAGES.includes(l.stage)
+                );
+                const quietDays = daysSince(contact.last_seen_at);
+                const showFollowUp = !!openLead && quietDays !== null && quietDays > 3;
+
+                return (
+                  <div>
+                    {/* Identity header */}
+                    <div style={{ marginBottom: '16px' }}>
+                      <div style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'var(--font-heading)' }}>
+                        {contact.name ?? 'Unknown customer'}
+                      </div>
+                      <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                        <span>📱 {contact.phone_number}</span>
+                        {contact.email && <span>✉️ {contact.email}</span>}
+                        {contact.preferred_language && <span>🗣️ {contact.preferred_language}</span>}
+                        <span>🕑 Last seen {contact.last_seen_at ? relativeTime(contact.last_seen_at) : 'never'}</span>
+                      </div>
+                      {tags.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
+                          {tags.map((t) => (
+                            <span
+                              key={t}
+                              style={{
+                                padding: '3px 10px',
+                                borderRadius: '999px',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                backgroundColor: 'rgba(0, 242, 254, 0.1)',
+                                color: 'var(--color-primary)',
+                                border: '1px solid var(--border-muted)',
+                              }}
+                            >
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {showFollowUp && (
+                      <div
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: '12px',
+                          backgroundColor: 'rgba(255, 190, 60, 0.08)',
+                          border: '1px solid var(--color-warning)',
+                          fontSize: '13px',
+                          color: 'var(--text-main)',
+                          marginBottom: '18px',
+                        }}
+                      >
+                        💡 No reply in {quietDays} days — suggested: send a follow-up message.
+                      </div>
+                    )}
+
+                    {notesQuery.error && <StatusNote kind="error">{notesQuery.error}</StatusNote>}
+
+                    {/* AI Memory (read-only) */}
+                    <div style={{ marginBottom: '22px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text-muted)' }}>
+                        🧠 AI Memory
+                      </div>
+                      {memories.length === 0 ? (
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                          No AI memories captured yet.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {memories.map((m) => (
+                            <div
+                              key={m.id}
+                              style={{
+                                padding: '10px 14px',
+                                borderRadius: '10px',
+                                backgroundColor: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border-muted)',
+                                fontSize: '13px',
+                              }}
+                            >
+                              <div>{m.body}</div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                {relativeTime(m.created_at)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Operator Notes */}
+                    <div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text-muted)' }}>
+                        📝 Notes
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                        <textarea
+                          className="chat-input"
+                          placeholder="Add a note about this customer…"
+                          value={noteDraft}
+                          onChange={(e) => { setNoteDraft(e.target.value); if (noteError) setNoteError(null); }}
+                          rows={2}
+                          style={{ flex: 1, minWidth: '220px', resize: 'vertical' }}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          disabled={savingNote || !noteDraft.trim()}
+                          onClick={() => { void handleAddNote(); }}
+                          style={{ alignSelf: 'flex-start', padding: '10px 18px', fontSize: '13px' }}
+                        >
+                          {savingNote ? '⏳ Saving…' : 'Save'}
+                        </button>
+                      </div>
+                      {noteError && (
+                        <div style={{ fontSize: '12px', color: 'var(--color-danger)', marginBottom: '10px' }}>{noteError}</div>
+                      )}
+                      {notesQuery.loading && !notesQuery.data && (
+                        <StatusNote kind="loading">Loading notes…</StatusNote>
+                      )}
+                      {notes.length === 0 && !notesQuery.loading ? (
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                          No notes yet.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {notes.map((n) => (
+                            <div
+                              key={n.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: '10px',
+                                padding: '10px 14px',
+                                borderRadius: '10px',
+                                backgroundColor: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border-muted)',
+                                fontSize: '13px',
+                              }}
+                            >
+                              <div style={{ flex: 1 }}>
+                                <div>{n.body}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                  {relativeTime(n.created_at)}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => { void handleDeleteNote(n.id); }}
+                                title="Delete note"
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: 'var(--text-muted)',
+                                  cursor: 'pointer',
+                                  fontSize: '14px',
+                                  lineHeight: 1,
+                                  padding: '2px',
+                                }}
+                              >
+                                ✗
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Catalog searcher */}

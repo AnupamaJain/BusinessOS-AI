@@ -154,6 +154,53 @@ describe('OcrService.extract', () => {
     expect(prompt).toContain('"passport_number"');
     expect(prompt).toContain('"expiry_date"');
   });
+
+  it('extractPaymentReceipt returns the skipped result and does not call fetch with no API key', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new OcrService({});
+    const result = await service.extractPaymentReceipt({ imageBase64: 'AAAA' });
+
+    expect(result).toEqual({
+      ok: false,
+      skipped: true,
+      error: 'GOOGLE_API_KEY not configured'
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('extractPaymentReceipt requests the payment fields and maps amount/reference', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      geminiTextResponse(
+        JSON.stringify({
+          amount: '₹1,250',
+          reference: '123456789012',
+          date: '19 Jul 2026, 4:32 PM',
+          upi_id: 'merchant@okhdfcbank',
+          status: 'Success',
+          payer_name: 'Ravi Kumar'
+        })
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new OcrService({ apiKey: 'gkey' });
+    const result = await service.extractPaymentReceipt({ imageBase64: 'x' });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.amount).toBe('₹1,250');
+    expect(result.data?.reference).toBe('123456789012');
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string
+    );
+    const prompt = body.contents[0].parts[0].text as string;
+    expect(prompt).toContain('UPI');
+    expect(prompt).toContain('"amount"');
+    expect(prompt).toContain('"reference"');
+    expect(prompt).toContain('"upi_id"');
+  });
 });
 
 describe('createOcrServiceFromEnv', () => {

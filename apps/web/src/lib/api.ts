@@ -4,6 +4,7 @@ import type {
   AutomationRunItem,
   BillingPlan,
   CheckoutResult,
+  ContactNote,
   ContactRow,
   ConversationListItem,
   CreateTemplateInput,
@@ -567,10 +568,50 @@ export async function fetchLeads(): Promise<LeadItem[]> {
 export async function fetchContacts(): Promise<ContactRow[]> {
   const { data, error } = await supabase
     .from('contacts')
-    .select('id, name, phone_number, email')
+    .select('id, name, phone_number, email, tags, preferred_language, last_seen_at')
     .order('name', { ascending: true });
   if (error) throw new Error(`Failed to load contacts: ${error.message}`);
   return (data ?? []) as ContactRow[];
+}
+
+/* ─── Business Brain: per-customer memory + operator notes ─────────── */
+
+export async function fetchContactNotes(contactId: string): Promise<ContactNote[]> {
+  const { data, error } = await supabase
+    .from('contact_notes')
+    .select('id,kind,body,created_at')
+    .eq('contact_id', contactId)
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(`Failed to load notes: ${error.message}`);
+  return (data ?? []) as ContactNote[];
+}
+
+export async function addContactNote(contactId: string, body: string): Promise<void> {
+  const text = body.trim();
+  if (!text) throw new Error('Note cannot be empty');
+
+  // contact_notes.organization_id is NOT NULL — resolve it from the contact row.
+  const { data: contact, error: contactError } = await supabase
+    .from('contacts')
+    .select('organization_id')
+    .eq('id', contactId)
+    .single();
+  if (contactError) throw new Error(`Failed to add note: ${contactError.message}`);
+  const organizationId = (contact as { organization_id?: string } | null)?.organization_id;
+  if (!organizationId) throw new Error('Failed to add note: contact has no organization');
+
+  const { error } = await supabase.from('contact_notes').insert({
+    contact_id: contactId,
+    organization_id: organizationId,
+    kind: 'note',
+    body: text,
+  });
+  if (error) throw new Error(`Failed to add note: ${error.message}`);
+}
+
+export async function deleteContactNote(id: string): Promise<void> {
+  const { error } = await supabase.from('contact_notes').delete().eq('id', id);
+  if (error) throw new Error(`Failed to delete note: ${error.message}`);
 }
 
 export async function fetchProducts(): Promise<ProductRow[]> {

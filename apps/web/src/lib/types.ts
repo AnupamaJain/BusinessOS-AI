@@ -69,6 +69,17 @@ export interface ContactRow {
   name: string | null;
   phone_number: string;
   email: string | null;
+  tags?: string[] | null;
+  preferred_language?: string | null;
+  last_seen_at?: string | null;
+}
+
+/* Per-customer memory / operator note (Business Brain). */
+export interface ContactNote {
+  id: string;
+  kind: 'memory' | 'note';
+  body: string;
+  created_at: string;
 }
 
 export interface ProductRow {
