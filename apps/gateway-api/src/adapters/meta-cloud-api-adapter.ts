@@ -20,6 +20,7 @@ const MetaInboundMessageSchema = z.object({
   }).optional(),
   image: z.object({ id: z.string().optional(), mime_type: z.string().optional(), caption: z.string().optional() }).optional(),
   document: z.object({ id: z.string().optional(), mime_type: z.string().optional(), caption: z.string().optional(), filename: z.string().optional() }).optional(),
+  audio: z.object({ id: z.string().optional(), mime_type: z.string().optional(), voice: z.boolean().optional() }).optional(),
   reaction: z.object({ message_id: z.string().optional(), emoji: z.string().optional() }).optional(),
 });
 
@@ -109,6 +110,8 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
           } else if (msg.type === 'document') {
             type = 'document';
             text = msg.document?.caption ?? msg.document?.filename;
+          } else if (msg.type === 'audio' || msg.type === 'voice') {
+            type = 'audio'; // WhatsApp voice notes — transcribed downstream
           } else if (msg.type === 'reaction') {
             type = 'reaction';
             text = msg.reaction?.emoji;
@@ -126,8 +129,8 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
               senderName,
               rawType: msg.type,
               channel: 'meta',
-              mediaId: msg.image?.id ?? msg.document?.id,
-              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type,
+              mediaId: msg.image?.id ?? msg.document?.id ?? msg.audio?.id,
+              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type ?? msg.audio?.mime_type,
             },
           });
         }

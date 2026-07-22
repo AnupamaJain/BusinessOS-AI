@@ -7,7 +7,7 @@ export const InboundMessageSchema = z.object({
   providerMessageId: z.string(),
   from: z.string(),
   timestamp: z.coerce.date(),
-  type: z.enum(['text', 'image', 'document', 'interactive', 'reaction', 'system']),
+  type: z.enum(['text', 'image', 'document', 'audio', 'interactive', 'reaction', 'system']),
   text: z.string().optional(),
   mediaUrl: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),

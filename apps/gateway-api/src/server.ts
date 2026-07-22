@@ -23,6 +23,7 @@ import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@b
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
   createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv,
+  createTranscriptionServiceFromEnv,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -338,6 +339,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const publicBaseUrl = (env['PUBLIC_GATEWAY_URL'] ?? 'https://saarthione-api.vercel.app').replace(/\/$/, '');
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
+  const transcriptionService = createTranscriptionServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env);
 
@@ -609,6 +611,36 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       }
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
       return;
+    }
+
+    // ── Voice notes: transcribe to text, then answer like any message ──
+    if (msg.type === 'audio' && transcriptionService.isConfigured) {
+      const meta = (msg.metadata ?? {}) as Record<string, unknown>;
+      let transcript = '';
+      try {
+        if (meta['channel'] === 'meta' && typeof meta['mediaId'] === 'string') {
+          const dl = await downloadMetaMedia(meta['mediaId']);
+          if (dl) {
+            const r = await transcriptionService.transcribe({ audioBase64: dl.base64, mimeType: dl.mime });
+            if (r.ok && r.text) transcript = r.text.trim();
+          }
+        }
+      } catch (err) {
+        logger.warn('Voice transcription failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+      if (transcript) {
+        logger.info('Voice note transcribed', { providerMessageId: msg.providerMessageId, chars: transcript.length });
+        // Treat the transcript as the customer's message and continue to the agent
+        // (mutate in place so earlier contact/conversation narrowing is preserved).
+        msg.text = transcript;
+        msg.type = 'text';
+      } else {
+        const reply = '🎙️ Sorry, I couldn’t quite catch that voice note. Could you send it again, or type your message?';
+        const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: 'text', text: reply, idempotencyKey: `voice:${msg.providerMessageId}` });
+        if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, msg.from, reply, r.providerMessageId, msg.conversationId);
+        await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+        return;
+      }
     }
 
     if (!msg.text) {

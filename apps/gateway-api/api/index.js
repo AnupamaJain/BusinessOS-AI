@@ -47354,6 +47354,7 @@ var MetaInboundMessageSchema = external_exports.object({
   }).optional(),
   image: external_exports.object({ id: external_exports.string().optional(), mime_type: external_exports.string().optional(), caption: external_exports.string().optional() }).optional(),
   document: external_exports.object({ id: external_exports.string().optional(), mime_type: external_exports.string().optional(), caption: external_exports.string().optional(), filename: external_exports.string().optional() }).optional(),
+  audio: external_exports.object({ id: external_exports.string().optional(), mime_type: external_exports.string().optional(), voice: external_exports.boolean().optional() }).optional(),
   reaction: external_exports.object({ message_id: external_exports.string().optional(), emoji: external_exports.string().optional() }).optional()
 });
 var MetaWebhookBodySchema2 = external_exports.object({
@@ -47423,6 +47424,8 @@ var MetaCloudApiAdapter = class {
           } else if (msg.type === "document") {
             type = "document";
             text = msg.document?.caption ?? msg.document?.filename;
+          } else if (msg.type === "audio" || msg.type === "voice") {
+            type = "audio";
           } else if (msg.type === "reaction") {
             type = "reaction";
             text = msg.reaction?.emoji;
@@ -47439,8 +47442,8 @@ var MetaCloudApiAdapter = class {
               senderName,
               rawType: msg.type,
               channel: "meta",
-              mediaId: msg.image?.id ?? msg.document?.id,
-              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type
+              mediaId: msg.image?.id ?? msg.document?.id ?? msg.audio?.id,
+              mediaMime: msg.image?.mime_type ?? msg.document?.mime_type ?? msg.audio?.mime_type
             }
           });
         }
@@ -59675,6 +59678,147 @@ function createOcrServiceFromEnv(env = process.env) {
   });
 }
 
+// ../../packages/integrations/src/transcription.ts
+var DEFAULT_MODEL2 = "gemini-2.0-flash";
+var GEMINI_BASE2 = "https://generativelanguage.googleapis.com/v1beta/models";
+var TRANSCRIBE_PROMPT = "Transcribe this audio to plain text. Return ONLY the spoken words, verbatim, with no commentary, labels, or quotes. If the audio is silent or unintelligible, return an empty string.";
+function cleanMimeType(mimeType) {
+  const bare = (mimeType ?? "audio/ogg").split(";")[0].trim();
+  return bare || "audio/ogg";
+}
+function stripWrappingQuotes(text) {
+  let out = text.trim();
+  const pairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"]
+  ];
+  const fence = out.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/);
+  if (fence && fence[1] !== void 0) out = fence[1].trim();
+  for (const [open, close] of pairs) {
+    if (out.length >= 2 && out.startsWith(open) && out.endsWith(close)) {
+      out = out.slice(open.length, out.length - close.length).trim();
+      break;
+    }
+  }
+  return out;
+}
+var GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+var DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo";
+function mimeToExt(mime) {
+  if (mime.includes("ogg") || mime.includes("opus")) return "ogg";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("wav")) return "wav";
+  if (mime.includes("m4a") || mime.includes("mp4") || mime.includes("aac")) return "m4a";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("flac")) return "flac";
+  return "ogg";
+}
+var TranscriptionService = class {
+  apiKey;
+  model;
+  groqApiKey;
+  groqModel;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? DEFAULT_MODEL2;
+    this.groqApiKey = config.groqApiKey;
+    this.groqModel = config.groqModel ?? DEFAULT_GROQ_MODEL;
+  }
+  /** True when any transcription provider is configured. */
+  get isConfigured() {
+    return Boolean(this.groqApiKey || this.apiKey);
+  }
+  async transcribe(audio) {
+    if (!this.groqApiKey && !this.apiKey) {
+      return { ok: false, skipped: true, error: "No transcription key configured (GROQ_API_KEY or GOOGLE_API_KEY)" };
+    }
+    if (!audio.audioBase64) {
+      return { ok: false, error: "No audio provided (audioBase64 required)" };
+    }
+    const mimeType = cleanMimeType(audio.mimeType);
+    if (this.groqApiKey) {
+      const g = await this.transcribeGroq(audio.audioBase64, mimeType);
+      if (g.ok || !this.apiKey) return g;
+    }
+    return this.transcribeGemini(audio.audioBase64, mimeType);
+  }
+  async transcribeGroq(audioBase64, mimeType) {
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), `audio.${mimeToExt(mimeType)}`);
+      form.append("model", this.groqModel);
+      form.append("response_format", "text");
+      const res = await fetch(GROQ_TRANSCRIBE_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.groqApiKey}` },
+        body: form
+      });
+      if (!res.ok) return { ok: false, error: `Groq responded ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}` };
+      const text = stripWrappingQuotes(await res.text());
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+  async transcribeGemini(audioBase64, mimeType) {
+    if (!this.apiKey) return { ok: false, error: "Gemini key not configured" };
+    const url = `${GEMINI_BASE2}/${this.model}:generateContent?key=${this.apiKey}`;
+    const audio = { audioBase64 };
+    const body = {
+      contents: [
+        {
+          parts: [
+            { text: TRANSCRIBE_PROMPT },
+            { inline_data: { mime_type: mimeType, data: audio.audioBase64 } }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0
+      }
+    };
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Gemini responded with status ${response.status}`;
+      try {
+        const text2 = await response.text();
+        if (text2) error = text2;
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const raw = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    const text = stripWrappingQuotes(raw);
+    return { ok: true, text };
+  }
+};
+function createTranscriptionServiceFromEnv(env = process.env) {
+  return new TranscriptionService({
+    groqApiKey: env.GROQ_API_KEY,
+    // primary — Whisper, separate free quota
+    groqModel: env.GROQ_WHISPER_MODEL,
+    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY,
+    // fallback — Gemini
+    model: env.TRANSCRIPTION_MODEL
+  });
+}
+
 // ../../packages/integrations/src/billing.ts
 var import_node_crypto = require("node:crypto");
 var STRIPE_API_BASE = "https://api.stripe.com";
@@ -60422,6 +60566,7 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
   const publicBaseUrl = (env["PUBLIC_GATEWAY_URL"] ?? "https://saarthione-api.vercel.app").replace(/\/$/, "");
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
+  const transcriptionService = createTranscriptionServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env);
   async function syncLeadToHubSpot(orgId, leadId) {
@@ -60687,6 +60832,32 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
       }
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
       return;
+    }
+    if (msg.type === "audio" && transcriptionService.isConfigured) {
+      const meta = msg.metadata ?? {};
+      let transcript = "";
+      try {
+        if (meta["channel"] === "meta" && typeof meta["mediaId"] === "string") {
+          const dl = await downloadMetaMedia(meta["mediaId"]);
+          if (dl) {
+            const r = await transcriptionService.transcribe({ audioBase64: dl.base64, mimeType: dl.mime });
+            if (r.ok && r.text) transcript = r.text.trim();
+          }
+        }
+      } catch (err) {
+        logger.warn("Voice transcription failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+      if (transcript) {
+        logger.info("Voice note transcribed", { providerMessageId: msg.providerMessageId, chars: transcript.length });
+        msg.text = transcript;
+        msg.type = "text";
+      } else {
+        const reply = "\u{1F399}\uFE0F Sorry, I couldn\u2019t quite catch that voice note. Could you send it again, or type your message?";
+        const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: "text", text: reply, idempotencyKey: `voice:${msg.providerMessageId}` });
+        if (r.success && r.providerMessageId) await messageService.persistOutbound(orgId, msg.from, reply, r.providerMessageId, msg.conversationId);
+        await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+        return;
+      }
     }
     if (!msg.text) {
       logger.info("Skipping non-text inbound message", { providerMessageId: msg.providerMessageId, type: msg.type });
