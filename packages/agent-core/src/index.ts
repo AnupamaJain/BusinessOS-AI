@@ -12,3 +12,5 @@ export { InMemoryVectorStore, SupabaseVectorStore, cosineSimilarity } from './ve
 export type { VectorStore, ChunkRecord, RetrievedChunk } from './vector-store';
 export { CoordinatorAgent } from './agents/coordinator';
 export { runOwnerAssistant, isOwnerConfirmation } from './owner-assistant';
+export { planItinerary } from './itinerary-planner';
+export type { ItineraryInputs, ItineraryPlan } from './itinerary-planner';

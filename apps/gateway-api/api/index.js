@@ -58766,6 +58766,55 @@ function isOwnerConfirmation(message) {
   return /^\s*(yes|yep|yeah|do it|go ahead|follow up|please do|sure)\b/i.test(message);
 }
 
+// ../../packages/agent-core/src/itinerary-planner.ts
+async function runAgent(llm, organizationId, system, task, maxTokens) {
+  const completion = await llm.generateCompletion({
+    organizationId,
+    maxTokens,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: task }
+    ]
+  });
+  return completion.content.trim();
+}
+async function planItinerary(llm, organizationId, input) {
+  const dest = input.destination;
+  const days = Math.max(1, Math.min(21, input.durationDays || 3));
+  const who = input.travellers ? ` for ${input.travellers} traveller(s)` : "";
+  const destinationInsights = await runAgent(
+    llm,
+    organizationId,
+    "You are a Local Destination Expert \u2014 a knowledgeable local guide with first-hand experience of the destination's culture and attractions. Be accurate, concise, and practical. Do not invent specific prices.",
+    `Give a traveller a quick, well-organised briefing on ${dest} with these headings and short bullet points:
+- Top 5 attractions
+- Local cuisine highlights
+- Cultural norms / etiquette
+- Recommended areas to stay
+- Getting around (transport tips)`,
+    650
+  );
+  const dayByDay = await runAgent(
+    llm,
+    organizationId,
+    "You are a Professional Travel Planner \u2014 an experienced coordinator with excellent logistics. Create realistic, well-paced day plans; avoid over-packing days.",
+    `Create a ${days}-day itinerary for ${dest}${input.interests ? ` for someone interested in ${input.interests}` : ""}${input.season ? `, travelling in ${input.season}` : ""}.
+For each day use a heading "Day N" and cover Morning / Afternoon / Evening with activity sequencing, transport between spots, and a meal suggestion. Keep each day tight and readable.`,
+    950
+  );
+  const budgetBreakdown = await runAgent(
+    llm,
+    organizationId,
+    "You are a Travel Budget Specialist \u2014 a financial planner specialising in travel budgets and cost optimisation. Give indicative ranges, not false precision.",
+    `Produce an itemised, indicative budget for this ${days}-day trip to ${dest}${who}${input.budgetText ? `, targeting roughly ${input.budgetText}` : ""}.
+Cover: accommodation, transport, activities/entry fees, meals, and an emergency allowance, then a total range. Base it on this itinerary:
+
+${dayByDay.slice(0, 1600)}`,
+    550
+  );
+  return { destinationInsights, dayByDay, budgetBreakdown };
+}
+
 // ../../packages/auth/src/types.ts
 var SessionClaimsSchema = external_exports.object({
   sub: external_exports.string().uuid(),
@@ -60437,6 +60486,11 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
           }).select("id").single();
           if (error || !data) return null;
           const url = `${publicBaseUrl}/doc/quote/${data.id}`;
+          const itin = generateItineraryForQuote(orgId, data.id, packageSku, travellers, amount);
+          try {
+            (0, import_functions.waitUntil)(itin);
+          } catch {
+          }
           try {
             const { data: contact } = await db.from("contacts").select("name, email").eq("id", contactId).maybeSingle();
             if (contact?.email && emailService.isConfigured) {
@@ -60838,6 +60892,30 @@ ${convo}` }]
       logger.warn("memory distillation failed", { orgId, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  async function generateItineraryForQuote(orgId, quoteId, packageSku, travellers, amount) {
+    try {
+      const { data: pkg } = await tenantDb(orgId).from("packages").select("title, duration_days, destinations(name)").eq("sku", packageSku).maybeSingle();
+      if (!pkg) return;
+      const destRel = pkg.destinations;
+      const destName = Array.isArray(destRel) ? destRel[0]?.name : destRel?.name;
+      const destination = destName || String(pkg.title ?? "").split(/[·\-–—]/)[0]?.trim() || String(pkg.title ?? "your destination");
+      const durationDays = Number(pkg.duration_days) || 3;
+      const plan = await planItinerary(llm, orgId, {
+        destination,
+        durationDays,
+        travellers,
+        budgetText: `\u20B9${Number(amount).toLocaleString("en-IN")} total`
+      });
+      await tenantDb(orgId).from("itineraries").insert({
+        quote_id: quoteId,
+        title: `${destination} \xB7 ${durationDays}-day itinerary`.slice(0, 255),
+        day_by_day: { ...plan, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), source: "ai-itinerary-planner" }
+      });
+      logger.info("Itinerary generated for quote", { orgId, quoteId, destination });
+    } catch (err) {
+      logger.warn("Itinerary generation failed", { orgId, quoteId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
   async function latestPendingBookingForContact(orgId, contactId) {
     const { data } = await tenantDb(orgId).from("bookings").select("id, booking_number").eq("contact_id", contactId).in("status", ["pending", "pending_payment"]).order("created_at", { ascending: false }).limit(1);
     const b = (data ?? [])[0];
@@ -60927,7 +61005,7 @@ ${convo}` }]
         ]);
         const unit = Number(pkg?.price_per_person ?? quote.amount);
         const qty = unit > 0 ? Math.max(1, Math.round(Number(quote.amount) / unit)) : 1;
-        const html = buildQuotationHtml({
+        let html = buildQuotationHtml({
           number: quote.quote_number,
           businessName: org?.name ?? "SaarthiOne",
           customerName: contact?.name ?? void 0,
@@ -60938,6 +61016,15 @@ ${convo}` }]
           items: [{ title: pkg?.title ?? "Holiday package", quantity: qty, unitPrice: unit }],
           notes: "Thank you for your interest! This quotation is valid until the date shown above."
         });
+        const { data: itinRows } = await db.from("itineraries").select("title, day_by_day").eq("organization_id", quote.organization_id).eq("quote_id", quote.id).order("created_at", { ascending: false }).limit(1);
+        const itin = itinRows?.[0];
+        const plan = itin?.day_by_day && typeof itin.day_by_day === "object" ? itin.day_by_day : null;
+        if (plan) {
+          const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+          const sect = (title, body) => body ? `<h2 style="font-size:17px;margin:22px 0 8px;color:#0e7c86">${esc(title)}</h2><div style="white-space:pre-wrap;line-height:1.6;color:#333;font-size:14px">${esc(body)}</div>` : "";
+          const block = `<section style="max-width:720px;margin:8px auto 40px;padding:24px;border-top:2px solid #eee;font-family:system-ui,-apple-system,sans-serif"><h1 style="font-size:22px;margin:0 0 4px">\u{1F5FA}\uFE0F ${esc(itin?.title ?? "Your itinerary")}</h1><div style="color:#888;font-size:12px;margin-bottom:6px">AI-generated trip plan \u2014 review &amp; personalise with your travel expert.</div>` + sect("Destination insights", plan.destinationInsights) + sect("Day-by-day itinerary", plan.dayByDay) + sect("Indicative budget", plan.budgetBreakdown) + `</section>`;
+          html = html.includes("</body>") ? html.replace("</body>", `${block}</body>`) : html + block;
+        }
         res.status(200).type("html").send(html);
       } catch (err) {
         res.status(500).type("html").send("<h1>Could not load quotation</h1>");

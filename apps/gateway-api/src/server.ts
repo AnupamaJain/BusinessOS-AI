@@ -15,7 +15,7 @@ import { SupabaseBusinessStore, createCabBooking as createCabBookingTool, create
 import { createGatewayFromEnv, type LLMGateway } from '@business-os-ai/llm-gateway';
 import {
   createEmbeddingProviderFromEnv, SupabaseVectorStore, executeAgentGraph,
-  ingestMarkdownContent, runOwnerAssistant, isOwnerConfirmation,
+  ingestMarkdownContent, runOwnerAssistant, isOwnerConfirmation, planItinerary,
   type AgentGraphDeps, type EmbeddingProvider,
 } from '@business-os-ai/agent-core';
 import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/auth';
@@ -412,6 +412,10 @@ export function buildServer(env: Record<string, string | undefined> = process.en
           }).select('id').single();
           if (error || !data) return null;
           const url = `${publicBaseUrl}/doc/quote/${data.id}`;
+
+          // Generate + attach an AI day-by-day itinerary to the quote (off the reply path).
+          const itin = generateItineraryForQuote(orgId, data.id, packageSku, travellers, amount);
+          try { waitUntil(itin); } catch { void itin; }
 
           // Email the quotation too, when the customer has an email on file.
           try {
@@ -847,6 +851,35 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
+  /**
+   * Ported CrewAI trip planner: generate a day-by-day itinerary + budget for a
+   * travel quote's destination and attach it to the quote (itineraries table).
+   * Runs off the reply path (3 LLM calls). Best-effort.
+   */
+  async function generateItineraryForQuote(orgId: string, quoteId: string, packageSku: string, travellers: number, amount: number): Promise<void> {
+    try {
+      const { data: pkg } = await tenantDb(orgId).from('packages')
+        .select('title, duration_days, destinations(name)').eq('sku', packageSku).maybeSingle();
+      if (!pkg) return;
+      const destRel = pkg.destinations as { name?: string } | { name?: string }[] | null;
+      const destName = Array.isArray(destRel) ? destRel[0]?.name : destRel?.name;
+      const destination = destName || String(pkg.title ?? '').split(/[·\-–—]/)[0]?.trim() || String(pkg.title ?? 'your destination');
+      const durationDays = Number(pkg.duration_days) || 3;
+      const plan = await planItinerary(llm, orgId, {
+        destination, durationDays, travellers,
+        budgetText: `₹${Number(amount).toLocaleString('en-IN')} total`,
+      });
+      await tenantDb(orgId).from('itineraries').insert({
+        quote_id: quoteId,
+        title: `${destination} · ${durationDays}-day itinerary`.slice(0, 255),
+        day_by_day: { ...plan, generatedAt: new Date().toISOString(), source: 'ai-itinerary-planner' },
+      });
+      logger.info('Itinerary generated for quote', { orgId, quoteId, destination });
+    } catch (err) {
+      logger.warn('Itinerary generation failed', { orgId, quoteId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   /** The most recent booking for a contact that is still awaiting payment, if any. */
   async function latestPendingBookingForContact(orgId: string, contactId: string): Promise<{ id: string; bookingNumber: string } | null> {
     const { data } = await tenantDb(orgId).from('bookings')
@@ -970,7 +1003,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
         const unit = Number(pkg?.price_per_person ?? quote.amount);
         const qty = unit > 0 ? Math.max(1, Math.round(Number(quote.amount) / unit)) : 1;
-        const html = buildQuotationHtml({
+        let html = buildQuotationHtml({
           number: quote.quote_number,
           businessName: org?.name ?? 'SaarthiOne',
           customerName: contact?.name ?? undefined,
@@ -981,6 +1014,25 @@ export function buildServer(env: Record<string, string | undefined> = process.en
           items: [{ title: pkg?.title ?? 'Holiday package', quantity: qty, unitPrice: unit }],
           notes: 'Thank you for your interest! This quotation is valid until the date shown above.',
         });
+
+        // Attach the AI-generated itinerary, if one has been produced for this quote.
+        const { data: itinRows } = await db.from('itineraries')
+          .select('title, day_by_day').eq('organization_id', quote.organization_id).eq('quote_id', quote.id)
+          .order('created_at', { ascending: false }).limit(1);
+        const itin = itinRows?.[0] as { title?: string; day_by_day?: unknown } | undefined;
+        const plan = (itin?.day_by_day && typeof itin.day_by_day === 'object') ? itin.day_by_day as { destinationInsights?: string; dayByDay?: string; budgetBreakdown?: string } : null;
+        if (plan) {
+          const esc = (s: unknown) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+          const sect = (title: string, body?: string) => body ? `<h2 style="font-size:17px;margin:22px 0 8px;color:#0e7c86">${esc(title)}</h2><div style="white-space:pre-wrap;line-height:1.6;color:#333;font-size:14px">${esc(body)}</div>` : '';
+          const block = `<section style="max-width:720px;margin:8px auto 40px;padding:24px;border-top:2px solid #eee;font-family:system-ui,-apple-system,sans-serif">`
+            + `<h1 style="font-size:22px;margin:0 0 4px">🗺️ ${esc(itin?.title ?? 'Your itinerary')}</h1>`
+            + `<div style="color:#888;font-size:12px;margin-bottom:6px">AI-generated trip plan — review &amp; personalise with your travel expert.</div>`
+            + sect('Destination insights', plan.destinationInsights)
+            + sect('Day-by-day itinerary', plan.dayByDay)
+            + sect('Indicative budget', plan.budgetBreakdown)
+            + `</section>`;
+          html = html.includes('</body>') ? html.replace('</body>', `${block}</body>`) : html + block;
+        }
         res.status(200).type('html').send(html);
       } catch (err) {
         res.status(500).type('html').send('<h1>Could not load quotation</h1>');
