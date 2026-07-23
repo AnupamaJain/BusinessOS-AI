@@ -247,3 +247,33 @@ export interface TimelineEvent {
   title: string;
   detail?: string;
 }
+
+/* ─── Platform admin: merchant management ─────────────────────────── */
+
+export type MerchantStatus = 'active' | 'pending_review' | 'suspended';
+
+export interface AdminMerchant {
+  id: string;
+  name: string;
+  legalName?: string;
+  onboardingStatus: string;
+  createdAt: string;
+}
+
+export interface AdminMerchantsResult {
+  ok: boolean;
+  isAdmin: boolean;
+  merchants: AdminMerchant[];
+  error?: string;
+}
+
+/* ─── Per-tenant integrations (HubSpot, Instagram/Messenger) ──────── */
+
+export type IntegrationProvider = 'hubspot' | 'instagram';
+
+export interface IntegrationsState {
+  ok: boolean;
+  hubspot: { connected: boolean };
+  instagram: { connected: boolean; pageId?: string };
+  error?: string;
+}

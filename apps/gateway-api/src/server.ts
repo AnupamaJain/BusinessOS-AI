@@ -22,7 +22,7 @@ import { verifySupabaseAccessToken, getOrganizationRole } from '@business-os-ai/
 import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@business-os-ai/commerce';
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
-  createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv,
+  createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv, HubSpotService,
   createTranscriptionServiceFromEnv, createTtsServiceFromEnv,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
@@ -319,18 +319,19 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   }
 
   // Organization context cache (name/vertical/rules/team for prompts)
-  type OrgContext = { name: string; vertical?: string; businessRules?: Record<string, unknown>; enabledAgents?: string[] };
+  type OrgContext = { name: string; vertical?: string; businessRules?: Record<string, unknown>; enabledAgents?: string[]; onboardingStatus?: string };
   const orgCache = new Map<string, OrgContext>();
   async function getOrgContext(orgId: string): Promise<OrgContext> {
     const cached = orgCache.get(orgId);
     if (cached) return cached;
-    const { data } = await db.from('organizations').select('name, vertical, settings, business_rules, enabled_agents').eq('id', orgId).maybeSingle();
+    const { data } = await db.from('organizations').select('name, vertical, settings, business_rules, enabled_agents, onboarding_status').eq('id', orgId).maybeSingle();
     const rules = (data?.business_rules && typeof data.business_rules === 'object') ? data.business_rules as Record<string, unknown> : {};
     const ctx: OrgContext = {
       name: data?.name ?? 'our business',
       vertical: data?.vertical ?? undefined,
       businessRules: Object.keys(rules).length ? rules : undefined,
       enabledAgents: Array.isArray(data?.enabled_agents) ? (data!.enabled_agents as string[]) : undefined,
+      onboardingStatus: (data?.onboarding_status as string | undefined) ?? 'active',
     };
     orgCache.set(orgId, ctx);
     return ctx;
@@ -342,16 +343,33 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const transcriptionService = createTranscriptionServiceFromEnv(env);
   const ttsService = createTtsServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
-  const hubspot = createHubSpotServiceFromEnv(env);
+  const hubspot = createHubSpotServiceFromEnv(env); // platform env fallback (default org)
+
+  // Each merchant connects their OWN HubSpot (integration_connections); resolve
+  // per-org, falling back to the platform env token.
+  const hubspotCache = new Map<string, HubSpotService | null>();
+  async function hubspotForOrg(orgId: string): Promise<HubSpotService | null> {
+    const cached = hubspotCache.get(orgId);
+    if (cached !== undefined) return cached;
+    let svc: HubSpotService | null = null;
+    try {
+      const conn = await store.getIntegrationConnection(orgId, 'hubspot');
+      if (conn?.status === 'active' && conn.config['accessToken']) {
+        svc = new HubSpotService({ accessToken: String(conn.config['accessToken']), webhookSecret: conn.config['webhookSecret'] ? String(conn.config['webhookSecret']) : undefined });
+      }
+    } catch { /* fall through to env */ }
+    if (!svc && hubspot.isConfigured) svc = hubspot;
+    hubspotCache.set(orgId, svc);
+    return svc;
+  }
 
   /**
-   * Outbound CRM sync: mirror a qualified lead into HubSpot as a contact + deal.
-   * Best-effort and non-blocking (called via waitUntil) — never affects the
-   * customer reply. Stores the returned HubSpot ids so inbound webhooks can map
-   * property changes back to our rows (two-way sync).
+   * Outbound CRM sync: mirror a qualified lead into the org's HubSpot as a
+   * contact + deal. Best-effort and non-blocking (called via waitUntil).
    */
   async function syncLeadToHubSpot(orgId: string, leadId: string): Promise<void> {
-    if (!hubspot.isConfigured) return;
+    const hubspot = await hubspotForOrg(orgId);
+    if (!hubspot) return;
     try {
       const { data: lead } = await db.from('leads')
         .select('id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id')
@@ -655,6 +673,13 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     try {
       const org = await getOrgContext(orgId);
 
+      // Suspended merchants don't get AI processing — the account is inactive.
+      if (org.onboardingStatus === 'suspended') {
+        logger.info('Skipping message for suspended org', { orgId, providerMessageId: msg.providerMessageId });
+        await idempotencyService.markProcessed(msg.providerMessageId, orgId);
+        return;
+      }
+
       // ── Owner assistant: does this message come from the business owner? ──
       // Owner mode triggers when the sender is a registered owner number, or
       // (for demo from a shared number) when the message starts with "owner"/"boss".
@@ -784,10 +809,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         const mem = writeLeadMemory(orgId, msg.contactId, out.leadId)
           .then(() => distillCustomerMemory(orgId, msg.contactId!, msg.conversationId!));
         try { waitUntil(mem); } catch { void mem; }
-        if (hubspot.isConfigured) {
-          const work = syncLeadToHubSpot(orgId, out.leadId);
-          try { waitUntil(work); } catch { void work; }
-        }
+        // Per-org HubSpot sync (resolves the merchant's own token; no-ops if none).
+        const work = syncLeadToHubSpot(orgId, out.leadId);
+        try { waitUntil(work); } catch { void work; }
       }
 
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
@@ -801,15 +825,15 @@ export function buildServer(env: Record<string, string | undefined> = process.en
 
   // ── Shared inbound pipeline: dedup → persist → agent ──
   // replyAdapter routes the answer back on the channel the message arrived on.
-  async function ingestInboundMessages(messages: InboundMessage[], replyAdapter: WhatsAppAdapter): Promise<void> {
+  async function ingestInboundMessages(messages: InboundMessage[], replyAdapter: WhatsAppAdapter, targetOrgId: string = defaultOrgId): Promise<void> {
     for (const msg of messages) {
       const acquired = await idempotencyService.tryAcquire(msg.providerMessageId);
       if (!acquired) {
         logger.info('Duplicate inbound event skipped', { providerMessageId: msg.providerMessageId });
         continue;
       }
-      const stored = await messageService.persistInbound(defaultOrgId, msg);
-      await handleInbound(defaultOrgId, {
+      const stored = await messageService.persistInbound(targetOrgId, msg);
+      await handleInbound(targetOrgId, {
         providerMessageId: msg.providerMessageId,
         from: msg.from,
         text: msg.text,
@@ -819,6 +843,31 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         metadata: msg.metadata,
       }, replyAdapter);
     }
+  }
+
+  /** Resolve the Instagram/Messenger adapter + org for an inbound page id (per-tenant connection, else env default). */
+  async function instagramForPage(pageId: string | undefined): Promise<{ orgId: string; adapter: InstagramMessengerAdapter } | null> {
+    if (pageId) {
+      try {
+        const { data } = await db.from('integration_connections')
+          .select('organization_id, config').eq('provider', 'instagram').eq('status', 'active')
+          .filter('config->>pageId', 'eq', pageId).limit(1);
+        const row = (data ?? [])[0] as { organization_id?: string; config?: Record<string, unknown> } | undefined;
+        if (row?.organization_id && row.config) {
+          const conn = await store.getIntegrationConnection(row.organization_id, 'instagram'); // decrypts the token
+          const cfg = conn?.config ?? {};
+          if (cfg['pageAccessToken']) {
+            return { orgId: row.organization_id, adapter: new InstagramMessengerAdapter({
+              pageId, pageAccessToken: String(cfg['pageAccessToken']),
+              verifyToken: cfg['verifyToken'] ? String(cfg['verifyToken']) : verifyToken,
+              channel: 'instagram',
+            }) };
+          }
+        }
+      } catch { /* fall through to env default */ }
+    }
+    if (instagramAdapter) return { orgId: defaultOrgId, adapter: instagramAdapter };
+    return null;
   }
 
   /**
@@ -983,6 +1032,16 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     const membership = await getOrganizationRole({ supabaseUrl: supabaseUrl!, serviceRoleKey: serviceKey!, userId: user.userId });
     if (!membership) return null;
     return { userId: user.userId, organizationId: membership.organizationId, role: membership.role };
+  }
+
+  const platformAdminEmail = (env['PLATFORM_ADMIN_EMAIL'] ?? 'puneetj79@gmail.com').toLowerCase();
+  /** Platform-admin gate (merchant management) — the signed-in user must be the platform admin. */
+  async function authoriseAdmin(req: express.Request): Promise<{ userId: string; email: string } | null> {
+    const auth = req.headers.authorization;
+    if (!auth?.startsWith('Bearer ')) return null;
+    const user = await verifySupabaseAccessToken({ supabaseUrl: supabaseUrl!, anonKey: anonKey!, accessToken: auth.slice(7) });
+    if (!user?.email || user.email.toLowerCase() !== platformAdminEmail) return null;
+    return { userId: user.userId, email: user.email };
   }
 
   // ── Payments ──
@@ -1467,6 +1526,79 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       res.status(200).json({ ok: true });
     });
 
+    // ── Platform admin: merchant management (approval gate UI) ──
+    app.get('/api/admin/merchants', async (req, res) => {
+      const admin = await authoriseAdmin(req);
+      if (!admin) { res.status(200).json({ ok: true, isAdmin: false, merchants: [] }); return; } // 200 so the UI just hides the tab
+      const { data } = await db.from('organizations')
+        .select('id, name, legal_name, onboarding_status, created_at').order('created_at', { ascending: false }).limit(500);
+      const merchants = (data ?? []).map((o) => ({
+        id: o.id, name: o.name, legalName: o.legal_name ?? undefined,
+        onboardingStatus: o.onboarding_status ?? 'active', createdAt: o.created_at,
+      }));
+      res.status(200).json({ ok: true, isAdmin: true, merchants });
+    });
+
+    app.post('/api/admin/merchants/:id/status', async (req, res) => {
+      const admin = await authoriseAdmin(req);
+      if (!admin) { res.status(403).json({ ok: false, error: 'Forbidden' }); return; }
+      const status = (req.body as { status?: string })?.status;
+      if (!['active', 'pending_review', 'suspended'].includes(status ?? '')) { res.status(400).json({ ok: false, error: 'Invalid status' }); return; }
+      const { error } = await db.from('organizations').update({ onboarding_status: status }).eq('id', req.params.id);
+      orgCache.delete(req.params.id); // so the suspended-block check reflects the change
+      if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      res.status(200).json({ ok: true });
+    });
+
+    // ── Per-tenant integrations: connect your own HubSpot / Instagram ──
+    app.get('/api/integrations', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const hs = await store.getIntegrationConnection(op.organizationId, 'hubspot').catch(() => null);
+      const ig = await store.getIntegrationConnection(op.organizationId, 'instagram').catch(() => null);
+      res.status(200).json({
+        ok: true,
+        hubspot: { connected: hs?.status === 'active' },
+        instagram: { connected: ig?.status === 'active', pageId: ig?.config['pageId'] as string | undefined },
+      });
+    });
+
+    app.post('/api/integrations/hubspot', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as { accessToken?: string; webhookSecret?: string };
+      const accessToken = (b.accessToken ?? '').trim();
+      if (!accessToken) { res.status(400).json({ ok: false, error: 'HubSpot private-app token is required' }); return; }
+      try {
+        const probe = await fetch('https://api.hubapi.com/crm/v3/objects/contacts?limit=1', { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (probe.status === 401) { res.status(400).json({ ok: false, error: 'HubSpot rejected that token (401). Check the private-app token.' }); return; }
+      } catch { /* network hiccup — save anyway */ }
+      await store.saveIntegrationConnection(op.organizationId, 'hubspot', { config: { accessToken, webhookSecret: (b.webhookSecret ?? '').trim() || undefined }, secretKeys: ['accessToken', 'webhookSecret'], status: 'active' });
+      hubspotCache.delete(op.organizationId);
+      res.status(200).json({ ok: true });
+    });
+
+    app.post('/api/integrations/instagram', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as { pageId?: string; pageAccessToken?: string; verifyToken?: string };
+      const pageId = (b.pageId ?? '').trim();
+      const pageAccessToken = (b.pageAccessToken ?? '').trim();
+      if (!pageId || !pageAccessToken) { res.status(400).json({ ok: false, error: 'Page ID and access token are required' }); return; }
+      await store.saveIntegrationConnection(op.organizationId, 'instagram', { config: { pageId, pageAccessToken, verifyToken: (b.verifyToken ?? '').trim() || verifyToken }, secretKeys: ['pageAccessToken'], status: 'active' });
+      res.status(200).json({ ok: true });
+    });
+
+    app.delete('/api/integrations/:provider', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const provider = req.params.provider;
+      if (!['hubspot', 'instagram'].includes(provider)) { res.status(400).json({ ok: false, error: 'Unknown provider' }); return; }
+      await store.saveIntegrationConnection(op.organizationId, provider, { config: {}, status: 'inactive' });
+      if (provider === 'hubspot') hubspotCache.delete(op.organizationId);
+      res.status(200).json({ ok: true });
+    });
+
     /** Platform billing — create a Stripe checkout session for a plan. */
     app.post('/api/billing/checkout', async (req, res) => {
       const operator = await authoriseOperator(req);
@@ -1640,33 +1772,40 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
     });
 
     // ── Instagram Direct / Messenger webhook (shares the WhatsApp agent pipeline) ──
-    if (instagramAdapter) {
-      app.get('/webhooks/instagram', (req, res) => {
-        const challenge = instagramAdapter.verifyWebhook(
-          String(req.query['hub.verify_token'] ?? ''), String(req.query['hub.challenge'] ?? ''),
-        );
-        if (challenge) res.status(200).send(challenge);
-        else res.status(403).send('Forbidden');
-      });
+    // Instagram/Messenger webhook — registered whether or not the platform env
+    // adapter exists, so per-merchant connections (integration_connections) work.
+    app.get('/webhooks/instagram', async (req, res) => {
+      const token = String(req.query['hub.verify_token'] ?? '');
+      const challenge = String(req.query['hub.challenge'] ?? '');
+      let ok = !!token && (token === verifyToken || token === (env['INSTAGRAM_VERIFY_TOKEN'] ?? ''));
+      if (!ok && token) {
+        const { data } = await db.from('integration_connections').select('id').eq('provider', 'instagram').eq('status', 'active').filter('config->>verifyToken', 'eq', token).limit(1);
+        ok = !!(data && data.length);
+      }
+      if (ok && challenge) res.status(200).send(challenge);
+      else res.status(403).send('Forbidden');
+    });
 
-      app.post('/webhooks/instagram', async (req, res) => {
-        // Meta signs IG/Messenger webhooks with the same app secret as WhatsApp.
-        const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
-        const sig = req.headers['x-hub-signature-256'];
-        const appSecret = env['META_APP_SECRET'];
-        if (appSecret) {
-          const { createHmac } = await import('crypto');
-          const expected = 'sha256=' + createHmac('sha256', appSecret).update(raw ?? Buffer.from('')).digest('hex');
-          if (typeof sig !== 'string' || sig !== expected) { res.status(401).json({ error: 'Invalid signature' }); return; }
-        }
-        // Ack immediately, process in the background (Meta requires a fast 200).
-        res.status(200).json({ received: true });
-        const messages = instagramAdapter.parseInboundEvent(req.body);
-        if (messages.length === 0) return;
-        const work = ingestInboundMessages(messages, instagramAdapter);
-        try { waitUntil(work); } catch { void work; }
-      });
-    }
+    app.post('/webhooks/instagram', async (req, res) => {
+      // Meta signs IG/Messenger webhooks with the app secret (same as WhatsApp).
+      const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const sig = req.headers['x-hub-signature-256'];
+      const appSecret = env['META_APP_SECRET'];
+      if (appSecret) {
+        const { createHmac } = await import('crypto');
+        const expected = 'sha256=' + createHmac('sha256', appSecret).update(raw ?? Buffer.from('')).digest('hex');
+        if (typeof sig !== 'string' || sig !== expected) { res.status(401).json({ error: 'Invalid signature' }); return; }
+      }
+      res.status(200).json({ received: true }); // Meta requires a fast 200
+      // Route to the merchant that owns this page (else the platform default).
+      const pageId = (req.body as { entry?: Array<{ id?: string }> })?.entry?.[0]?.id;
+      const resolved = await instagramForPage(pageId);
+      if (!resolved) return;
+      const messages = resolved.adapter.parseInboundEvent(req.body);
+      if (messages.length === 0) return;
+      const work = ingestInboundMessages(messages, resolved.adapter, resolved.orgId);
+      try { waitUntil(work); } catch { void work; }
+    });
 
     /** Readiness — liveness + DB reachability for uptime monitors (public, no secrets). */
     app.get('/health/ready', async (_req, res) => {

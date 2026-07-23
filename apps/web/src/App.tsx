@@ -22,6 +22,8 @@ import {
   CreditCard,
   Check,
   X,
+  Plug,
+  Users,
 } from 'lucide-react';
 import { LandingPage } from './LandingPage';
 import { useAuth } from './hooks/useAuth';
@@ -70,6 +72,12 @@ import {
   saveBusinessRules,
   saveEnabledAgents,
   testAgent,
+  fetchAdminMerchants,
+  setMerchantStatus,
+  fetchIntegrations,
+  connectHubspot,
+  connectInstagram,
+  disconnectIntegration,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import { decodeUpiQrFromFile } from './lib/qr';
@@ -79,12 +87,14 @@ import {
   loadFacebookSdk,
 } from './lib/metaSignup';
 import type {
+  AdminMerchant,
   AuthSession,
   BillingPlan,
   ContactNote,
   ContactRow,
   DashboardKpis,
   HandoffItem,
+  MerchantStatus,
   MessageRow,
   TemplateCategory,
   TimelineEvent,
@@ -99,7 +109,9 @@ type TabKey =
   | 'compliance'
   | 'kb'
   | 'analytics'
-  | 'ai-settings';
+  | 'ai-settings'
+  | 'integrations'
+  | 'admin';
 
 /* AI team roles offered on the "AI Team & Rules" step / settings panel. */
 const AGENT_ROLES: Array<{ id: string; label: string; emoji: string; role: string }> = [
@@ -243,6 +255,52 @@ function InlineBanner({ kind, children }: { kind: 'error' | 'success'; children:
     >
       {children}
     </div>
+  );
+}
+
+/* Connected / Not connected pill for the Integrations cards. */
+function StatusChip({ connected }: { connected: boolean }) {
+  const color = connected ? 'var(--color-success)' : 'var(--text-muted)';
+  return (
+    <span
+      style={{
+        fontSize: '11px',
+        fontWeight: 700,
+        padding: '3px 10px',
+        borderRadius: '999px',
+        color,
+        border: `1px solid ${color}`,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {connected ? 'Connected' : 'Not connected'}
+    </span>
+  );
+}
+
+/* Colored status chip for a merchant's account status (admin table). */
+function MerchantStatusChip({ status }: { status: string }) {
+  const color =
+    status === 'active'
+      ? 'var(--color-success)'
+      : status === 'suspended'
+        ? ERROR_COLOR
+        : 'var(--color-warning)';
+  return (
+    <span
+      style={{
+        fontSize: '11px',
+        fontWeight: 700,
+        padding: '3px 10px',
+        borderRadius: '999px',
+        color,
+        border: `1px solid ${color}`,
+        whiteSpace: 'nowrap',
+        textTransform: 'capitalize',
+      }}
+    >
+      {status.replace(/_/g, ' ')}
+    </span>
   );
 }
 
@@ -658,6 +716,28 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [testDraft, setTestDraft] = useState('');
   const [testSending, setTestSending] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+
+  // Platform admin — merchant management (loaded once on dashboard mount)
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminMerchants, setAdminMerchants] = useState<AdminMerchant[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [merchantBusyId, setMerchantBusyId] = useState<string | null>(null);
+
+  // Per-tenant integrations (HubSpot + Instagram/Messenger) connect forms
+  const [hubToken, setHubToken] = useState('');
+  const [hubWebhookSecret, setHubWebhookSecret] = useState('');
+  const [hubBusy, setHubBusy] = useState(false);
+  const [hubNotice, setHubNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(
+    null
+  );
+  const [igPageId, setIgPageId] = useState('');
+  const [igPageToken, setIgPageToken] = useState('');
+  const [igVerifyToken, setIgVerifyToken] = useState('');
+  const [igBusy, setIgBusy] = useState(false);
+  const [igNotice, setIgNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(
+    null
+  );
 
   function toggleAgent(id: string): void {
     setAiConfigNotice(null);
@@ -1149,6 +1229,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const complianceActive = inDashboard && activeTab === 'compliance';
   const analyticsActive = inDashboard && activeTab === 'analytics';
   const aiSettingsActive = inDashboard && activeTab === 'ai-settings';
+  const integrationsActive = inDashboard && activeTab === 'integrations';
   const kbActive =
     (inDashboard && activeTab === 'kb') || (viewState === 'onboarding' && onboardingStep === 6);
 
@@ -1189,6 +1270,108 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
       cancelled = true;
     };
   }, [aiSettingsActive, aiConfigLoaded, session.access_token]);
+
+  /* Load the platform-admin merchant list. Sets isAdmin (gates the Admin tab)
+     and the merchant list. Called once on mount + after each status change. */
+  async function loadAdminMerchants(): Promise<void> {
+    setAdminLoading(true);
+    setAdminError(null);
+    const res = await fetchAdminMerchants(session.access_token);
+    setAdminLoading(false);
+    setIsAdmin(res.isAdmin);
+    setAdminMerchants(res.merchants);
+    if (!res.ok && res.error) setAdminError(res.error);
+  }
+
+  /* Detect platform-admin + load merchants once on dashboard mount. */
+  useEffect(() => {
+    void loadAdminMerchants();
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSetMerchantStatus(id: string, status: MerchantStatus): Promise<void> {
+    if (merchantBusyId) return;
+    setMerchantBusyId(id);
+    setAdminError(null);
+    const res = await setMerchantStatus(session.access_token, id, status);
+    if (!res.ok) {
+      setAdminError(res.error ?? 'Could not update merchant status. Try again.');
+      setMerchantBusyId(null);
+      return;
+    }
+    await loadAdminMerchants();
+    setMerchantBusyId(null);
+  }
+
+  async function handleConnectHubspot(): Promise<void> {
+    const accessToken = hubToken.trim();
+    if (!accessToken) {
+      setHubNotice({ kind: 'error', text: 'Enter your HubSpot private app token.' });
+      return;
+    }
+    setHubBusy(true);
+    setHubNotice(null);
+    const res = await connectHubspot(session.access_token, {
+      accessToken,
+      webhookSecret: hubWebhookSecret.trim() || undefined,
+    });
+    setHubBusy(false);
+    if (!res.ok) {
+      setHubNotice({ kind: 'error', text: res.error ?? 'Could not connect HubSpot. Try again.' });
+      return;
+    }
+    setHubToken('');
+    setHubWebhookSecret('');
+    setHubNotice({ kind: 'success', text: 'HubSpot connected. Your leads will now sync.' });
+    await integrationsQuery.refetch();
+  }
+
+  async function handleConnectInstagram(): Promise<void> {
+    const pageId = igPageId.trim();
+    const pageAccessToken = igPageToken.trim();
+    if (!pageId || !pageAccessToken) {
+      setIgNotice({ kind: 'error', text: 'Enter both your Page ID and Page access token.' });
+      return;
+    }
+    setIgBusy(true);
+    setIgNotice(null);
+    const res = await connectInstagram(session.access_token, {
+      pageId,
+      pageAccessToken,
+      verifyToken: igVerifyToken.trim() || undefined,
+    });
+    setIgBusy(false);
+    if (!res.ok) {
+      setIgNotice({ kind: 'error', text: res.error ?? 'Could not connect Instagram. Try again.' });
+      return;
+    }
+    setIgPageId('');
+    setIgPageToken('');
+    setIgVerifyToken('');
+    setIgNotice({ kind: 'success', text: 'Instagram / Messenger connected.' });
+    await integrationsQuery.refetch();
+  }
+
+  async function handleDisconnectIntegration(provider: 'hubspot' | 'instagram'): Promise<void> {
+    if (provider === 'hubspot') {
+      setHubBusy(true);
+      setHubNotice(null);
+    } else {
+      setIgBusy(true);
+      setIgNotice(null);
+    }
+    const res = await disconnectIntegration(session.access_token, provider);
+    if (provider === 'hubspot') setHubBusy(false);
+    else setIgBusy(false);
+    if (!res.ok) {
+      const notice = { kind: 'error' as const, text: res.error ?? 'Could not disconnect. Try again.' };
+      if (provider === 'hubspot') setHubNotice(notice);
+      else setIgNotice(notice);
+      return;
+    }
+    await integrationsQuery.refetch();
+  }
 
   /* Live data (10s polling while the relevant view is active) */
   const orgQuery = usePolling(fetchOrganization, [session.user.id], 60_000, true);
@@ -1234,6 +1417,12 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const reasonsQuery = usePolling(fetchHandoffReasonCounts, [], 10_000, complianceActive);
   const activityTrendQuery = usePolling(fetchActivityTrend, [], 30_000, analyticsActive);
   const leadFunnelQuery = usePolling(fetchLeadFunnel, [], 30_000, analyticsActive);
+  const integrationsQuery = usePolling(
+    () => fetchIntegrations(session.access_token),
+    [],
+    30_000,
+    integrationsActive
+  );
 
   const org = orgQuery.data;
   const conversations = conversationsQuery.data ?? [];
@@ -1273,6 +1462,9 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const razorpayWebhookUrl = `${gatewayUrl ?? 'https://<your-gateway-domain>'}/webhooks/razorpay/${
     orgId ?? '<your-org-id>'
   }`;
+
+  /* Per-merchant Instagram/Messenger webhook URL (shown on the Integrations tab). */
+  const instagramWebhookUrl = `${gatewayUrl ?? 'https://<your-gateway-domain>'}/webhooks/instagram`;
 
   async function handleSaveProfile(): Promise<void> {
     const required: Array<[string, string]> = [
@@ -3065,6 +3257,24 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             <Sliders className="nav-icon" />
             <span>AI Settings</span>
           </div>
+
+          <div
+            className={`nav-item ${activeTab === 'integrations' ? 'active' : ''}`}
+            onClick={() => setActiveTab('integrations')}
+          >
+            <Plug className="nav-icon" />
+            <span>Integrations</span>
+          </div>
+
+          {isAdmin && (
+            <div
+              className={`nav-item ${activeTab === 'admin' ? 'active' : ''}`}
+              onClick={() => setActiveTab('admin')}
+            >
+              <Users className="nav-icon" />
+              <span>Admin · Merchants</span>
+            </div>
+          )}
         </nav>
 
         <div
@@ -3103,6 +3313,8 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
             {activeTab === 'ai-settings' && 'AI Team, Business Rules & Live Test'}
+            {activeTab === 'integrations' && 'Integrations — Connect Your Own Tools'}
+            {activeTab === 'admin' && 'Platform Admin — Merchant Management'}
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span className="tenant-badge">
@@ -4525,6 +4737,356 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 the rules above.
               </p>
               {renderTestChat("Try: 'What are your charges for a Delhi to Jaipur cab?'")}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Integrations ─────────────────────────────── */}
+        {activeTab === 'integrations' && (
+          <div
+            className="report-workspace"
+            style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '20px' }}
+          >
+            {integrationsQuery.loading && !integrationsQuery.data && (
+              <StatusNote kind="loading">Loading your integrations…</StatusNote>
+            )}
+            {integrationsQuery.error && (
+              <StatusNote kind="error">{integrationsQuery.error}</StatusNote>
+            )}
+
+            {/* HubSpot */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  flexWrap: 'wrap',
+                  marginBottom: '4px',
+                }}
+              >
+                <div className="report-card-title" style={{ margin: 0 }}>
+                  <Plug size={20} style={{ color: 'var(--color-primary)' }} />
+                  HubSpot
+                </div>
+                <StatusChip connected={Boolean(integrationsQuery.data?.hubspot.connected)} />
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+                Sync your leads &amp; contacts to your own HubSpot.
+              </p>
+
+              {integrationsQuery.data?.hubspot.connected ? (
+                <button
+                  className="btn btn-secondary"
+                  disabled={hubBusy}
+                  style={{ opacity: hubBusy ? 0.6 : 1, cursor: hubBusy ? 'not-allowed' : 'pointer' }}
+                  onClick={() => {
+                    void handleDisconnectIntegration('hubspot');
+                  }}
+                >
+                  {hubBusy ? 'Disconnecting…' : 'Disconnect HubSpot'}
+                </button>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '440px' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Private app token <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      type="password"
+                      placeholder="pat-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                      value={hubToken}
+                      onChange={(e) => {
+                        setHubToken(e.target.value);
+                        if (hubNotice) setHubNotice(null);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Webhook secret <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      type="password"
+                      placeholder="HubSpot webhook signing secret"
+                      value={hubWebhookSecret}
+                      onChange={(e) => setHubWebhookSecret(e.target.value)}
+                    />
+                  </label>
+                  <div>
+                    <button
+                      className="btn btn-primary"
+                      disabled={hubBusy}
+                      style={{ opacity: hubBusy ? 0.6 : 1, cursor: hubBusy ? 'not-allowed' : 'pointer' }}
+                      onClick={() => {
+                        void handleConnectHubspot();
+                      }}
+                    >
+                      {hubBusy ? 'Connecting…' : 'Connect HubSpot'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {hubNotice && (
+                <div
+                  style={{
+                    fontSize: '12px',
+                    marginTop: '14px',
+                    color: hubNotice.kind === 'error' ? 'var(--color-danger)' : 'var(--color-success)',
+                  }}
+                >
+                  {hubNotice.text}
+                </div>
+              )}
+            </div>
+
+            {/* Instagram / Messenger */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  flexWrap: 'wrap',
+                  marginBottom: '4px',
+                }}
+              >
+                <div className="report-card-title" style={{ margin: 0 }}>
+                  <MessageSquare size={20} style={{ color: 'var(--color-primary)' }} />
+                  Instagram / Messenger
+                </div>
+                <StatusChip connected={Boolean(integrationsQuery.data?.instagram.connected)} />
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+                Answer Instagram DMs with the same AI, on your own IG/Facebook page.
+              </p>
+
+              {integrationsQuery.data?.instagram.connected ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {integrationsQuery.data.instagram.pageId && (
+                    <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                      Connected page ID:{' '}
+                      <code style={{ color: 'var(--text-main)' }}>
+                        {integrationsQuery.data.instagram.pageId}
+                      </code>
+                    </div>
+                  )}
+                  <div>
+                    <button
+                      className="btn btn-secondary"
+                      disabled={igBusy}
+                      style={{ opacity: igBusy ? 0.6 : 1, cursor: igBusy ? 'not-allowed' : 'pointer' }}
+                      onClick={() => {
+                        void handleDisconnectIntegration('instagram');
+                      }}
+                    >
+                      {igBusy ? 'Disconnecting…' : 'Disconnect Instagram'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '440px' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Page ID <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="1784XXXXXXXXXXX"
+                      value={igPageId}
+                      onChange={(e) => {
+                        setIgPageId(e.target.value);
+                        if (igNotice) setIgNotice(null);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Page access token <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      type="password"
+                      placeholder="EAAG…"
+                      value={igPageToken}
+                      onChange={(e) => {
+                        setIgPageToken(e.target.value);
+                        if (igNotice) setIgNotice(null);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      Verify token <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                    </span>
+                    <input
+                      className="chat-input"
+                      placeholder="A token you choose for Meta's webhook setup"
+                      value={igVerifyToken}
+                      onChange={(e) => setIgVerifyToken(e.target.value)}
+                    />
+                  </label>
+                  <div>
+                    <button
+                      className="btn btn-primary"
+                      disabled={igBusy}
+                      style={{ opacity: igBusy ? 0.6 : 1, cursor: igBusy ? 'not-allowed' : 'pointer' }}
+                      onClick={() => {
+                        void handleConnectInstagram();
+                      }}
+                    >
+                      {igBusy ? 'Connecting…' : 'Connect Instagram'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {igNotice && (
+                <div
+                  style={{
+                    fontSize: '12px',
+                    marginTop: '14px',
+                    color: igNotice.kind === 'error' ? 'var(--color-danger)' : 'var(--color-success)',
+                  }}
+                >
+                  {igNotice.text}
+                </div>
+              )}
+
+              <div
+                style={{
+                  padding: '16px',
+                  marginTop: '18px',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-muted)',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--text-muted)',
+                    marginBottom: '8px',
+                  }}
+                >
+                  Your Instagram / Messenger webhook URL
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '8px',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <code style={{ fontSize: '13px', wordBreak: 'break-all' }}>
+                    {instagramWebhookUrl}
+                  </code>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 12px', fontSize: '12px', flexShrink: 0 }}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(instagramWebhookUrl);
+                    }}
+                  >
+                    <Copy size={12} /> Copy
+                  </button>
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                  Add this as the callback URL in Meta&apos;s webhook configuration for your page.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Admin · Merchants (platform admin only) ──── */}
+        {isAdmin && activeTab === 'admin' && (
+          <div className="report-card" style={{ width: '100%' }}>
+            <div className="report-card-title">
+              <Users size={20} style={{ color: 'var(--color-primary)' }} />
+              Merchants
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+              Review and set the account status for every merchant on the platform.
+            </p>
+
+            {adminLoading && adminMerchants.length === 0 && (
+              <StatusNote kind="loading">Loading merchants…</StatusNote>
+            )}
+            {adminError && <StatusNote kind="error">{adminError}</StatusNote>}
+            {!adminLoading && adminMerchants.length === 0 && !adminError && (
+              <StatusNote kind="empty">No merchants found.</StatusNote>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {adminMerchants.map((m) => {
+                const busy = merchantBusyId === m.id;
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '14px 16px',
+                      backgroundColor: 'var(--bg-tertiary)',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border-muted)',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: '180px' }}>
+                      <div style={{ fontWeight: 600, fontSize: '14px' }}>{m.name}</div>
+                      {m.legalName && (
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {m.legalName}
+                        </div>
+                      )}
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        Joined {formatDateTime(m.createdAt)}
+                      </div>
+                    </div>
+
+                    <MerchantStatusChip status={m.onboardingStatus} />
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      {(
+                        [
+                          { status: 'active', label: 'Activate' },
+                          { status: 'pending_review', label: 'Set pending' },
+                          { status: 'suspended', label: 'Suspend' },
+                        ] as Array<{ status: MerchantStatus; label: string }>
+                      ).map((action) => {
+                        const isCurrent = m.onboardingStatus === action.status;
+                        const disabled = busy || isCurrent;
+                        return (
+                          <button
+                            key={action.status}
+                            className="btn btn-secondary"
+                            disabled={disabled}
+                            style={{
+                              padding: '6px 12px',
+                              fontSize: '12px',
+                              opacity: disabled ? 0.5 : 1,
+                              cursor: disabled ? 'not-allowed' : 'pointer',
+                            }}
+                            onClick={() => {
+                              void handleSetMerchantStatus(m.id, action.status);
+                            }}
+                          >
+                            {busy ? '…' : action.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

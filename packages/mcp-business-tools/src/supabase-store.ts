@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '@business-os-ai/shared-types';
 import { SecretBox, maskPhone } from './crypto';
 import type {
-  BusinessStore, BusinessSummary, WhatsAppConnection, PaymentConnection, ContactRecord, ContactNote, ConsentRow, LeadRecord, HandoffRecord,
+  BusinessStore, BusinessSummary, WhatsAppConnection, PaymentConnection, IntegrationConnection, ContactRecord, ContactNote, ConsentRow, LeadRecord, HandoffRecord,
   MessageRecord, AuditEventRecord, AutomationRunRecord, ConversationRecord,
   ProductRecord, TemplateRecord, OrderRecord, PackageRecord, BookingRecord,
 } from './store';
@@ -90,6 +90,53 @@ export class SupabaseBusinessStore implements BusinessStore {
       updated_at: new Date().toISOString(),
     }, { onConflict: 'organization_id' });
     if (error) this.fail('savePaymentConnection', error);
+  }
+
+  // ─── Integration connections (per-merchant HubSpot / Instagram, secrets encrypted) ──
+
+  async getIntegrationConnection(organizationId: string, provider: string): Promise<IntegrationConnection | null> {
+    const { data, error } = await this.db.from('integration_connections')
+      .select('organization_id, provider, status, config')
+      .eq('organization_id', organizationId).eq('provider', provider).maybeSingle();
+    if (error) this.fail('getIntegrationConnection', error);
+    if (!data) return null;
+    // Decrypt every string value; decrypt is a no-op on non-`v1:` values, so
+    // plaintext (non-secret) fields pass through unchanged.
+    const raw = (data.config ?? {}) as Record<string, unknown>;
+    const config: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      config[k] = typeof v === 'string' ? this.box.decrypt(v) : v;
+    }
+    return { organizationId: data.organization_id, provider: data.provider, status: data.status, config };
+  }
+
+  async saveIntegrationConnection(
+    organizationId: string,
+    provider: string,
+    input: { config: Record<string, unknown>; secretKeys?: string[]; status?: string },
+  ): Promise<void> {
+    const secretKeys = new Set(input.secretKeys ?? []);
+    const config: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input.config)) {
+      if (v === undefined || v === null) continue;
+      config[k] = secretKeys.has(k) ? this.box.encrypt(String(v)) : v;
+    }
+    const { error } = await this.db.from('integration_connections').upsert({
+      organization_id: organizationId,
+      provider,
+      status: input.status ?? 'active',
+      config,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'organization_id,provider' });
+    if (error) this.fail('saveIntegrationConnection', error);
+  }
+
+  async listIntegrationConnections(organizationId: string): Promise<Array<{ provider: string; status: string }>> {
+    const { data, error } = await this.db.from('integration_connections')
+      .select('provider, status')
+      .eq('organization_id', organizationId);
+    if (error) this.fail('listIntegrationConnections', error);
+    return (data ?? []).map((r) => ({ provider: r.provider, status: r.status }));
   }
 
   // ─── Owner assistant ──────────────────────────────────────────────

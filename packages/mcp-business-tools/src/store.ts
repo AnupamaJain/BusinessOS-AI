@@ -58,6 +58,18 @@ export interface PaymentConnection {
   status: string;
 }
 
+/**
+ * A per-organization third-party integration connection (e.g. the merchant's OWN
+ * HubSpot or Instagram). `config` is the DECRYPTED plaintext at this type
+ * boundary; secret keys within it are stored encrypted at rest.
+ */
+export interface IntegrationConnection {
+  organizationId: string;
+  provider: string;
+  status: string;
+  config: Record<string, unknown>; // DECRYPTED at the type boundary
+}
+
 export interface BusinessStore {
   /** Owner WhatsApp numbers (E.164) allowed to use the owner assistant. */
   getOwnerPhoneNumbers(organizationId: string): Promise<string[]>;
@@ -70,6 +82,13 @@ export interface BusinessStore {
   getPaymentConnection(organizationId: string): Promise<PaymentConnection | null>;
   /** Store (upsert) an org's per-merchant payment credentials (secrets encrypted at rest). */
   savePaymentConnection(organizationId: string, input: { keyId: string; keySecret: string; webhookSecret?: string; mode?: 'test' | 'live' }): Promise<void>;
+
+  /** Resolve an org's integration connection (e.g. hubspot) with decrypted config, or null. */
+  getIntegrationConnection(organizationId: string, provider: string): Promise<IntegrationConnection | null>;
+  /** Store (upsert) an org's integration connection; keys named in `secretKeys` are encrypted at rest. */
+  saveIntegrationConnection(organizationId: string, provider: string, input: { config: Record<string, unknown>; secretKeys?: string[]; status?: string }): Promise<void>;
+  /** List an org's integration connections (provider + status only, no config/secrets). */
+  listIntegrationConnections(organizationId: string): Promise<Array<{ provider: string; status: string }>>;
 
   /** Aggregate business metrics for the owner briefing. */
   getBusinessSummary(organizationId: string, now: Date): Promise<BusinessSummary>;

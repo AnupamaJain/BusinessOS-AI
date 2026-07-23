@@ -53,6 +53,7 @@ export class ToolDataStore implements BusinessStore {
   ownerPhoneNumbers: string[] = [];
   whatsappConnections: Array<import('./store').WhatsAppConnection> = [];
   paymentConnections: Array<import('./store').PaymentConnection> = [];
+  integrationConnections: Array<import('./store').IntegrationConnection> = [];
 
   async getOwnerPhoneNumbers(_organizationId: string): Promise<string[]> {
     return this.ownerPhoneNumbers;
@@ -78,6 +79,36 @@ export class ToolDataStore implements BusinessStore {
     const i = this.paymentConnections.findIndex((c) => c.organizationId === organizationId);
     if (i >= 0) this.paymentConnections[i] = conn;
     else this.paymentConnections.push(conn);
+  }
+
+  async getIntegrationConnection(organizationId: string, provider: string): Promise<import('./store').IntegrationConnection | null> {
+    return this.integrationConnections.find((c) => c.organizationId === organizationId && c.provider === provider) ?? null;
+  }
+
+  async saveIntegrationConnection(
+    organizationId: string,
+    provider: string,
+    input: { config: Record<string, unknown>; secretKeys?: string[]; status?: string },
+  ): Promise<void> {
+    // In-memory: no encryption, so secretKeys is ignored. Drop undefined/null to
+    // mirror the persisted store's write semantics.
+    const config: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input.config)) {
+      if (v === undefined || v === null) continue;
+      config[k] = v;
+    }
+    const conn: import('./store').IntegrationConnection = {
+      organizationId, provider, status: input.status ?? 'active', config,
+    };
+    const i = this.integrationConnections.findIndex((c) => c.organizationId === organizationId && c.provider === provider);
+    if (i >= 0) this.integrationConnections[i] = conn;
+    else this.integrationConnections.push(conn);
+  }
+
+  async listIntegrationConnections(organizationId: string): Promise<Array<{ provider: string; status: string }>> {
+    return this.integrationConnections
+      .filter((c) => c.organizationId === organizationId)
+      .map((c) => ({ provider: c.provider, status: c.status }));
   }
 
   async getWhatsAppConnectionByPhoneId(phoneNumberId: string): Promise<import('./store').WhatsAppConnection | null> {

@@ -1,12 +1,17 @@
 import { supabase } from './supabase';
 import type {
   ActivityTrendPoint,
+  AdminMerchant,
+  AdminMerchantsResult,
   AgentConfig,
   AgentTestResult,
   AutomationRunItem,
   BillingPlan,
   BusinessRules,
   CheckoutResult,
+  IntegrationProvider,
+  IntegrationsState,
+  MerchantStatus,
   ContactNote,
   ContactRow,
   ConversationListItem,
@@ -1149,6 +1154,157 @@ export async function fetchContactTimeline(
   // Oldest-first chronological order.
   events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
   return events;
+}
+
+/* ─── Platform admin: merchant management (operator-authed) ───────── */
+
+/**
+ * List all merchants for a platform admin. The gateway returns
+ * `{ isAdmin:false, merchants:[] }` for non-admins — the caller uses `isAdmin`
+ * to decide whether to show the Admin tab. Never throws.
+ */
+export async function fetchAdminMerchants(token: string): Promise<AdminMerchantsResult> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/admin/merchants`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      isAdmin?: boolean;
+      merchants?: AdminMerchant[];
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) {
+      return { ok: false, isAdmin: false, merchants: [], error: body.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true, isAdmin: Boolean(body.isAdmin), merchants: body.merchants ?? [] };
+  } catch (err) {
+    return {
+      ok: false,
+      isAdmin: false,
+      merchants: [],
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
+/** Set a merchant's account status (admin only). Never throws. */
+export async function setMerchantStatus(
+  token: string,
+  id: string,
+  status: MerchantStatus
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(
+      `${import.meta.env.VITE_GATEWAY_URL}/api/admin/merchants/${id}/status`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      }
+    );
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/* ─── Per-tenant integrations (HubSpot, Instagram/Messenger) ──────── */
+
+/** Read the merchant's current integration connection state. Never throws. */
+export async function fetchIntegrations(token: string): Promise<IntegrationsState> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      hubspot?: { connected?: boolean };
+      instagram?: { connected?: boolean; pageId?: string };
+      error?: string;
+    };
+    if (!res.ok || body.ok === false) {
+      return {
+        ok: false,
+        hubspot: { connected: false },
+        instagram: { connected: false },
+        error: body.error ?? `HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      hubspot: { connected: Boolean(body.hubspot?.connected) },
+      instagram: {
+        connected: Boolean(body.instagram?.connected),
+        pageId: body.instagram?.pageId,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      hubspot: { connected: false },
+      instagram: { connected: false },
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
+/** Connect the merchant's own HubSpot private app. Never throws. */
+export async function connectHubspot(
+  token: string,
+  creds: { accessToken: string; webhookSecret?: string }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations/hubspot`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Connect the merchant's own Instagram / Facebook page. Never throws. */
+export async function connectInstagram(
+  token: string,
+  creds: { pageId: string; pageAccessToken: string; verifyToken?: string }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations/instagram`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Disconnect an integration (`hubspot` | `instagram`). Never throws. */
+export async function disconnectIntegration(
+  token: string,
+  provider: IntegrationProvider
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations/${provider}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
 }
 
 export async function joinWaitlist(email: string, businessType: string | null): Promise<string | null> {
