@@ -272,7 +272,7 @@ export const GeneratePromoMediaOutput = z.object({
 });
 export type GeneratePromoMediaOutput = z.infer<typeof GeneratePromoMediaOutput>;
 
-// ─── MBG Services Suite (Local SEO, SEO Marketing, Lead Gen, Chat Automation) ───
+// ─── Growth Services Suite (Local SEO, SEO Marketing, Lead Gen, Chat Automation) ───
 
 export const AnalyzeLocalSeoInput = z.object({
   organizationId: z.string().uuid(),

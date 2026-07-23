@@ -7,7 +7,7 @@ import {
   configureChatAutomation,
 } from '../index';
 
-describe('MBG Services MCP Tools', () => {
+describe('Growth Services MCP Tools', () => {
   const orgId = '11111111-1111-1111-1111-111111111111';
 
   it('analyzes Local Business SEO with NAP consistency & local rankings', async () => {

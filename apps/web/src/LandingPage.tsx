@@ -163,12 +163,12 @@ const WHY_DIFFERENT = [
   ['Dashboard you must log into', 'Lives where your customers already are'],
 ];
 
-const MBG_SERVICES = [
+const GROWTH_SERVICES = [
   {
     id: 'smm',
     num: '01 / 06',
     title: 'Social Media Marketing',
-    badgeText: 'MBG SERVICE: SMM',
+    badgeText: 'GROWTH SERVICE: SMM',
     description: 'Elevate your brand presence across Instagram, Facebook, and LinkedIn with automated content calendars and targeted viral campaigns.',
     highlights: ['Content strategy & viral creation', 'Audience engagement & growth', 'Social ad campaign management'],
     btnText: 'Explore SMM',
@@ -179,7 +179,7 @@ const MBG_SERVICES = [
     id: 'seo',
     num: '02 / 06',
     title: 'Search Engine Optimization',
-    badgeText: 'MBG SERVICE: Organic SEO',
+    badgeText: 'GROWTH SERVICE: Organic SEO',
     description: 'Boost your website domain authority and rank #1 for high-value search queries with our comprehensive organic search optimization.',
     highlights: ['Keyword research & ranking', 'Technical site speed audit', 'On-page & off-page optimization'],
     btnText: 'Explore SEO',
@@ -190,7 +190,7 @@ const MBG_SERVICES = [
     id: 'local_seo',
     num: '03 / 06',
     title: 'Local Business SEO',
-    badgeText: 'MBG SERVICE: Local Business SEO',
+    badgeText: 'GROWTH SERVICE: Local Business SEO',
     description: 'Dominate your local market and ensure customers find you first with our specialized Local SEO strategies. We help your business rise to the top of local search results, connecting you with customers who are actively looking for your products or services in your area.',
     highlights: ['Hyper-local keyword targeting', 'Citation building & NAP consistency', 'High-quality local backlinks'],
     btnText: 'Explore Local',
@@ -202,7 +202,7 @@ const MBG_SERVICES = [
     id: 'seo_marketing',
     num: '04 / 06',
     title: 'SEO Marketing',
-    badgeText: 'MBG SERVICE: SEO Marketing',
+    badgeText: 'GROWTH SERVICE: SEO Marketing',
     description: 'Achieve sustainable long-term growth and maximize your organic visibility with our comprehensive SEO marketing solutions. We go beyond basic keywords to implement a data-driven strategy that aligns with your business goals.',
     highlights: ['Data-driven content marketing', 'Authoritative link-building', 'Technical SEO audits'],
     btnText: 'Explore SEO',
@@ -213,7 +213,7 @@ const MBG_SERVICES = [
     id: 'lead_gen',
     num: '05 / 06',
     title: 'Lead Generation',
-    badgeText: 'MBG SERVICE: Lead Generation',
+    badgeText: 'GROWTH SERVICE: Lead Generation',
     description: 'Fuel your sales pipeline with high-quality, conversion-ready prospects through our targeted Lead Generation services. We move beyond vanity metrics to deliver leads that actually impact your bottom line.',
     highlights: ['Targeted paid ads & funnels', 'B2B and B2C lead nurturing', 'Lower CAC, higher conversion'],
     btnText: 'Explore Lead',
@@ -224,7 +224,7 @@ const MBG_SERVICES = [
     id: 'chat_automation',
     num: '06 / 06',
     title: 'Chat Automation',
-    badgeText: 'MBG SERVICE: Chat Automation',
+    badgeText: 'GROWTH SERVICE: Chat Automation',
     description: 'Transform your customer support and engagement with our intelligent Chat Automation solutions. We deploy advanced chatbots on popular platforms like WhatsApp, Facebook Messenger, and your website to provide instant, 24/7 assistance.',
     highlights: ['WhatsApp + Messenger + website bots', '24/7 automated replies & booking', 'Free your team for complex queries'],
     btnText: 'Explore Chat',
@@ -250,8 +250,8 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
   const [wlError, setWlError] = useState<string | null>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const [legal, setLegal] = useState<null | 'privacy' | 'terms'>(null);
-  const [activeMbgSlide, setActiveMbgSlide] = useState(2); // default to 03 / 06 Local Business SEO
-  const [modalMbgService, setModalMbgService] = useState<typeof MBG_SERVICES[0] | null>(null);
+  const [activeGrowthSlide, setActiveGrowthSlide] = useState(2); // default to 03 / 06 Local Business SEO
+  const [modalGrowthService, setModalGrowthService] = useState<typeof GROWTH_SERVICES[0] | null>(null);
 
   const openLegal = (page: 'privacy' | 'terms') => {
     setLegal(page);
@@ -458,11 +458,11 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
         </div>
       </section>
 
-      {/* ─── MBG Services Suite (Interactive Carousel) ─── */}
+      {/* ─── Growth Services Suite (Interactive Carousel) ─── */}
       <section id="services-suite" style={{ backgroundColor: C.bg, borderTop: `1px solid ${C.line}`, padding: '96px 0' }}>
         <div style={{ maxWidth: `${MAXW}px`, margin: '0 auto', padding: '0 32px' }}>
           <Reveal style={{ textAlign: 'center', marginBottom: '40px' }}>
-            <Eyebrow color={C.cyan}>MBG Services Suite</Eyebrow>
+            <Eyebrow color={C.cyan}>SaarthiOne Growth Suite</Eyebrow>
             <H2>Full-Spectrum Business Growth &amp; Automation</H2>
             <p style={{ color: C.muted, fontSize: '16px', maxWidth: '640px', margin: '14px auto 0', lineHeight: 1.6 }}>
               From hyper-local SEO ranking and targeted lead generation to 24/7 multi-channel chat automation — powered by SaarthiOne.
@@ -471,16 +471,16 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
 
           {/* Carousel Slide Indicators */}
           <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '32px', flexWrap: 'wrap' }}>
-            {MBG_SERVICES.map((s, idx) => (
+            {GROWTH_SERVICES.map((s, idx) => (
               <button
                 key={s.id}
-                onClick={() => setActiveMbgSlide(idx)}
+                onClick={() => setActiveGrowthSlide(idx)}
                 style={{
                   padding: '8px 16px',
                   borderRadius: '20px',
-                  border: idx === activeMbgSlide ? `1.5px solid ${C.cyan}` : `1px solid ${C.line}`,
-                  backgroundColor: idx === activeMbgSlide ? 'rgba(0, 229, 255, 0.1)' : C.card,
-                  color: idx === activeMbgSlide ? C.cyan : C.muted,
+                  border: idx === activeGrowthSlide ? `1.5px solid ${C.cyan}` : `1px solid ${C.line}`,
+                  backgroundColor: idx === activeGrowthSlide ? 'rgba(0, 229, 255, 0.1)' : C.card,
+                  color: idx === activeGrowthSlide ? C.cyan : C.muted,
                   fontWeight: 700,
                   fontSize: '12.5px',
                   cursor: 'pointer',
@@ -494,7 +494,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
 
           {/* Active Carousel Card */}
           {(() => {
-            const current = MBG_SERVICES[activeMbgSlide]!;
+            const current = GROWTH_SERVICES[activeGrowthSlide]!;
             return (
               <Reveal key={current.id}>
                 <div
@@ -537,7 +537,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '12px', flexWrap: 'wrap' }}>
                       <button
-                        onClick={() => setModalMbgService(current)}
+                        onClick={() => setModalGrowthService(current)}
                         style={{
                           padding: '14px 28px',
                           borderRadius: '30px',
@@ -557,7 +557,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
                       </button>
 
                       <button
-                        onClick={() => setActiveMbgSlide((activeMbgSlide + 1) % MBG_SERVICES.length)}
+                        onClick={() => setActiveGrowthSlide((activeGrowthSlide + 1) % GROWTH_SERVICES.length)}
                         style={{
                           background: 'transparent',
                           color: C.muted,
@@ -646,7 +646,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
                         <BarChart3 size={18} />
                       </span>
                       <div>
-                        <div style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>MBG SERVICE</div>
+                        <div style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>GROWTH SERVICE</div>
                         <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>{current.title}</div>
                       </div>
                     </div>
@@ -659,26 +659,26 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
       </section>
 
       {/* ─── Service Detail Modal Popup ─── */}
-      {modalMbgService && (
+      {modalGrowthService && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(10px)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
           <div style={{ backgroundColor: C.card, borderRadius: '24px', border: `1px solid ${C.cyan}`, padding: '36px', maxWidth: '560px', width: '100%', position: 'relative', boxShadow: '0 20px 50px rgba(0,229,255,0.2)' }}>
-            <button onClick={() => setModalMbgService(null)} style={{ position: 'absolute', top: '20px', right: '20px', background: 'transparent', border: 'none', color: C.muted, fontSize: '20px', cursor: 'pointer' }}>✕</button>
+            <button onClick={() => setModalGrowthService(null)} style={{ position: 'absolute', top: '20px', right: '20px', background: 'transparent', border: 'none', color: C.muted, fontSize: '20px', cursor: 'pointer' }}>✕</button>
 
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '4px 12px', borderRadius: '16px', backgroundColor: 'rgba(0,229,255,0.1)', color: C.cyan, fontSize: '12px', fontWeight: 800, marginBottom: '14px' }}>
-              {modalMbgService.num} · {modalMbgService.badgeText}
+              {modalGrowthService.num} · {modalGrowthService.badgeText}
             </div>
 
             <h3 style={{ fontSize: '28px', fontWeight: 800, color: '#fff', fontFamily: 'Outfit, sans-serif', marginBottom: '12px' }}>
-              {modalMbgService.title}
+              {modalGrowthService.title}
             </h3>
 
             <p style={{ color: C.muted, fontSize: '14.5px', lineHeight: 1.6, marginBottom: '20px' }}>
-              {modalMbgService.description}
+              {modalGrowthService.description}
             </p>
 
             <div style={{ backgroundColor: '#070b12', borderRadius: '16px', padding: '16px', border: `1px solid ${C.line}`, marginBottom: '24px' }}>
               <div style={{ fontSize: '13px', fontWeight: 700, color: '#fff', marginBottom: '10px' }}>Included Core Deliverables:</div>
-              {modalMbgService.highlights.map((h) => (
+              {modalGrowthService.highlights.map((h) => (
                 <div key={h} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13.5px', color: '#cbd5e1', marginBottom: '6px' }}>
                   <Check size={15} style={{ color: C.green }} /> {h}
                 </div>
@@ -686,7 +686,7 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
             </div>
 
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button onClick={() => { setModalMbgService(null); onLaunchApp(); }} style={{ ...primaryBtn, flex: 1, justifyContent: 'center' }}>
+              <button onClick={() => { setModalGrowthService(null); onLaunchApp(); }} style={{ ...primaryBtn, flex: 1, justifyContent: 'center' }}>
                 Launch in Operator Dashboard <ArrowRight size={16} />
               </button>
             </div>
