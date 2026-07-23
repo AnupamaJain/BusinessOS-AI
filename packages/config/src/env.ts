@@ -38,6 +38,20 @@ export const envSchema = z.object({
     .string()
     .transform((v) => v === 'true')
     .default('true'),
+
+  // OpenMontage AI Video & Media Generation Providers (optional)
+  FAL_KEY: z.string().optional(),
+  FAL_AI_API_KEY: z.string().optional(),
+  REPLICATE_API_TOKEN: z.string().optional(),
+  KLING_API_KEY: z.string().optional(),
+  KLING_API_BASE_URL: z.string().optional(),
+  ATLASCLOUD_API_KEY: z.string().optional(),
+  HIGGSFIELD_KEY: z.string().optional(),
+  PEXELS_API_KEY: z.string().optional(),
+  PIXABAY_API_KEY: z.string().optional(),
+  UNSPLASH_ACCESS_KEY: z.string().optional(),
+  SUNO_API_KEY: z.string().optional(),
+  ELEVENLABS_API_KEY: z.string().optional(),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

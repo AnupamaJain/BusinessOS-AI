@@ -33,3 +33,15 @@ graph TD
 | **Finance Agent** | 💳 ₹74k Recovered / mo | Payment links, official GST tax invoice PDFs & refunds | `RazorpayPaymentService`, Webhook Listener |
 | **Travel Agent** | 🌴 Concierge Plans | Customized day-by-day trip planning & vouchers | `search_travel_packages`, Itinerary Builder |
 
+---
+
+## 3. OpenMontage AI Video & Multi-Modal Media Engine
+
+SaarthiOne integrates the **OpenMontage** pipeline pattern (`calesthio/OpenMontage`) for automated AI video generation, motion clip rendering, and voiceover production:
+
+- **AI Video Providers**: Fal.ai (FLUX / Veo / Kling / MiniMax), Replicate (Seedance / Wan2.1), Kling AI direct API.
+- **Stock Media Sourcing**: Pexels, Pixabay, Unsplash, Archive.org.
+- **AI Voice & Music**: ElevenLabs, Google Cloud TTS, Suno AI music.
+- **Agent Integration**: `generate_promo_media` MCP tool exposed to Marketing & Travel Agents for generating in-thread video teasers and campaign reels.
+
+

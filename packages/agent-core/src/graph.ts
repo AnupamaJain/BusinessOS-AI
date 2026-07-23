@@ -8,7 +8,7 @@ import {
 import {
   getCustomerContext, upsertQualifiedLead, createHumanHandoff,
   searchProductCatalog, getOrderStatus, searchTravelPackages,
-  searchCabRoutes, searchServicePlans,
+  searchCabRoutes, searchServicePlans, generatePromoMedia,
   type BusinessStore, type CreateHumanHandoffInput,
 } from '@business-os-ai/mcp-business-tools';
 import { logger, type IntentType } from '@business-os-ai/shared-types';
@@ -39,6 +39,8 @@ export interface AgentGraphDeps {
   createCabBooking?: (args: { contactId: string; packageSku: string; pickupDate: string }) => Promise<{ url?: string; amountText: string; bookingNumber: string } | null>;
   /** Optional (home-services vertical): reserve a service booking; may attach a payment link. */
   createServiceBooking?: (args: { contactId: string; packageSku: string; startDate: string }) => Promise<{ url?: string; amountText: string; bookingNumber: string } | null>;
+  /** Optional (OpenMontage media engine): generate AI video promo teaser or voice narration. */
+  generatePromoMedia?: (args: { organizationId: string; topic: string; campaignType: 'travel_itinerary_video' | 'product_teaser' | 'promo_reel' | 'voice_narration' }) => Promise<{ mediaUrl: string; caption: string }>;
   /**
    * Per-merchant business rules (Layers 5/9). When present, they are injected
    * into the reply's system prompt and drive human-approval escalation.
@@ -572,6 +574,18 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
       const first = top[0]!;
       state.proposedResponse = llmReply ??
         `Great choice! I'd recommend our ${first.title} at ${first.pricePerPerson} per person. Inclusions: ${first.inclusions.slice(0, 3).join(', ')}.\n\nWhen are you planning to travel, and for how many people?`;
+
+      if (lower.includes('video') || lower.includes('teaser') || lower.includes('promo') || lower.includes('reel')) {
+        const media = await generatePromoMedia(store, {
+          organizationId: state.organizationId,
+          campaignType: 'travel_itinerary_video',
+          topic: first.title,
+          style: 'travel_reel',
+          durationSec: 15,
+          targetChannel: 'whatsapp',
+        });
+        state.toolCalls.push({ tool: 'generate_promo_media', input: { topic: first.title }, output: media });
+      }
 
       const leadResult = await upsertQualifiedLead(store, {
         organizationId: state.organizationId,

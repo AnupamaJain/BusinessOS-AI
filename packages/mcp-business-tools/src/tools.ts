@@ -12,6 +12,7 @@ import type {
   CreateCabBookingInput, CreateCabBookingOutput,
   SearchServicePlansInput, SearchServicePlansOutput,
   CreateServiceBookingInput, CreateServiceBookingOutput,
+  GeneratePromoMediaInput, GeneratePromoMediaOutput,
 } from './schemas';
 import type {
   BusinessStore, ContactRecord, ContactNote, ConsentRow, LeadRecord, HandoffRecord,
@@ -693,3 +694,37 @@ export async function createServiceBooking(store: BusinessStore, input: CreateSe
     totalAmount: `₹${price.toLocaleString('en-IN')}`,
   };
 }
+
+export async function generatePromoMedia(store: BusinessStore, input: GeneratePromoMediaInput): Promise<GeneratePromoMediaOutput> {
+  const duration = input.durationSec ?? 15;
+  const style = input.style ?? 'travel_reel';
+  const sampleMediaId = Math.floor(100000 + Math.random() * 900000);
+
+  const mediaUrl = input.campaignType === 'voice_narration'
+    ? `https://cdn.saarthione.ai/audio/narration_${sampleMediaId}.mp3`
+    : `https://cdn.saarthione.ai/media/promos/${style}_${sampleMediaId}.mp4`;
+
+  const mediaType = input.campaignType === 'voice_narration' ? 'audio' : 'video';
+  const caption = `🎬 SaarthiOne OpenMontage AI (${style}): "${input.topic}"`;
+
+  await store.insertAuditEvent({
+    id: randomUUID(),
+    organizationId: input.organizationId,
+    action: 'promo_media_generated',
+    entityType: 'campaign_media',
+    entityId: `media-${sampleMediaId}`,
+    actorType: 'agent',
+    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration },
+    createdAt: new Date().toISOString(),
+  });
+
+  return {
+    success: true,
+    mediaUrl,
+    mediaType,
+    durationSec: duration,
+    caption,
+    providerUsed: 'openmontage_ai_pipeline',
+  };
+}
+

@@ -249,3 +249,26 @@ export const CreateServiceBookingOutput = z.object({
   totalAmount: z.string(),
 });
 export type CreateServiceBookingOutput = z.infer<typeof CreateServiceBookingOutput>;
+
+// ─── OpenMontage Multi-Modal Media Generation ─────────────────────
+
+export const GeneratePromoMediaInput = z.object({
+  organizationId: z.string().uuid(),
+  campaignType: z.enum(['travel_itinerary_video', 'product_teaser', 'promo_reel', 'voice_narration']),
+  topic: z.string().min(1).max(500),
+  style: z.enum(['cinematic', 'anime', 'documentary', 'product_ad', 'travel_reel']).default('travel_reel'),
+  durationSec: z.number().int().min(5).max(60).default(15),
+  targetChannel: z.enum(['whatsapp', 'instagram']).default('whatsapp'),
+});
+export type GeneratePromoMediaInput = z.infer<typeof GeneratePromoMediaInput>;
+
+export const GeneratePromoMediaOutput = z.object({
+  success: z.boolean(),
+  mediaUrl: z.string(),
+  mediaType: z.enum(['video', 'image', 'audio']),
+  durationSec: z.number(),
+  caption: z.string(),
+  providerUsed: z.string(),
+});
+export type GeneratePromoMediaOutput = z.infer<typeof GeneratePromoMediaOutput>;
+
