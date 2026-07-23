@@ -23,7 +23,7 @@ import { RazorpayPaymentService, buildQuotationHtml, buildInvoiceHtml } from '@b
 import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
   createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv,
-  createTranscriptionServiceFromEnv,
+  createTranscriptionServiceFromEnv, createTtsServiceFromEnv,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -340,6 +340,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
   const transcriptionService = createTranscriptionServiceFromEnv(env);
+  const ttsService = createTtsServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env);
 
@@ -542,6 +543,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       return;
     }
 
+    let wasVoiceNote = false; // reply in kind (voice) when the customer sent a voice note
     // Business Brain: stamp "last seen" for this customer (best-effort).
     try { await store.updateContactLastSeen(orgId, msg.contactId); } catch { /* non-critical */ }
 
@@ -634,6 +636,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         // (mutate in place so earlier contact/conversation narrowing is preserved).
         msg.text = transcript;
         msg.type = 'text';
+        wasVoiceNote = true;
       } else {
         const reply = '🎙️ Sorry, I couldn’t quite catch that voice note. Could you send it again, or type your message?';
         const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: 'text', text: reply, idempotencyKey: `voice:${msg.providerMessageId}` });
@@ -755,6 +758,20 @@ export function buildServer(env: Record<string, string | undefined> = process.en
           // the tenant's number is effectively offline until it's refreshed.
           const isTokenExpiry = /\b190\b|131005|expired|OAuthException|access token/i.test(errStr);
           await recordError(isTokenExpiry ? 'token_expired' : 'whatsapp_send', errStr, { to: msg.from }, orgId, isTokenExpiry ? 'critical' : 'error');
+        }
+
+        // Reply in kind: the customer sent a voice note, so also send a spoken
+        // reply (Google Cloud TTS → OGG/Opus → WhatsApp voice note). Best-effort,
+        // off the reply path; the text answer above always goes out regardless.
+        if (wasVoiceNote && result.success && ttsService.isConfigured && replyAdapter.sendVoiceNote) {
+          const voiceText = state.finalResponse;
+          const voiceWork = (async () => {
+            const tts = await ttsService.synthesize({ text: voiceText.slice(0, 700) });
+            if (tts.ok && tts.audioBase64 && replyAdapter.sendVoiceNote) {
+              await replyAdapter.sendVoiceNote(orgId, { to: msg.from, audioBase64: tts.audioBase64, mimeType: tts.mimeType, idempotencyKey: `voicereply:${msg.providerMessageId}` });
+            }
+          })();
+          try { waitUntil(voiceWork); } catch { void voiceWork; }
         }
       }
 

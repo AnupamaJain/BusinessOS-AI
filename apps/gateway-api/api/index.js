@@ -47569,6 +47569,38 @@ var MetaCloudApiAdapter = class {
       };
     }
   }
+  /** Send a voice note: upload the audio to WhatsApp media, then send it as an audio message. */
+  async sendVoiceNote(organizationId, params) {
+    if (!this.accessToken || !this.phoneNumberId) {
+      return { success: false, error: "Meta credentials missing." };
+    }
+    const mime = (params.mimeType ?? "audio/ogg").split(";")[0].trim() || "audio/ogg";
+    try {
+      const form = new FormData();
+      form.append("messaging_product", "whatsapp");
+      form.append("type", mime);
+      form.append("file", new Blob([Buffer.from(params.audioBase64, "base64")], { type: mime }), "reply.ogg");
+      const upRes = await fetch(`https://graph.facebook.com/v21.0/${this.phoneNumberId}/media`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+        body: form
+      });
+      if (!upRes.ok) return { success: false, error: `Meta media upload HTTP ${upRes.status}: ${(await upRes.text().catch(() => "")).slice(0, 200)}` };
+      const up = await upRes.json();
+      if (!up.id) return { success: false, error: "Meta media upload returned no id" };
+      const res = await fetch(`https://graph.facebook.com/v21.0/${this.phoneNumberId}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: params.to, type: "audio", audio: { id: up.id } })
+      });
+      if (!res.ok) return { success: false, error: `Meta audio send HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}` };
+      const data = await res.json();
+      logger.info("Meta voice note sent", { organizationId, providerMessageId: data.messages?.[0]?.id });
+      return { success: true, providerMessageId: data.messages?.[0]?.id };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
 };
 
 // src/adapters/twilio-whatsapp-adapter.ts
@@ -59819,6 +59851,85 @@ function createTranscriptionServiceFromEnv(env = process.env) {
   });
 }
 
+// ../../packages/integrations/src/tts.ts
+var DEFAULT_LANGUAGE_CODE = "en-IN";
+var TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
+var MAX_TEXT_LENGTH = 4800;
+var TtsService = class {
+  apiKey;
+  languageCode;
+  voiceName;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.languageCode = config.languageCode ?? DEFAULT_LANGUAGE_CODE;
+    this.voiceName = config.voiceName;
+  }
+  /** True when an API key is present and synthesis can actually run. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async synthesize(params) {
+    if (!this.apiKey) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "GOOGLE_CLOUD_TTS_API_KEY not configured"
+      };
+    }
+    const text = (params.text ?? "").trim();
+    if (!text) {
+      return { ok: false, error: "No text to synthesize" };
+    }
+    const languageCode = params.languageCode ?? this.languageCode;
+    const voiceName = params.voiceName ?? this.voiceName;
+    const voice = { languageCode };
+    if (voiceName) voice.name = voiceName;
+    const body = {
+      input: { text: text.slice(0, MAX_TEXT_LENGTH) },
+      voice,
+      audioConfig: { audioEncoding: "OGG_OPUS" }
+    };
+    const url = `${TTS_URL}?key=${this.apiKey}`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Cloud TTS responded with status ${response.status}`;
+      try {
+        const errText = await response.text();
+        if (errText) error = errText.slice(0, 500);
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const audioContent = payload.audioContent;
+    if (!audioContent) {
+      return { ok: false, error: "Cloud TTS response missing audioContent" };
+    }
+    return { ok: true, audioBase64: audioContent, mimeType: "audio/ogg" };
+  }
+};
+function createTtsServiceFromEnv(env = process.env) {
+  return new TtsService({
+    apiKey: env.GOOGLE_CLOUD_TTS_API_KEY,
+    languageCode: env.TTS_LANGUAGE_CODE,
+    voiceName: env.TTS_VOICE_NAME
+  });
+}
+
 // ../../packages/integrations/src/billing.ts
 var import_node_crypto = require("node:crypto");
 var STRIPE_API_BASE = "https://api.stripe.com";
@@ -60567,6 +60678,7 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
   const emailService = createEmailServiceFromEnv(env);
   const ocrService = createOcrServiceFromEnv(env);
   const transcriptionService = createTranscriptionServiceFromEnv(env);
+  const ttsService = createTtsServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env);
   async function syncLeadToHubSpot(orgId, leadId) {
@@ -60763,6 +60875,7 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
       logger.info("Skipping message without contact/conversation", { providerMessageId: msg.providerMessageId });
       return;
     }
+    let wasVoiceNote = false;
     try {
       await store.updateContactLastSeen(orgId, msg.contactId);
     } catch {
@@ -60851,6 +60964,7 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         logger.info("Voice note transcribed", { providerMessageId: msg.providerMessageId, chars: transcript.length });
         msg.text = transcript;
         msg.type = "text";
+        wasVoiceNote = true;
       } else {
         const reply = "\u{1F399}\uFE0F Sorry, I couldn\u2019t quite catch that voice note. Could you send it again, or type your message?";
         const r = await replyAdapter.sendMessage(orgId, { to: msg.from, type: "text", text: reply, idempotencyKey: `voice:${msg.providerMessageId}` });
@@ -60955,6 +61069,19 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
           const errStr = result.error ?? "send failed";
           const isTokenExpiry = /\b190\b|131005|expired|OAuthException|access token/i.test(errStr);
           await recordError(isTokenExpiry ? "token_expired" : "whatsapp_send", errStr, { to: msg.from }, orgId, isTokenExpiry ? "critical" : "error");
+        }
+        if (wasVoiceNote && result.success && ttsService.isConfigured && replyAdapter.sendVoiceNote) {
+          const voiceText = state.finalResponse;
+          const voiceWork = (async () => {
+            const tts = await ttsService.synthesize({ text: voiceText.slice(0, 700) });
+            if (tts.ok && tts.audioBase64 && replyAdapter.sendVoiceNote) {
+              await replyAdapter.sendVoiceNote(orgId, { to: msg.from, audioBase64: tts.audioBase64, mimeType: tts.mimeType, idempotencyKey: `voicereply:${msg.providerMessageId}` });
+            }
+          })();
+          try {
+            (0, import_functions.waitUntil)(voiceWork);
+          } catch {
+          }
         }
       }
       for (const tc of state.toolCalls) {

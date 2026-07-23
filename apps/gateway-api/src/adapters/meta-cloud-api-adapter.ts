@@ -269,4 +269,38 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
       };
     }
   }
+
+  /** Send a voice note: upload the audio to WhatsApp media, then send it as an audio message. */
+  async sendVoiceNote(organizationId: string, params: { to: string; audioBase64: string; mimeType?: string; idempotencyKey?: string }): Promise<SendResult> {
+    if (!this.accessToken || !this.phoneNumberId) {
+      return { success: false, error: 'Meta credentials missing.' };
+    }
+    const mime = (params.mimeType ?? 'audio/ogg').split(';')[0]!.trim() || 'audio/ogg';
+    try {
+      // 1) Upload the audio to WhatsApp media (multipart).
+      const form = new FormData();
+      form.append('messaging_product', 'whatsapp');
+      form.append('type', mime);
+      form.append('file', new Blob([Buffer.from(params.audioBase64, 'base64')], { type: mime }), 'reply.ogg');
+      const upRes = await fetch(`https://graph.facebook.com/v21.0/${this.phoneNumberId}/media`, {
+        method: 'POST', headers: { Authorization: `Bearer ${this.accessToken}` }, body: form,
+      });
+      if (!upRes.ok) return { success: false, error: `Meta media upload HTTP ${upRes.status}: ${(await upRes.text().catch(() => '')).slice(0, 200)}` };
+      const up = (await upRes.json()) as { id?: string };
+      if (!up.id) return { success: false, error: 'Meta media upload returned no id' };
+
+      // 2) Send the audio message referencing the uploaded media.
+      const res = await fetch(`https://graph.facebook.com/v21.0/${this.phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: params.to, type: 'audio', audio: { id: up.id } }),
+      });
+      if (!res.ok) return { success: false, error: `Meta audio send HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}` };
+      const data = (await res.json()) as { messages?: Array<{ id: string }> };
+      logger.info('Meta voice note sent', { organizationId, providerMessageId: data.messages?.[0]?.id });
+      return { success: true, providerMessageId: data.messages?.[0]?.id };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
 }

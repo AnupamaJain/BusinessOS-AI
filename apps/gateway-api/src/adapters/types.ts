@@ -81,4 +81,7 @@ export interface WhatsAppAdapter {
   sendMessage(organizationId: string, message: OutboundMessage): Promise<SendResult>;
   verifyWebhook(token: string, challenge: string): string | null;
   parseInboundEvent(body: unknown): InboundMessage[];
+  /** Optional: send a voice note (audio). Only channels that support media
+   *  upload implement this; callers must feature-detect it. */
+  sendVoiceNote?(organizationId: string, params: { to: string; audioBase64: string; mimeType?: string; idempotencyKey?: string }): Promise<SendResult>;
 }
