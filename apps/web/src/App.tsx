@@ -3243,9 +3243,11 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             <span className="brand-logo" style={{ letterSpacing: '-0.5px' }}>
               Saarthi<span style={{ color: 'var(--color-primary)' }}>One</span>
             </span>
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {orgQuery.loading && !org ? 'Loading…' : org?.name ?? ''}
-            </span>
+            {org?.name && org.name.toLowerCase() !== 'saarthione' && (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {org.name}
+              </span>
+            )}
           </div>
         </div>
 
@@ -3382,9 +3384,11 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'admin' && 'Platform Admin — Merchant Management'}
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span className="tenant-badge">
-              {org ? `Org: ${org.name}` : 'Org: SaarthiOne'}
-            </span>
+            {org?.name && org.name.toLowerCase() !== 'saarthione' && (
+              <span className="tenant-badge">
+                Org: {org.name}
+              </span>
+            )}
             <button
               className="btn btn-secondary"
               style={{ padding: '8px 14px', fontSize: '12px' }}
