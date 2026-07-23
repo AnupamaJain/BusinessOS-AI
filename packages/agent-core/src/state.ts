@@ -36,6 +36,8 @@ export const AgentStateSchema = z.object({
   }).optional(),
   proposedResponse: z.string().optional(),
   finalResponse: z.string().optional(),
+  /** True when the reply came from the LLM (already in the customer's language). */
+  llmComposed: z.boolean().optional(),
   handoffId: z.string().optional(),
   errors: z.array(z.string()).default([]),
   traceId: z.string(),

@@ -57367,6 +57367,8 @@ var AgentStateSchema = external_exports.object({
   }).optional(),
   proposedResponse: external_exports.string().optional(),
   finalResponse: external_exports.string().optional(),
+  /** True when the reply came from the LLM (already in the customer's language). */
+  llmComposed: external_exports.boolean().optional(),
   handoffId: external_exports.string().optional(),
   errors: external_exports.array(external_exports.string()).default([]),
   traceId: external_exports.string()
@@ -57838,6 +57840,7 @@ async function executeAgentGraph(store, params, deps = {}) {
       state = await nodeClarificationFlow(state, deps);
     }
     state = nodeResponseQualityGate(state);
+    await localizeDeterministicReply(state, deps);
     state = nodePersistOutcome(state);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -57907,7 +57910,11 @@ Customer message: ${state.inboundMessage}`
       ]
     });
     const text = completion.content.trim();
-    return text.length > 0 ? text : null;
+    if (text.length > 0) {
+      state.llmComposed = true;
+      return text;
+    }
+    return null;
   } catch (err) {
     logger.warn("LLM reply composition failed; using deterministic template", {
       error: err instanceof Error ? err.message : String(err)
@@ -57917,6 +57924,34 @@ Customer message: ${state.inboundMessage}`
 }
 function hasRealLLM(deps) {
   return !!deps.llm && deps.llm.hasRealProvider;
+}
+var ROMANIZED_INDIC = /\b(mujhe|chahiye|chahta|chahti|kya|hai|hain|kaise|kaisa|kitna|kitne|namaste|namaskar|aap|aapka|aapki|karo|karna|karenge|krna|liye|nahi|nahin|haan|batao|bataye|kal|aaj|paisa|paise|kahan|kyun|acha|accha|theek|thik|dhanyavaad|shukriya|zaroorat|madad|milega|hoga|kripya|bhej|dena|dedo|chahiye)\b/i;
+function looksNonEnglish(text) {
+  if (!text) return false;
+  if (/[^\x00-\x7F]/.test(text)) return true;
+  return ROMANIZED_INDIC.test(text);
+}
+async function localizeDeterministicReply(state, deps) {
+  if (state.llmComposed || !state.finalResponse || !deps.llm) return;
+  if (!looksNonEnglish(state.inboundMessage)) return;
+  try {
+    const completion = await deps.llm.generateCompletion({
+      organizationId: state.organizationId,
+      maxTokens: 400,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "You localize business chat replies. Rewrite the reply in the SAME language and script the customer used (including romanized Hinglish). Keep every number, price (\u20B9\u2026), URL, booking/order id, product/place name and emoji EXACTLY as-is \u2014 translate only the natural-language words. If the customer actually wrote English, return the reply unchanged. Output ONLY the reply, nothing else." },
+        { role: "user", content: `Customer wrote: \xAB${state.inboundMessage}\xBB
+
+Reply to localize:
+${state.finalResponse}` }
+      ]
+    });
+    const t = completion.content.trim();
+    if (t) state.finalResponse = t;
+  } catch (err) {
+    logger.warn("reply localization failed", { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 function businessRulesPromptBlock(rules) {
   const lines = [];
