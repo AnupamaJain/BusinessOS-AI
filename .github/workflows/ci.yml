@@ -1,4 +1,4 @@
-name: CI
+name: CI & Deploy
 
 on:
   push:
@@ -6,8 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Never let two production deploys race; queue them instead.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-test:
+  # ── The gate: every push and PR must pass this ──
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,3 +38,42 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # ── Deploy: only after `checks` is green, and only on push to main ──
+  deploy:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Skip if no VERCEL_TOKEN
+        if: env.VERCEL_TOKEN == ''
+        run: echo "::warning::VERCEL_TOKEN secret not set — deploy skipped. Add it in repo Settings → Secrets and variables → Actions."
+
+      - uses: actions/checkout@v4
+        if: env.VERCEL_TOKEN != ''
+
+      - uses: pnpm/action-setup@v4
+        if: env.VERCEL_TOKEN != ''
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        if: env.VERCEL_TOKEN != ''
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: env.VERCEL_TOKEN != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Vercel CLI
+        if: env.VERCEL_TOKEN != ''
+        run: npm i -g vercel@latest
+
+      - name: Deploy gateway + web to Vercel
+        if: env.VERCEL_TOKEN != ''
+        run: node scripts/deploy.mjs all

@@ -33,5 +33,6 @@ supabase/.temp/
 # Logs
 *.log
 .vercel-deploy
+.deploy-tmp
 .credentials.local.md
 .vercel

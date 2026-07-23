@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.4",
   "scripts": {
+    "deploy": "node scripts/deploy.mjs",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",

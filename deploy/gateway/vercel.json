@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "installCommand": "echo prebuilt-bundle",
+  "buildCommand": "echo prebuilt-bundle",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/internal/scheduler/run",
+      "schedule": "30 9 * * *"
+    }
+  ],
+  "framework": null,
+  "outputDirectory": "public"
+}
