@@ -60681,7 +60681,7 @@ function buildServer(env = process.env) {
   }
   async function adapterForOrg(orgId) {
     if (orgId === defaultOrgId) return adapter;
-    const { data } = await db.from("whatsapp_connections").select("phone_number_id").eq("organization_id", orgId).eq("status", "active").maybeSingle();
+    const { data } = await tenantDb(orgId).from("whatsapp_connections").select("phone_number_id").eq("status", "active").maybeSingle();
     const phoneId = data?.phone_number_id;
     if (!phoneId) return adapter;
     const cached = orgAdapterCache.get(phoneId);
@@ -60728,6 +60728,20 @@ function buildServer(env = process.env) {
 context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
     }
   }
+  async function audit(orgId, action, opts) {
+    try {
+      await db.from("service_audit_log").insert({
+        organization_id: orgId,
+        actor: opts?.actor ?? "system",
+        action,
+        resource: opts?.resource ?? null,
+        resource_id: opts?.resourceId ?? null,
+        operation: opts?.operation ?? null,
+        details: opts?.details ?? {}
+      });
+    } catch {
+    }
+  }
   const orgCache = /* @__PURE__ */ new Map();
   async function getOrgContext(orgId) {
     const cached = orgCache.get(orgId);
@@ -60771,9 +60785,9 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
     const hubspot2 = await hubspotForOrg(orgId);
     if (!hubspot2) return;
     try {
-      const { data: lead } = await db.from("leads").select("id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id").eq("organization_id", orgId).eq("id", leadId).maybeSingle();
+      const { data: lead } = await tenantDb(orgId).from("leads").select("id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id").eq("id", leadId).maybeSingle();
       if (!lead?.contact_id) return;
-      const { data: contact } = await db.from("contacts").select("id, name, email, phone_number, hubspot_contact_id").eq("organization_id", orgId).eq("id", lead.contact_id).maybeSingle();
+      const { data: contact } = await tenantDb(orgId).from("contacts").select("id, name, email, phone_number, hubspot_contact_id").eq("id", lead.contact_id).maybeSingle();
       if (!contact) return;
       const realPhone = (await store.findContactById(orgId, contact.id))?.phone ?? void 0;
       if (!realPhone) return;
@@ -60815,12 +60829,11 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
       enabledAgents: org.enabledAgents,
       createQuotation: async ({ contactId, packageSku, pricePerPerson, travellers }) => {
         try {
-          const { data: pkg } = await db.from("packages").select("id").eq("organization_id", orgId).eq("sku", packageSku).maybeSingle();
+          const { data: pkg } = await tenantDb(orgId).from("packages").select("id").eq("sku", packageSku).maybeSingle();
           const amount = pricePerPerson * travellers;
           const number = `QT-${Math.floor(1e5 + Math.random() * 9e5)}`;
           const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1e3).toISOString();
-          const { data, error } = await db.from("quotes").insert({
-            organization_id: orgId,
+          const { data, error } = await tenantDb(orgId).from("quotes").insert({
             contact_id: contactId,
             package_id: pkg?.id ?? null,
             quote_number: number,
@@ -61344,8 +61357,9 @@ ${convo}` }]
       });
     }
     if (!target) return null;
-    await db.from("bookings").update({ status: "confirmed" }).eq("id", target.id).eq("organization_id", orgId);
+    await tenantDb(orgId).from("bookings").update({ status: "confirmed" }).eq("id", target.id);
     await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: orgId, action: "booking_marked_paid", entityType: "booking", entityId: target.id, actorType: "user", details: { by: actorUserId ?? "merchant-whatsapp", method: "whatsapp" }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+    await audit(orgId, "booking.confirm", { actor: actorUserId ?? "merchant-whatsapp", resource: "bookings", resourceId: target.id, operation: "update" });
     const work = sendBookingConfirmation(orgId, target.id);
     try {
       (0, import_functions.waitUntil)(work);
@@ -61435,7 +61449,7 @@ ${convo}` }]
           items: [{ title: pkg?.title ?? "Holiday package", quantity: qty, unitPrice: unit }],
           notes: "Thank you for your interest! This quotation is valid until the date shown above."
         });
-        const { data: itinRows } = await db.from("itineraries").select("title, day_by_day").eq("organization_id", quote.organization_id).eq("quote_id", quote.id).order("created_at", { ascending: false }).limit(1);
+        const { data: itinRows } = await tenantDb(quote.organization_id).from("itineraries").select("title, day_by_day").eq("quote_id", quote.id).order("created_at", { ascending: false }).limit(1);
         const itin = itinRows?.[0];
         const plan = itin?.day_by_day && typeof itin.day_by_day === "object" ? itin.day_by_day : null;
         if (plan) {
@@ -61626,6 +61640,7 @@ ${convo}` }]
       try {
         await store.savePaymentConnection(op.organizationId, { keyId, keySecret, webhookSecret: strField(b.webhookSecret) ?? void 0, mode });
         razorpayCache.delete(op.organizationId);
+        await audit(op.organizationId, "payment.connect", { actor: "user:" + op.userId, resource: "payment_connections", operation: "update", details: { mode } });
         res.status(200).json({ ok: true, mode });
       } catch (err) {
         res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -61648,6 +61663,7 @@ ${convo}` }]
         res.status(500).json({ ok: false, error: error.message });
         return;
       }
+      await audit(op.organizationId, "upi.connect", { actor: "user:" + op.userId, resource: "organizations", operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.post("/api/onboarding/terms", async (req, res) => {
@@ -61677,6 +61693,7 @@ ${convo}` }]
         res.status(500).json({ ok: false, error: error.message });
         return;
       }
+      await audit(op.organizationId, "onboarding.complete", { actor: "user:" + op.userId, operation: "update", details: { status } });
       res.status(200).json({ ok: true, status });
     });
     app3.get("/api/onboarding/state", async (req, res) => {
@@ -61773,6 +61790,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(500).json({ ok: false, error: error.message });
         return;
       }
+      await audit(op.organizationId, "config.rules", { actor: "user:" + op.userId, operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.post("/api/config/team", async (req, res) => {
@@ -61790,6 +61808,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(500).json({ ok: false, error: error.message });
         return;
       }
+      await audit(op.organizationId, "config.team", { actor: "user:" + op.userId, operation: "update" });
       res.status(200).json({ ok: true, enabledAgents: arr });
     });
     app3.post("/api/agent/test", async (req, res) => {
@@ -61854,7 +61873,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         return;
       }
       const bookingId = req.params.id;
-      const { data: booking } = await db.from("bookings").select("id, status").eq("id", bookingId).eq("organization_id", op.organizationId).maybeSingle();
+      const { data: booking } = await tenantDb(op.organizationId).from("bookings").select("id, status").eq("id", bookingId).maybeSingle();
       if (!booking) {
         res.status(404).json({ ok: false, error: "Booking not found" });
         return;
@@ -61863,8 +61882,9 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(200).json({ ok: true, alreadyConfirmed: true });
         return;
       }
-      await db.from("bookings").update({ status: "confirmed" }).eq("id", bookingId).eq("organization_id", op.organizationId);
+      await tenantDb(op.organizationId).from("bookings").update({ status: "confirmed" }).eq("id", bookingId);
       await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: op.organizationId, action: "booking_marked_paid", entityType: "booking", entityId: bookingId, actorType: "user", details: { by: op.userId, method: "manual" }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+      await audit(op.organizationId, "booking.confirm", { actor: "user:" + op.userId, resource: "bookings", resourceId: bookingId, operation: "update" });
       const work = sendBookingConfirmation(op.organizationId, bookingId);
       try {
         (0, import_functions.waitUntil)(work);
@@ -61905,6 +61925,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(500).json({ ok: false, error: error.message });
         return;
       }
+      await audit(req.params.id, "merchant.status", { actor: "admin:" + admin.email, resource: "organizations", resourceId: req.params.id, operation: "update", details: { status } });
       res.status(200).json({ ok: true });
     });
     app3.get("/api/integrations", async (req, res) => {
@@ -61943,6 +61964,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
       await store.saveIntegrationConnection(op.organizationId, "hubspot", { config: { accessToken: accessToken2, webhookSecret: (b.webhookSecret ?? "").trim() || void 0 }, secretKeys: ["accessToken", "webhookSecret"], status: "active" });
       hubspotCache.delete(op.organizationId);
+      await audit(op.organizationId, "integration.connect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: "hubspot", operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.post("/api/integrations/instagram", async (req, res) => {
@@ -61959,6 +61981,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         return;
       }
       await store.saveIntegrationConnection(op.organizationId, "instagram", { config: { pageId, pageAccessToken, verifyToken: (b.verifyToken ?? "").trim() || verifyToken }, secretKeys: ["pageAccessToken"], status: "active" });
+      await audit(op.organizationId, "integration.connect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: "instagram", operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.delete("/api/integrations/:provider", async (req, res) => {
@@ -61974,6 +61997,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
       await store.saveIntegrationConnection(op.organizationId, provider, { config: {}, status: "inactive" });
       if (provider === "hubspot") hubspotCache.delete(op.organizationId);
+      await audit(op.organizationId, "integration.disconnect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: provider, operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.post("/api/billing/checkout", async (req, res) => {
@@ -62038,21 +62062,22 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const org = operator.organizationId;
       const norm = phone.startsWith("+") ? phone : `+${phone}`;
       const found = await store.findContactByPhone(org, norm);
-      const { data: contact } = found ? await db.from("contacts").select("*").eq("organization_id", org).eq("id", found.id).maybeSingle() : { data: null };
+      const { data: contact } = found ? await tenantDb(org).from("contacts").select("*").eq("id", found.id).maybeSingle() : { data: null };
       if (!contact) {
         res.status(404).json({ error: "No data for that number" });
         return;
       }
       const cid = contact.id;
       const [consent, leads, bookings, handoffs, convs] = await Promise.all([
-        db.from("consent_records").select("*").eq("organization_id", org).eq("contact_id", cid),
-        db.from("leads").select("*").eq("organization_id", org).eq("contact_id", cid),
-        db.from("bookings").select("*").eq("organization_id", org).eq("contact_id", cid),
-        db.from("handoffs").select("*").eq("organization_id", org).eq("contact_id", cid),
-        db.from("conversations").select("id").eq("organization_id", org).eq("contact_id", cid)
+        tenantDb(org).from("consent_records").select("*").eq("contact_id", cid),
+        tenantDb(org).from("leads").select("*").eq("contact_id", cid),
+        tenantDb(org).from("bookings").select("*").eq("contact_id", cid),
+        tenantDb(org).from("handoffs").select("*").eq("contact_id", cid),
+        tenantDb(org).from("conversations").select("id").eq("contact_id", cid)
       ]);
       const convIds = (convs.data ?? []).map((c) => c.id);
-      const messages = convIds.length ? (await db.from("messages").select("direction, content, created_at").eq("organization_id", org).in("conversation_id", convIds)).data : [];
+      const messages = convIds.length ? (await tenantDb(org).from("messages").select("direction, content, created_at").in("conversation_id", convIds)).data : [];
+      await audit(org, "data.export", { actor: "user:" + operator.userId, resource: "contacts", resourceId: found?.id });
       res.status(200).json({ contact, consent: consent.data, leads: leads.data, bookings: bookings.data, handoffs: handoffs.data, messages });
     });
     app3.post("/api/data/delete", async (req, res) => {
@@ -62074,8 +62099,9 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(404).json({ error: "No data for that number" });
         return;
       }
-      await db.from("contacts").delete().eq("organization_id", org).eq("id", contact.id);
+      await tenantDb(org).from("contacts").delete().eq("id", contact.id);
       await store.insertAuditEvent({ id: (0, import_crypto12.randomUUID)(), organizationId: org, action: "gdpr_erasure", entityType: "contact", entityId: contact.id, actorType: "user", details: { by: operator.userId }, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+      await audit(org, "data.delete", { actor: "user:" + operator.userId, resource: "contacts", resourceId: contact.id, operation: "delete" });
       res.status(200).json({ ok: true, erased: true });
     });
     app3.post("/webhooks/razorpay", async (req, res) => {
@@ -62256,6 +62282,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         }).catch(() => {
         });
       }
+      await audit(operator.organizationId, "team.invite", { actor: "user:" + operator.userId, resource: "team_invites", operation: "insert", details: { email, role } });
       res.status(200).json({ ok: true, invite: data, acceptUrl });
     });
     app3.get("/api/team/invites", async (req, res) => {
@@ -62264,7 +62291,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(401).json({ ok: false, error: "Unauthorized" });
         return;
       }
-      const { data } = await db.from("team_invites").select("id, email, role, status, created_at, accepted_at").eq("organization_id", operator.organizationId).order("created_at", { ascending: false });
+      const { data } = await tenantDb(operator.organizationId).from("team_invites").select("id, email, role, status, created_at, accepted_at").order("created_at", { ascending: false });
       res.status(200).json({ ok: true, invites: data ?? [] });
     });
     app3.post("/api/team/invite/revoke", async (req, res) => {
@@ -62278,7 +62305,8 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(400).json({ ok: false, error: "id required" });
         return;
       }
-      await db.from("team_invites").update({ status: "revoked" }).eq("id", id).eq("organization_id", operator.organizationId);
+      await tenantDb(operator.organizationId).from("team_invites").update({ status: "revoked" }).eq("id", id);
+      await audit(operator.organizationId, "team.revoke", { actor: "user:" + operator.userId, resource: "team_invites", resourceId: id, operation: "update" });
       res.status(200).json({ ok: true });
     });
     app3.post("/api/invite/accept", async (req, res) => {
@@ -62308,6 +62336,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
       await db.from("organization_members").upsert({ organization_id: invite.organization_id, user_id: user.userId, role: invite.role }, { onConflict: "organization_id,user_id" });
       await db.from("team_invites").update({ status: "accepted", accepted_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", invite.id);
+      await audit(invite.organization_id, "team.accept", { actor: "user:" + user.userId, resource: "organization_members", operation: "insert" });
       res.status(200).json({ ok: true, organizationId: invite.organization_id, role: invite.role });
     });
     const OperatorMessageSchema = external_exports.object({
@@ -62354,6 +62383,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
           details: { conversationId: conversation.id, userId: operator.userId },
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         });
+        await audit(operator.organizationId, "operator.message", { actor: "user:" + operator.userId, resource: "conversations", resourceId: parsed.data.conversationId });
         res.status(200).json({ success: true, providerMessageId: result.providerMessageId });
       } else {
         res.status(502).json({ success: false, error: result.error ?? "Send failed" });

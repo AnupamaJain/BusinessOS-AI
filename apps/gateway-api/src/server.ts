@@ -263,7 +263,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   /** The correct outbound adapter for an org — its own connected number if any, else the primary. */
   async function adapterForOrg(orgId: string): Promise<WhatsAppAdapter> {
     if (orgId === defaultOrgId) return adapter;
-    const { data } = await db.from('whatsapp_connections').select('phone_number_id').eq('organization_id', orgId).eq('status', 'active').maybeSingle();
+    const { data } = await tenantDb(orgId).from('whatsapp_connections').select('phone_number_id').eq('status', 'active').maybeSingle();
     const phoneId = data?.phone_number_id as string | undefined;
     if (!phoneId) return adapter;
     const cached = orgAdapterCache.get(phoneId);
@@ -316,6 +316,21 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     if (severity === 'critical' || source === 'agent_runtime' || source === 'whatsapp_send' || source === 'token_expired') {
       await alertOps(`${source}:${orgId ?? 'platform'}`, `${source} (${orgId ?? 'platform'})`, `${message}\n\ncontext: ${JSON.stringify(ctx ?? {}, null, 2)}`);
     }
+  }
+
+  /**
+   * Per-write audit trail for privileged / service-role operations — records who
+   * (actor) did what (action/operation) to which resource, org-scoped. Best-effort;
+   * never lets auditing break a request.
+   */
+  async function audit(orgId: string | null, action: string, opts?: { actor?: string; resource?: string; resourceId?: string; operation?: 'insert' | 'update' | 'delete'; details?: Record<string, unknown> }): Promise<void> {
+    try {
+      await db.from('service_audit_log').insert({
+        organization_id: orgId, actor: opts?.actor ?? 'system', action,
+        resource: opts?.resource ?? null, resource_id: opts?.resourceId ?? null,
+        operation: opts?.operation ?? null, details: opts?.details ?? {},
+      });
+    } catch { /* auditing is best-effort */ }
   }
 
   // Organization context cache (name/vertical/rules/team for prompts)
@@ -371,13 +386,13 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     const hubspot = await hubspotForOrg(orgId);
     if (!hubspot) return;
     try {
-      const { data: lead } = await db.from('leads')
+      const { data: lead } = await tenantDb(orgId).from('leads')
         .select('id, contact_id, service_interest, score, stage, estimated_value, hubspot_deal_id')
-        .eq('organization_id', orgId).eq('id', leadId).maybeSingle();
+        .eq('id', leadId).maybeSingle();
       if (!lead?.contact_id) return;
-      const { data: contact } = await db.from('contacts')
+      const { data: contact } = await tenantDb(orgId).from('contacts')
         .select('id, name, email, phone_number, hubspot_contact_id')
-        .eq('organization_id', orgId).eq('id', lead.contact_id).maybeSingle();
+        .eq('id', lead.contact_id).maybeSingle();
       if (!contact) return;
       // Real (decrypted) phone — the column may be masked at rest.
       const realPhone = (await store.findContactById(orgId, contact.id))?.phone ?? undefined;
@@ -423,12 +438,12 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       enabledAgents: org.enabledAgents,
       createQuotation: async ({ contactId, packageSku, pricePerPerson, travellers }) => {
         try {
-          const { data: pkg } = await db.from('packages').select('id').eq('organization_id', orgId).eq('sku', packageSku).maybeSingle();
+          const { data: pkg } = await tenantDb(orgId).from('packages').select('id').eq('sku', packageSku).maybeSingle();
           const amount = pricePerPerson * travellers;
           const number = `QT-${Math.floor(100000 + Math.random() * 900000)}`;
           const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-          const { data, error } = await db.from('quotes').insert({
-            organization_id: orgId, contact_id: contactId, package_id: pkg?.id ?? null,
+          const { data, error } = await tenantDb(orgId).from('quotes').insert({
+            contact_id: contactId, package_id: pkg?.id ?? null,
             quote_number: number, amount, valid_until: validUntil, status: 'sent',
           }).select('id').single();
           if (error || !data) return null;
@@ -1008,8 +1023,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       });
     }
     if (!target) return null;
-    await db.from('bookings').update({ status: 'confirmed' }).eq('id', target.id).eq('organization_id', orgId);
+    await tenantDb(orgId).from('bookings').update({ status: 'confirmed' }).eq('id', target.id);
     await store.insertAuditEvent({ id: randomUUID(), organizationId: orgId, action: 'booking_marked_paid', entityType: 'booking', entityId: target.id, actorType: 'user', details: { by: actorUserId ?? 'merchant-whatsapp', method: 'whatsapp' }, createdAt: new Date().toISOString() });
+    await audit(orgId, 'booking.confirm', { actor: actorUserId ?? 'merchant-whatsapp', resource: 'bookings', resourceId: target.id, operation: 'update' });
     const work = sendBookingConfirmation(orgId, target.id);
     try { waitUntil(work); } catch { void work; }
     return target.booking_number;
@@ -1124,8 +1140,8 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         });
 
         // Attach the AI-generated itinerary, if one has been produced for this quote.
-        const { data: itinRows } = await db.from('itineraries')
-          .select('title, day_by_day').eq('organization_id', quote.organization_id).eq('quote_id', quote.id)
+        const { data: itinRows } = await tenantDb(quote.organization_id).from('itineraries')
+          .select('title, day_by_day').eq('quote_id', quote.id)
           .order('created_at', { ascending: false }).limit(1);
         const itin = itinRows?.[0] as { title?: string; day_by_day?: unknown } | undefined;
         const plan = (itin?.day_by_day && typeof itin.day_by_day === 'object') ? itin.day_by_day as { destinationInsights?: string; dayByDay?: string; budgetBreakdown?: string } : null;
@@ -1325,6 +1341,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       try {
         await store.savePaymentConnection(op.organizationId, { keyId, keySecret, webhookSecret: strField(b.webhookSecret) ?? undefined, mode });
         razorpayCache.delete(op.organizationId); // pick up the new keys immediately
+        await audit(op.organizationId, 'payment.connect', { actor: 'user:' + op.userId, resource: 'payment_connections', operation: 'update', details: { mode } });
         res.status(200).json({ ok: true, mode });
       } catch (err) {
         res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -1344,6 +1361,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         .update({ upi_vpa: vpa, upi_payee_name: strField(b.payeeName) })
         .eq('id', op.organizationId);
       if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      await audit(op.organizationId, 'upi.connect', { actor: 'user:' + op.userId, resource: 'organizations', operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1366,6 +1384,7 @@ export function buildServer(env: Record<string, string | undefined> = process.en
       const status = env['REQUIRE_MERCHANT_APPROVAL'] === 'true' ? 'pending_review' : 'active';
       const { error } = await db.from('organizations').update({ onboarding_status: status }).eq('id', op.organizationId);
       if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      await audit(op.organizationId, 'onboarding.complete', { actor: 'user:' + op.userId, operation: 'update', details: { status } });
       res.status(200).json({ ok: true, status });
     });
 
@@ -1450,6 +1469,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const { error } = await db.from('organizations').update({ business_rules: rules }).eq('id', op.organizationId);
       orgCache.delete(op.organizationId);
       if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      await audit(op.organizationId, 'config.rules', { actor: 'user:' + op.userId, operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1462,6 +1482,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const { error } = await db.from('organizations').update({ enabled_agents: arr }).eq('id', op.organizationId);
       orgCache.delete(op.organizationId);
       if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      await audit(op.organizationId, 'config.team', { actor: 'user:' + op.userId, operation: 'update' });
       res.status(200).json({ ok: true, enabledAgents: arr });
     });
 
@@ -1514,12 +1535,13 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const op = await authoriseOperator(req);
       if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
       const bookingId = req.params.id;
-      const { data: booking } = await db.from('bookings')
-        .select('id, status').eq('id', bookingId).eq('organization_id', op.organizationId).maybeSingle();
+      const { data: booking } = await tenantDb(op.organizationId).from('bookings')
+        .select('id, status').eq('id', bookingId).maybeSingle();
       if (!booking) { res.status(404).json({ ok: false, error: 'Booking not found' }); return; }
       if (booking.status === 'confirmed' || booking.status === 'paid') { res.status(200).json({ ok: true, alreadyConfirmed: true }); return; }
-      await db.from('bookings').update({ status: 'confirmed' }).eq('id', bookingId).eq('organization_id', op.organizationId);
+      await tenantDb(op.organizationId).from('bookings').update({ status: 'confirmed' }).eq('id', bookingId);
       await store.insertAuditEvent({ id: randomUUID(), organizationId: op.organizationId, action: 'booking_marked_paid', entityType: 'booking', entityId: bookingId, actorType: 'user', details: { by: op.userId, method: 'manual' }, createdAt: new Date().toISOString() });
+      await audit(op.organizationId, 'booking.confirm', { actor: 'user:' + op.userId, resource: 'bookings', resourceId: bookingId, operation: 'update' });
       // Notify the customer on WhatsApp (off the response path).
       const work = sendBookingConfirmation(op.organizationId, bookingId);
       try { waitUntil(work); } catch { void work; }
@@ -1547,6 +1569,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const { error } = await db.from('organizations').update({ onboarding_status: status }).eq('id', req.params.id);
       orgCache.delete(req.params.id); // so the suspended-block check reflects the change
       if (error) { res.status(500).json({ ok: false, error: error.message }); return; }
+      await audit(req.params.id, 'merchant.status', { actor: 'admin:' + admin.email, resource: 'organizations', resourceId: req.params.id, operation: 'update', details: { status } });
       res.status(200).json({ ok: true });
     });
 
@@ -1575,6 +1598,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       } catch { /* network hiccup — save anyway */ }
       await store.saveIntegrationConnection(op.organizationId, 'hubspot', { config: { accessToken, webhookSecret: (b.webhookSecret ?? '').trim() || undefined }, secretKeys: ['accessToken', 'webhookSecret'], status: 'active' });
       hubspotCache.delete(op.organizationId);
+      await audit(op.organizationId, 'integration.connect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: 'hubspot', operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1586,6 +1610,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const pageAccessToken = (b.pageAccessToken ?? '').trim();
       if (!pageId || !pageAccessToken) { res.status(400).json({ ok: false, error: 'Page ID and access token are required' }); return; }
       await store.saveIntegrationConnection(op.organizationId, 'instagram', { config: { pageId, pageAccessToken, verifyToken: (b.verifyToken ?? '').trim() || verifyToken }, secretKeys: ['pageAccessToken'], status: 'active' });
+      await audit(op.organizationId, 'integration.connect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: 'instagram', operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1596,6 +1621,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       if (!['hubspot', 'instagram'].includes(provider)) { res.status(400).json({ ok: false, error: 'Unknown provider' }); return; }
       await store.saveIntegrationConnection(op.organizationId, provider, { config: {}, status: 'inactive' });
       if (provider === 'hubspot') hubspotCache.delete(op.organizationId);
+      await audit(op.organizationId, 'integration.disconnect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: provider, operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1647,19 +1673,20 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       // Look up via the blind index (phone_number is masked/encrypted at rest).
       const found = await store.findContactByPhone(org, norm);
       const { data: contact } = found
-        ? await db.from('contacts').select('*').eq('organization_id', org).eq('id', found.id).maybeSingle()
+        ? await tenantDb(org).from('contacts').select('*').eq('id', found.id).maybeSingle()
         : { data: null };
       if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
       const cid = contact.id;
       const [consent, leads, bookings, handoffs, convs] = await Promise.all([
-        db.from('consent_records').select('*').eq('organization_id', org).eq('contact_id', cid),
-        db.from('leads').select('*').eq('organization_id', org).eq('contact_id', cid),
-        db.from('bookings').select('*').eq('organization_id', org).eq('contact_id', cid),
-        db.from('handoffs').select('*').eq('organization_id', org).eq('contact_id', cid),
-        db.from('conversations').select('id').eq('organization_id', org).eq('contact_id', cid),
+        tenantDb(org).from('consent_records').select('*').eq('contact_id', cid),
+        tenantDb(org).from('leads').select('*').eq('contact_id', cid),
+        tenantDb(org).from('bookings').select('*').eq('contact_id', cid),
+        tenantDb(org).from('handoffs').select('*').eq('contact_id', cid),
+        tenantDb(org).from('conversations').select('id').eq('contact_id', cid),
       ]);
-      const convIds = (convs.data ?? []).map((c) => c.id);
-      const messages = convIds.length ? (await db.from('messages').select('direction, content, created_at').eq('organization_id', org).in('conversation_id', convIds)).data : [];
+      const convIds = (convs.data ?? []).map((c: { id: string }) => c.id);
+      const messages = convIds.length ? (await tenantDb(org).from('messages').select('direction, content, created_at').in('conversation_id', convIds)).data : [];
+      await audit(org, 'data.export', { actor: 'user:' + operator.userId, resource: 'contacts', resourceId: found?.id });
       res.status(200).json({ contact, consent: consent.data, leads: leads.data, bookings: bookings.data, handoffs: handoffs.data, messages });
     });
 
@@ -1675,8 +1702,9 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       const contact = found ? { id: found.id } : null;
       if (!contact) { res.status(404).json({ error: 'No data for that number' }); return; }
       // Deleting the contact cascades to consent/conversations/messages/leads/bookings/handoffs.
-      await db.from('contacts').delete().eq('organization_id', org).eq('id', contact.id);
+      await tenantDb(org).from('contacts').delete().eq('id', contact.id);
       await store.insertAuditEvent({ id: randomUUID(), organizationId: org, action: 'gdpr_erasure', entityType: 'contact', entityId: contact.id, actorType: 'user', details: { by: operator.userId }, createdAt: new Date().toISOString() });
+      await audit(org, 'data.delete', { actor: 'user:' + operator.userId, resource: 'contacts', resourceId: contact.id, operation: 'delete' });
       res.status(200).json({ ok: true, erased: true });
     });
 
@@ -1839,15 +1867,16 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
           html: `<p>You've been invited to join <b>${org.name}</b> as <b>${role}</b> on SaarthiOne.</p><p><a href="${acceptUrl}">Accept your invitation</a></p><p style="color:#888;font-size:12px">Or paste this link into your browser: ${acceptUrl}</p>`,
         }).catch(() => { /* invite row still created; email is best-effort */ });
       }
+      await audit(operator.organizationId, 'team.invite', { actor: 'user:' + operator.userId, resource: 'team_invites', operation: 'insert', details: { email, role } });
       res.status(200).json({ ok: true, invite: data, acceptUrl });
     });
 
     app.get('/api/team/invites', async (req, res) => {
       const operator = await authoriseOperator(req);
       if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
-      const { data } = await db.from('team_invites')
+      const { data } = await tenantDb(operator.organizationId).from('team_invites')
         .select('id, email, role, status, created_at, accepted_at')
-        .eq('organization_id', operator.organizationId).order('created_at', { ascending: false });
+        .order('created_at', { ascending: false });
       res.status(200).json({ ok: true, invites: data ?? [] });
     });
 
@@ -1856,7 +1885,8 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       if (!operator) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
       const id = (req.body as { id?: string })?.id;
       if (!id) { res.status(400).json({ ok: false, error: 'id required' }); return; }
-      await db.from('team_invites').update({ status: 'revoked' }).eq('id', id).eq('organization_id', operator.organizationId);
+      await tenantDb(operator.organizationId).from('team_invites').update({ status: 'revoked' }).eq('id', id);
+      await audit(operator.organizationId, 'team.revoke', { actor: 'user:' + operator.userId, resource: 'team_invites', resourceId: id, operation: 'update' });
       res.status(200).json({ ok: true });
     });
 
@@ -1875,6 +1905,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
       await db.from('organization_members').upsert({ organization_id: invite.organization_id, user_id: user.userId, role: invite.role }, { onConflict: 'organization_id,user_id' });
       await db.from('team_invites').update({ status: 'accepted', accepted_at: new Date().toISOString() }).eq('id', invite.id);
+      await audit(invite.organization_id, 'team.accept', { actor: 'user:' + user.userId, resource: 'organization_members', operation: 'insert' });
       res.status(200).json({ ok: true, organizationId: invite.organization_id, role: invite.role });
     });
 
@@ -1927,6 +1958,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
           details: { conversationId: conversation.id, userId: operator.userId },
           createdAt: new Date().toISOString(),
         });
+        await audit(operator.organizationId, 'operator.message', { actor: 'user:' + operator.userId, resource: 'conversations', resourceId: parsed.data.conversationId });
         res.status(200).json({ success: true, providerMessageId: result.providerMessageId });
       } else {
         res.status(502).json({ success: false, error: result.error ?? 'Send failed' });
