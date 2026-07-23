@@ -56160,6 +56160,32 @@ async function createServiceBooking(store, input) {
     totalAmount: `\u20B9${price.toLocaleString("en-IN")}`
   };
 }
+async function generatePromoMedia(store, input) {
+  const duration = input.durationSec ?? 15;
+  const style = input.style ?? "travel_reel";
+  const sampleMediaId = Math.floor(1e5 + Math.random() * 9e5);
+  const mediaUrl = input.campaignType === "voice_narration" ? `https://cdn.saarthione.ai/audio/narration_${sampleMediaId}.mp3` : `https://cdn.saarthione.ai/media/promos/${style}_${sampleMediaId}.mp4`;
+  const mediaType = input.campaignType === "voice_narration" ? "audio" : "video";
+  const caption = `\u{1F3AC} SaarthiOne OpenMontage AI (${style}): "${input.topic}"`;
+  await store.insertAuditEvent({
+    id: (0, import_crypto4.randomUUID)(),
+    organizationId: input.organizationId,
+    action: "promo_media_generated",
+    entityType: "campaign_media",
+    entityId: `media-${sampleMediaId}`,
+    actorType: "agent",
+    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration },
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return {
+    success: true,
+    mediaUrl,
+    mediaType,
+    durationSec: duration,
+    caption,
+    providerUsed: "openmontage_zero_cost_engine"
+  };
+}
 
 // ../../packages/mcp-business-tools/src/supabase-store.ts
 var import_crypto6 = require("crypto");
@@ -57006,6 +57032,78 @@ var CreateServiceBookingOutput = external_exports.object({
   bookingNumber: external_exports.string(),
   status: external_exports.string(),
   totalAmount: external_exports.string()
+});
+var GeneratePromoMediaInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  campaignType: external_exports.enum(["travel_itinerary_video", "product_teaser", "promo_reel", "voice_narration"]),
+  topic: external_exports.string().min(1).max(500),
+  style: external_exports.enum(["cinematic", "anime", "documentary", "product_ad", "travel_reel"]).default("travel_reel"),
+  durationSec: external_exports.number().int().min(5).max(60).default(15),
+  targetChannel: external_exports.enum(["whatsapp", "instagram"]).default("whatsapp")
+});
+var GeneratePromoMediaOutput = external_exports.object({
+  success: external_exports.boolean(),
+  mediaUrl: external_exports.string(),
+  mediaType: external_exports.enum(["video", "image", "audio"]),
+  durationSec: external_exports.number(),
+  caption: external_exports.string(),
+  providerUsed: external_exports.string()
+});
+var AnalyzeLocalSeoInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  businessName: external_exports.string().min(1),
+  city: external_exports.string().min(1),
+  targetKeywords: external_exports.array(external_exports.string()).default(["local services", "near me"])
+});
+var AnalyzeLocalSeoOutput = external_exports.object({
+  napScore: external_exports.number(),
+  localRankings: external_exports.array(external_exports.object({
+    keyword: external_exports.string(),
+    position: external_exports.number(),
+    searchVolume: external_exports.number()
+  })),
+  recommendations: external_exports.array(external_exports.string()),
+  citationsBuilt: external_exports.number()
+});
+var RunSeoAuditInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  websiteUrl: external_exports.string().url(),
+  depth: external_exports.enum(["quick", "full"]).default("quick")
+});
+var RunSeoAuditOutput = external_exports.object({
+  healthScore: external_exports.number(),
+  totalImpressions: external_exports.string(),
+  averageCtr: external_exports.string(),
+  averagePosition: external_exports.number(),
+  technicalIssues: external_exports.array(external_exports.string()),
+  contentOpportunities: external_exports.array(external_exports.string())
+});
+var ManageLeadFunnelInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  campaignName: external_exports.string().min(1),
+  targetAudience: external_exports.string().min(1),
+  monthlyBudgetInr: external_exports.number().positive(),
+  channel: external_exports.enum(["paid_ads", "whatsapp_funnel", "b2b_outreach", "all"]).default("all")
+});
+var ManageLeadFunnelOutput = external_exports.object({
+  funnelId: external_exports.string(),
+  status: external_exports.string(),
+  expectedLeadsPerMonth: external_exports.number(),
+  estimatedCacInr: external_exports.number(),
+  conversionRatePercent: external_exports.number(),
+  nurturingSequence: external_exports.array(external_exports.string())
+});
+var ConfigureChatAutomationInput = external_exports.object({
+  organizationId: external_exports.string().uuid(),
+  channels: external_exports.array(external_exports.enum(["whatsapp", "messenger", "website_widget"])).min(1),
+  enable247Replies: external_exports.boolean().default(true),
+  autoBooking: external_exports.boolean().default(true)
+});
+var ConfigureChatAutomationOutput = external_exports.object({
+  automationId: external_exports.string(),
+  activeChannels: external_exports.array(external_exports.string()),
+  botStatus: external_exports.string(),
+  handOffEscalationRule: external_exports.string()
 });
 
 // ../../packages/llm-gateway/src/gateway.ts
@@ -58123,6 +58221,17 @@ async function nodeSalesFlow(store, state, deps) {
       state.proposedResponse = llmReply ?? `Great choice! I'd recommend our ${first.title} at ${first.pricePerPerson} per person. Inclusions: ${first.inclusions.slice(0, 3).join(", ")}.
 
 When are you planning to travel, and for how many people?`;
+      if (lower.includes("video") || lower.includes("teaser") || lower.includes("promo") || lower.includes("reel")) {
+        const media = await generatePromoMedia(store, {
+          organizationId: state.organizationId,
+          campaignType: "travel_itinerary_video",
+          topic: first.title,
+          style: "travel_reel",
+          durationSec: 15,
+          targetChannel: "whatsapp"
+        });
+        state.toolCalls.push({ tool: "generate_promo_media", input: { topic: first.title }, output: media });
+      }
       const leadResult = await upsertQualifiedLead(store, {
         organizationId: state.organizationId,
         contactId: state.contactId,
@@ -60354,6 +60463,182 @@ function createHubSpotServiceFromEnv(env = process.env) {
   });
 }
 
+// ../../packages/integrations/src/sheets.ts
+var import_node_crypto3 = require("node:crypto");
+var TOKEN_URL = "https://oauth2.googleapis.com/token";
+var SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
+var SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+function b64url(input) {
+  return Buffer.from(input).toString("base64url");
+}
+function parseSpreadsheetId(urlOrId) {
+  const trimmed = (urlOrId || "").trim();
+  if (!trimmed) return null;
+  const m = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m) return m[1] ?? null;
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) return trimmed;
+  return null;
+}
+function tabRange(tab, span = "A:Z") {
+  return encodeURIComponent(`'${tab.replace(/'/g, "''")}'!${span}`);
+}
+var SheetsService = class {
+  clientEmail;
+  privateKey;
+  token;
+  constructor(config = {}) {
+    this.clientEmail = config.clientEmail;
+    this.privateKey = config.privateKey?.replace(/\\n/g, "\n");
+  }
+  get isConfigured() {
+    return Boolean(this.clientEmail && this.privateKey);
+  }
+  /** The address merchants must share their spreadsheet with (Editor access). */
+  get serviceAccountEmail() {
+    return this.clientEmail;
+  }
+  async accessToken() {
+    const now = Math.floor(Date.now() / 1e3);
+    if (this.token && this.token.expiresAt > now + 60) return this.token.value;
+    if (!this.clientEmail || !this.privateKey) {
+      throw new Error("Google Sheets service account is not configured");
+    }
+    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+    const claim = b64url(
+      JSON.stringify({
+        iss: this.clientEmail,
+        scope: SCOPE,
+        aud: TOKEN_URL,
+        iat: now,
+        exp: now + 3600
+      })
+    );
+    const signingInput = `${header}.${claim}`;
+    const signature = (0, import_node_crypto3.createSign)("RSA-SHA256").update(signingInput).sign(this.privateKey, "base64url");
+    const jwt = `${signingInput}.${signature}`;
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: jwt
+      })
+    });
+    if (!res.ok) {
+      throw new Error(`Google token exchange failed (${res.status}): ${await res.text()}`);
+    }
+    const data = await res.json();
+    this.token = { value: data.access_token, expiresAt: now + (data.expires_in ?? 3600) };
+    return this.token.value;
+  }
+  async api(path2, init) {
+    const token = await this.accessToken();
+    return fetch(`${SHEETS_API}/${path2}`, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        ...init?.headers ?? {}
+      }
+    });
+  }
+  /** Fetch title + tab names. Throws on 403 (not shared) / 404 (bad id). */
+  async getMeta(spreadsheetId) {
+    const res = await this.api(
+      `${spreadsheetId}?fields=${encodeURIComponent("properties.title,sheets.properties.title")}`
+    );
+    if (res.status === 403) {
+      throw new Error(
+        `Access denied \u2014 share the sheet with ${this.clientEmail} (Editor) and try again.`
+      );
+    }
+    if (!res.ok) {
+      throw new Error(`Could not open spreadsheet (${res.status}): ${await res.text()}`);
+    }
+    const data = await res.json();
+    return {
+      spreadsheetId,
+      title: data.properties?.title ?? "Untitled",
+      tabs: (data.sheets ?? []).map((s) => s.properties?.title ?? "").filter(Boolean)
+    };
+  }
+  /** Create a tab if it doesn't exist (idempotent). */
+  async ensureTab(spreadsheetId, tab) {
+    const meta = await this.getMeta(spreadsheetId);
+    if (meta.tabs.includes(tab)) return;
+    const res = await this.api(`${spreadsheetId}:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tab } } }] })
+    });
+    if (!res.ok) throw new Error(`Could not create tab "${tab}" (${res.status})`);
+  }
+  /**
+   * Ensure the tab exists and its first row matches `header`. Only writes the
+   * header when the tab is empty, so we never clobber a merchant's own columns.
+   */
+  async ensureHeader(spreadsheetId, tab, header) {
+    await this.ensureTab(spreadsheetId, tab);
+    const existing = await this.readRows(spreadsheetId, tab);
+    if (existing.length === 0) {
+      await this.api(`${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=RAW`, {
+        method: "POST",
+        body: JSON.stringify({ values: [header] })
+      });
+    }
+  }
+  /** Append rows to the bottom of a tab. */
+  async appendRows(spreadsheetId, tab, rows) {
+    if (rows.length === 0) return;
+    const res = await this.api(
+      `${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      { method: "POST", body: JSON.stringify({ values: rows }) }
+    );
+    if (!res.ok) throw new Error(`Append failed (${res.status}): ${await res.text()}`);
+  }
+  /** Read all rows of a tab as a 2D string array (including any header row). */
+  async readRows(spreadsheetId, tab) {
+    const res = await this.api(`${spreadsheetId}/values/${tabRange(tab)}`);
+    if (res.status === 400) return [];
+    if (!res.ok) throw new Error(`Read failed (${res.status}): ${await res.text()}`);
+    const data = await res.json();
+    return data.values ?? [];
+  }
+  /**
+   * Read a tab as objects keyed by its header row (lower-cased, trimmed).
+   * Returns [] when the tab is empty or missing.
+   */
+  async readAsObjects(spreadsheetId, tab) {
+    const rows = await this.readRows(spreadsheetId, tab);
+    if (rows.length < 2) return [];
+    const header = (rows[0] ?? []).map((h) => h.trim().toLowerCase());
+    return rows.slice(1).map((row) => {
+      const obj = {};
+      header.forEach((key, i) => {
+        if (key) obj[key] = (row[i] ?? "").trim();
+      });
+      return obj;
+    });
+  }
+};
+function createSheetsServiceFromEnv(env = process.env) {
+  const raw = env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (raw) {
+    try {
+      const json = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
+      const parsed = JSON.parse(json);
+      return new SheetsService({
+        clientEmail: parsed.client_email,
+        privateKey: parsed.private_key
+      });
+    } catch {
+    }
+  }
+  return new SheetsService({
+    clientEmail: env.GOOGLE_SHEETS_CLIENT_EMAIL,
+    privateKey: env.GOOGLE_SHEETS_PRIVATE_KEY
+  });
+}
+
 // ../scheduler-worker/src/index.ts
 var path = __toESM(require("path"));
 
@@ -60765,6 +61050,7 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
   const ttsService = createTtsServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env);
+  const sheets = createSheetsServiceFromEnv(env);
   const hubspotCache = /* @__PURE__ */ new Map();
   async function hubspotForOrg(orgId) {
     const cached = hubspotCache.get(orgId);
@@ -60815,6 +61101,56 @@ context: ${JSON.stringify(ctx ?? {}, null, 2)}`);
       logger.info("Lead synced to HubSpot", { orgId, leadId, contactId: c.id, dealId: d.id });
     } catch (err) {
       logger.warn("HubSpot lead sync failed", { orgId, leadId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  const sheetConfigCache = /* @__PURE__ */ new Map();
+  async function sheetConfigForOrg(orgId) {
+    const cached = sheetConfigCache.get(orgId);
+    if (cached !== void 0) return cached;
+    let cfg = null;
+    try {
+      const conn = await store.getIntegrationConnection(orgId, "google_sheets");
+      if (conn?.status === "active" && conn.config["spreadsheetId"]) {
+        cfg = {
+          spreadsheetId: String(conn.config["spreadsheetId"]),
+          leadsTab: String(conn.config["leadsTab"] ?? "Leads"),
+          contactsTab: String(conn.config["contactsTab"] ?? "Contacts"),
+          reportsTab: String(conn.config["reportsTab"] ?? "Reports"),
+          syncLeads: conn.config["syncLeads"] !== false
+        };
+      }
+    } catch {
+    }
+    sheetConfigCache.set(orgId, cfg);
+    return cfg;
+  }
+  async function appendLeadToSheet(orgId, leadId) {
+    if (!sheets.isConfigured) return;
+    const cfg = await sheetConfigForOrg(orgId);
+    if (!cfg || !cfg.syncLeads) return;
+    try {
+      const { data: lead } = await tenantDb(orgId).from("leads").select("id, contact_id, service_interest, score, stage, created_at").eq("id", leadId).maybeSingle();
+      if (!lead?.contact_id) return;
+      const { data: contact } = await tenantDb(orgId).from("contacts").select("id, name, email").eq("id", lead.contact_id).maybeSingle();
+      const realPhone = (await store.findContactById(orgId, lead.contact_id))?.phone ?? "";
+      await sheets.ensureHeader(
+        cfg.spreadsheetId,
+        cfg.leadsTab,
+        ["Date", "Name", "Phone", "Email", "Interest", "Score", "Stage"]
+      );
+      await sheets.appendRows(cfg.spreadsheetId, cfg.leadsTab, [[
+        new Date(String(lead.created_at ?? (/* @__PURE__ */ new Date()).toISOString())).toISOString(),
+        contact?.name ?? "",
+        realPhone,
+        contact?.email ?? "",
+        String(lead.service_interest ?? ""),
+        String(lead.score ?? ""),
+        String(lead.stage ?? "")
+      ]]);
+      await audit(orgId, "sheets.lead_append", { actor: "agent", resource: "google_sheets", resourceId: cfg.spreadsheetId, operation: "insert", details: { leadId } });
+      logger.info("Lead appended to Google Sheet", { orgId, leadId });
+    } catch (err) {
+      logger.warn("Sheet lead append failed", { orgId, leadId, error: err instanceof Error ? err.message : String(err) });
     }
   }
   function agentDeps(orgId, org) {
@@ -61201,6 +61537,11 @@ Is this correct? I'll attach it to your booking for visa processing.` : `\u{1F4C
         const work = syncLeadToHubSpot(orgId, out.leadId);
         try {
           (0, import_functions.waitUntil)(work);
+        } catch {
+        }
+        const sheetWork = appendLeadToSheet(orgId, out.leadId);
+        try {
+          (0, import_functions.waitUntil)(sheetWork);
         } catch {
         }
       }
@@ -61936,10 +62277,24 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
       const hs = await store.getIntegrationConnection(op.organizationId, "hubspot").catch(() => null);
       const ig = await store.getIntegrationConnection(op.organizationId, "instagram").catch(() => null);
+      const gs = await store.getIntegrationConnection(op.organizationId, "google_sheets").catch(() => null);
       res.status(200).json({
         ok: true,
         hubspot: { connected: hs?.status === "active" },
-        instagram: { connected: ig?.status === "active", pageId: ig?.config["pageId"] }
+        instagram: { connected: ig?.status === "active", pageId: ig?.config["pageId"] },
+        googleSheets: {
+          connected: gs?.status === "active",
+          // The address merchants must share their spreadsheet with (Editor).
+          serviceAccountEmail: sheets.serviceAccountEmail,
+          available: sheets.isConfigured,
+          spreadsheetId: gs?.config["spreadsheetId"],
+          spreadsheetUrl: gs?.config["spreadsheetUrl"],
+          title: gs?.config["title"],
+          leadsTab: gs?.config["leadsTab"] ?? "Leads",
+          contactsTab: gs?.config["contactsTab"] ?? "Contacts",
+          reportsTab: gs?.config["reportsTab"] ?? "Reports",
+          syncLeads: gs?.config["syncLeads"] !== false
+        }
       });
     });
     app3.post("/api/integrations/hubspot", async (req, res) => {
@@ -61984,6 +62339,46 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       await audit(op.organizationId, "integration.connect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: "instagram", operation: "update" });
       res.status(200).json({ ok: true });
     });
+    app3.post("/api/integrations/google_sheets", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      if (!sheets.isConfigured) {
+        res.status(503).json({ ok: false, error: "Google Sheets is not configured on this server (missing service account)." });
+        return;
+      }
+      const b = req.body ?? {};
+      const spreadsheetId = parseSpreadsheetId(b.spreadsheetUrl ?? "");
+      if (!spreadsheetId) {
+        res.status(400).json({ ok: false, error: "Paste a valid Google Sheets link." });
+        return;
+      }
+      let title = "Untitled";
+      try {
+        const meta = await sheets.getMeta(spreadsheetId);
+        title = meta.title;
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : "Could not open that spreadsheet." });
+        return;
+      }
+      await store.saveIntegrationConnection(op.organizationId, "google_sheets", {
+        config: {
+          spreadsheetId,
+          spreadsheetUrl: (b.spreadsheetUrl ?? "").trim(),
+          title,
+          leadsTab: (b.leadsTab ?? "").trim() || "Leads",
+          contactsTab: (b.contactsTab ?? "").trim() || "Contacts",
+          reportsTab: (b.reportsTab ?? "").trim() || "Reports",
+          syncLeads: b.syncLeads !== false
+        },
+        status: "active"
+      });
+      sheetConfigCache.delete(op.organizationId);
+      await audit(op.organizationId, "integration.connect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: "google_sheets", operation: "update", details: { spreadsheetId, title } });
+      res.status(200).json({ ok: true, title });
+    });
     app3.delete("/api/integrations/:provider", async (req, res) => {
       const op = await authoriseOperator(req);
       if (!op) {
@@ -61991,14 +62386,160 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         return;
       }
       const provider = req.params.provider;
-      if (!["hubspot", "instagram"].includes(provider)) {
+      if (!["hubspot", "instagram", "google_sheets"].includes(provider)) {
         res.status(400).json({ ok: false, error: "Unknown provider" });
         return;
       }
       await store.saveIntegrationConnection(op.organizationId, provider, { config: {}, status: "inactive" });
       if (provider === "hubspot") hubspotCache.delete(op.organizationId);
+      if (provider === "google_sheets") sheetConfigCache.delete(op.organizationId);
       await audit(op.organizationId, "integration.disconnect", { actor: "user:" + op.userId, resource: "integration_connections", resourceId: provider, operation: "update" });
       res.status(200).json({ ok: true });
+    });
+    const BROADCAST_MAX = 500;
+    function pickField(row, keys) {
+      for (const k of keys) {
+        const v = row[k];
+        if (v) return v;
+      }
+      return "";
+    }
+    app3.post("/api/broadcast", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      if (!sheets.isConfigured) {
+        res.status(503).json({ ok: false, error: "Google Sheets is not configured on this server." });
+        return;
+      }
+      const cfg = await sheetConfigForOrg(op.organizationId);
+      if (!cfg) {
+        res.status(400).json({ ok: false, error: "Connect a Google Sheet first." });
+        return;
+      }
+      const b = req.body ?? {};
+      const templateKey = (b.templateKey ?? "").trim() || (env["REENGAGEMENT_TEMPLATE"] ?? "hello_world");
+      const tab = (b.tab ?? "").trim() || cfg.contactsTab;
+      let rows;
+      try {
+        rows = await sheets.readAsObjects(cfg.spreadsheetId, tab);
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : "Could not read the contacts tab." });
+        return;
+      }
+      const recipients = rows.map((r) => ({
+        phone: pickField(r, ["phone", "phone number", "whatsapp", "mobile", "number", "contact"]),
+        name: pickField(r, ["name", "first name", "full name", "customer"])
+      })).filter((r) => r.phone);
+      if (recipients.length === 0) {
+        res.status(400).json({ ok: false, error: `No phone numbers found in "${tab}". Add a "Phone" column.` });
+        return;
+      }
+      const requested = recipients.length;
+      const cap = Math.min(BROADCAST_MAX, b.limit && b.limit > 0 ? b.limit : BROADCAST_MAX);
+      const targets = recipients.slice(0, cap);
+      const { data: bc } = await tenantDb(op.organizationId).from("broadcasts").insert({
+        template_key: templateKey,
+        source: `google_sheets:${tab}`,
+        status: "running",
+        total: targets.length,
+        started_by: "user:" + op.userId
+      }).select("id").maybeSingle();
+      const broadcastId = bc?.id;
+      await audit(op.organizationId, "broadcast.start", { actor: "user:" + op.userId, resource: "broadcasts", resourceId: broadcastId, operation: "insert", details: { templateKey, total: targets.length, tab } });
+      const run = (async () => {
+        const orgAdapter = await adapterForOrg(op.organizationId);
+        const runId = broadcastId ?? `bc-${Date.now()}`;
+        let sent = 0;
+        const errors = [];
+        for (const r of targets) {
+          try {
+            const sr = await orgAdapter.sendMessage(op.organizationId, {
+              to: r.phone,
+              type: "template",
+              templateKey,
+              templateParams: { name: r.name || "there" },
+              text: `Hi ${r.name || "there"}!`,
+              idempotencyKey: `broadcast:${runId}:${r.phone}`
+            });
+            if (sr.success) sent++;
+            else errors.push({ phone: r.phone, error: sr.error ?? "send failed" });
+          } catch (err) {
+            errors.push({ phone: r.phone, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        const failed = targets.length - sent;
+        if (broadcastId) {
+          await tenantDb(op.organizationId).from("broadcasts").update({
+            status: "completed",
+            sent,
+            failed,
+            errors: errors.slice(0, 50),
+            completed_at: (/* @__PURE__ */ new Date()).toISOString()
+          }).eq("id", broadcastId);
+        }
+        try {
+          await sheets.ensureHeader(cfg.spreadsheetId, cfg.reportsTab, ["Timestamp", "Report", "Detail", "Value"]);
+          await sheets.appendRows(cfg.spreadsheetId, cfg.reportsTab, [[
+            (/* @__PURE__ */ new Date()).toISOString(),
+            "Broadcast",
+            templateKey,
+            `${sent}/${targets.length} sent${failed ? `, ${failed} failed` : ""}`
+          ]]);
+        } catch {
+        }
+        logger.info("Broadcast complete", { orgId: op.organizationId, broadcastId, sent, failed });
+      })();
+      try {
+        (0, import_functions.waitUntil)(run);
+      } catch {
+      }
+      res.status(202).json({ ok: true, broadcastId, total: targets.length, requested, truncated: requested > targets.length });
+    });
+    app3.get("/api/broadcasts", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      const { data } = await tenantDb(op.organizationId).from("broadcasts").select("id, template_key, source, status, total, sent, failed, created_at, completed_at").order("created_at", { ascending: false }).limit(20);
+      res.status(200).json({ ok: true, broadcasts: data ?? [] });
+    });
+    app3.post("/api/integrations/google_sheets/export", async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return;
+      }
+      if (!sheets.isConfigured) {
+        res.status(503).json({ ok: false, error: "Google Sheets is not configured on this server." });
+        return;
+      }
+      const cfg = await sheetConfigForOrg(op.organizationId);
+      if (!cfg) {
+        res.status(400).json({ ok: false, error: "Connect a Google Sheet first." });
+        return;
+      }
+      try {
+        const s = await store.getBusinessSummary(op.organizationId, /* @__PURE__ */ new Date());
+        const ts = (/* @__PURE__ */ new Date()).toISOString();
+        const rows = [
+          [ts, "Analytics", "Today enquiries", s.todayEnquiries],
+          [ts, "Analytics", "Qualified leads", s.qualifiedLeads],
+          [ts, "Analytics", "Hot leads", s.hotLeads],
+          [ts, "Analytics", "Stale leads", s.staleLeads],
+          [ts, "Analytics", "Pending payments", s.pendingPayments],
+          [ts, "Analytics", "Pipeline value", s.pipelineText]
+        ];
+        await sheets.ensureHeader(cfg.spreadsheetId, cfg.reportsTab, ["Timestamp", "Report", "Detail", "Value"]);
+        await sheets.appendRows(cfg.spreadsheetId, cfg.reportsTab, rows);
+        await audit(op.organizationId, "sheets.export", { actor: "user:" + op.userId, resource: "google_sheets", resourceId: cfg.spreadsheetId, operation: "insert", details: { rows: rows.length } });
+        res.status(200).json({ ok: true, exported: rows.length, tab: cfg.reportsTab });
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : "Export failed." });
+      }
     });
     app3.post("/api/billing/checkout", async (req, res) => {
       const operator = await authoriseOperator(req);

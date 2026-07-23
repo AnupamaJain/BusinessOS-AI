@@ -26,6 +26,9 @@ import {
   Users,
   Sparkles,
   MapPin,
+  Table2,
+  Download,
+  Megaphone,
 } from 'lucide-react';
 import { LandingPage } from './LandingPage';
 import { useAuth } from './hooks/useAuth';
@@ -80,6 +83,10 @@ import {
   connectHubspot,
   connectInstagram,
   disconnectIntegration,
+  connectGoogleSheets,
+  broadcastFromSheet,
+  fetchBroadcasts,
+  exportAnalyticsToSheet,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import { decodeUpiQrFromFile } from './lib/qr';
@@ -741,6 +748,13 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [igNotice, setIgNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(
     null
   );
+  // Google Sheets connect + broadcast + export
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetsBusy, setSheetsBusy] = useState(false);
+  const [sheetsNotice, setSheetsNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [broadcastTemplate, setBroadcastTemplate] = useState('');
+  const [broadcastBusy, setBroadcastBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
 
   function toggleAgent(id: string): void {
     setAiConfigNotice(null);
@@ -1356,24 +1370,57 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     await integrationsQuery.refetch();
   }
 
-  async function handleDisconnectIntegration(provider: 'hubspot' | 'instagram'): Promise<void> {
-    if (provider === 'hubspot') {
-      setHubBusy(true);
-      setHubNotice(null);
-    } else {
-      setIgBusy(true);
-      setIgNotice(null);
-    }
+  async function handleDisconnectIntegration(provider: 'hubspot' | 'instagram' | 'google_sheets'): Promise<void> {
+    if (provider === 'hubspot') { setHubBusy(true); setHubNotice(null); }
+    else if (provider === 'google_sheets') { setSheetsBusy(true); setSheetsNotice(null); }
+    else { setIgBusy(true); setIgNotice(null); }
     const res = await disconnectIntegration(session.access_token, provider);
     if (provider === 'hubspot') setHubBusy(false);
+    else if (provider === 'google_sheets') setSheetsBusy(false);
     else setIgBusy(false);
     if (!res.ok) {
       const notice = { kind: 'error' as const, text: res.error ?? 'Could not disconnect. Try again.' };
       if (provider === 'hubspot') setHubNotice(notice);
+      else if (provider === 'google_sheets') setSheetsNotice(notice);
       else setIgNotice(notice);
       return;
     }
     await integrationsQuery.refetch();
+  }
+
+  async function handleConnectGoogleSheets(): Promise<void> {
+    const url = sheetUrl.trim();
+    if (!url) { setSheetsNotice({ kind: 'error', text: 'Paste your Google Sheets link.' }); return; }
+    setSheetsBusy(true);
+    setSheetsNotice(null);
+    const res = await connectGoogleSheets(session.access_token, { spreadsheetUrl: url });
+    setSheetsBusy(false);
+    if (!res.ok) { setSheetsNotice({ kind: 'error', text: res.error ?? 'Could not connect that sheet.' }); return; }
+    setSheetUrl('');
+    setSheetsNotice({ kind: 'success', text: `Connected “${res.title ?? 'your sheet'}”.` });
+    await integrationsQuery.refetch();
+  }
+
+  async function handleBroadcast(): Promise<void> {
+    setBroadcastBusy(true);
+    setSheetsNotice(null);
+    const res = await broadcastFromSheet(session.access_token, {
+      templateKey: broadcastTemplate.trim() || undefined,
+    });
+    setBroadcastBusy(false);
+    if (!res.ok) { setSheetsNotice({ kind: 'error', text: res.error ?? 'Broadcast failed.' }); return; }
+    const extra = res.truncated ? ` (capped from ${res.requested})` : '';
+    setSheetsNotice({ kind: 'success', text: `Broadcasting to ${res.total ?? 0} contact(s)${extra} — check status below.` });
+    setTimeout(() => { void broadcastsQuery.refetch(); }, 1500);
+  }
+
+  async function handleExportAnalytics(): Promise<void> {
+    setExportBusy(true);
+    setSheetsNotice(null);
+    const res = await exportAnalyticsToSheet(session.access_token);
+    setExportBusy(false);
+    if (!res.ok) { setSheetsNotice({ kind: 'error', text: res.error ?? 'Export failed.' }); return; }
+    setSheetsNotice({ kind: 'success', text: `Exported ${res.exported ?? 0} rows to the “${res.tab ?? 'Reports'}” tab.` });
   }
 
   /* Live data (10s polling while the relevant view is active) */
@@ -1424,6 +1471,12 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     () => fetchIntegrations(session.access_token),
     [],
     30_000,
+    integrationsActive
+  );
+  const broadcastsQuery = usePolling(
+    () => fetchBroadcasts(session.access_token),
+    [],
+    15_000,
     integrationsActive
   );
 
@@ -5153,6 +5206,139 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 </div>
               </div>
             </div>
+
+            {/* Google Sheets — lightweight CRM / data source */}
+            {(() => {
+              const gs = integrationsQuery.data?.googleSheets;
+              const broadcasts = broadcastsQuery.data ?? [];
+              return (
+                <div className="report-card" style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                    <div className="report-card-title" style={{ margin: 0 }}>
+                      <Table2 size={20} style={{ color: 'var(--color-primary)' }} />
+                      Google Sheets
+                    </div>
+                    <StatusChip connected={Boolean(gs?.connected)} />
+                  </div>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+                    Turn a Google Sheet into a lightweight CRM: auto-log new leads, broadcast to a contact
+                    list, and export analytics — no spreadsheet plumbing.
+                  </p>
+
+                  {gs && !gs.available && (
+                    <StatusNote kind="error">
+                      Google Sheets isn&apos;t configured on this server yet. Ask your admin to add the
+                      Google service-account credentials.
+                    </StatusNote>
+                  )}
+
+                  {gs?.available && !gs.connected && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '520px' }}>
+                      <div style={{ padding: '14px 16px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--border-muted)', fontSize: '13px', color: 'var(--text-muted)' }}>
+                        <div style={{ fontWeight: 600, color: 'var(--text-main)', marginBottom: '6px' }}>Before you connect</div>
+                        1. In your Google Sheet, click <strong>Share</strong> and give <strong>Editor</strong> access to:
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '8px 0' }}>
+                          <code style={{ fontSize: '12px', wordBreak: 'break-all', color: 'var(--text-main)' }}>{gs.serviceAccountEmail}</code>
+                          {gs.serviceAccountEmail && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '12px', flexShrink: 0 }} onClick={() => { void navigator.clipboard.writeText(gs.serviceAccountEmail!); }}>
+                              <Copy size={12} /> Copy
+                            </button>
+                          )}
+                        </div>
+                        2. Paste the sheet link below. We&apos;ll use tabs named <strong>Leads</strong>,{' '}
+                        <strong>Contacts</strong> and <strong>Reports</strong> (created automatically).
+                      </div>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                          Google Sheets link <span style={{ color: 'var(--color-danger)' }}>*</span>
+                        </span>
+                        <input
+                          className="chat-input"
+                          placeholder="https://docs.google.com/spreadsheets/d/…"
+                          value={sheetUrl}
+                          onChange={(e) => { setSheetUrl(e.target.value); if (sheetsNotice) setSheetsNotice(null); }}
+                        />
+                      </label>
+                      <div>
+                        <button className="btn btn-primary" disabled={sheetsBusy} style={{ opacity: sheetsBusy ? 0.6 : 1, cursor: sheetsBusy ? 'not-allowed' : 'pointer' }} onClick={() => { void handleConnectGoogleSheets(); }}>
+                          {sheetsBusy ? 'Connecting…' : 'Connect Google Sheet'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {gs?.connected && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        Connected to{' '}
+                        {gs.spreadsheetUrl ? (
+                          <a href={gs.spreadsheetUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', fontWeight: 600 }}>{gs.title ?? 'your sheet'}</a>
+                        ) : (
+                          <strong style={{ color: 'var(--text-main)' }}>{gs.title ?? 'your sheet'}</strong>
+                        )}
+                        . New qualified leads {gs.syncLeads ? 'auto-append' : 'do not append'} to the{' '}
+                        <code>{gs.leadsTab}</code> tab.
+                      </div>
+
+                      {/* Bulk messaging */}
+                      <div style={{ padding: '16px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--border-muted)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '13px', color: 'var(--text-main)', marginBottom: '4px' }}>
+                          <Megaphone size={16} style={{ color: 'var(--color-primary)' }} /> Broadcast to your contacts
+                        </div>
+                        <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+                          Messages everyone in the <code>{gs.contactsTab}</code> tab (needs a <strong>Phone</strong> column).
+                          WhatsApp requires an <strong>approved template</strong> for these business-initiated messages.
+                        </p>
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <input
+                            className="chat-input"
+                            style={{ maxWidth: '260px' }}
+                            placeholder="Approved template name (e.g. hello_world)"
+                            value={broadcastTemplate}
+                            onChange={(e) => setBroadcastTemplate(e.target.value)}
+                          />
+                          <button className="btn btn-primary" disabled={broadcastBusy} style={{ opacity: broadcastBusy ? 0.6 : 1, cursor: broadcastBusy ? 'not-allowed' : 'pointer' }} onClick={() => { void handleBroadcast(); }}>
+                            <Send size={14} /> {broadcastBusy ? 'Starting…' : 'Send broadcast'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Reporting */}
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button className="btn btn-secondary" disabled={exportBusy} style={{ opacity: exportBusy ? 0.6 : 1, cursor: exportBusy ? 'not-allowed' : 'pointer' }} onClick={() => { void handleExportAnalytics(); }}>
+                          <Download size={14} /> {exportBusy ? 'Exporting…' : `Export analytics to “${gs.reportsTab}”`}
+                        </button>
+                        <button className="btn btn-secondary" disabled={sheetsBusy} style={{ opacity: sheetsBusy ? 0.6 : 1, cursor: sheetsBusy ? 'not-allowed' : 'pointer' }} onClick={() => { void handleDisconnectIntegration('google_sheets'); }}>
+                          {sheetsBusy ? 'Disconnecting…' : 'Disconnect'}
+                        </button>
+                      </div>
+
+                      {/* Broadcast history */}
+                      {broadcasts.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px' }}>Recent broadcasts</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {broadcasts.slice(0, 5).map((b) => (
+                              <div key={b.id} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px', color: 'var(--text-muted)', padding: '8px 12px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px' }}>
+                                <code style={{ color: 'var(--text-main)' }}>{b.template_key}</code>
+                                <span>{b.status === 'running' ? '⏳ running' : `✅ ${b.sent}/${b.total} sent${b.failed ? `, ${b.failed} failed` : ''}`}</span>
+                                <span style={{ marginLeft: 'auto' }}>{new Date(b.created_at).toLocaleString('en-IN')}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {sheetsNotice && (
+                    <div style={{ fontSize: '12px', marginTop: '14px', color: sheetsNotice.kind === 'error' ? 'var(--color-danger)' : 'var(--color-success)' }}>
+                      {sheetsNotice.text}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 

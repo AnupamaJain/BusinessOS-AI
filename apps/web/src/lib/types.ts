@@ -269,11 +269,39 @@ export interface AdminMerchantsResult {
 
 /* ─── Per-tenant integrations (HubSpot, Instagram/Messenger) ──────── */
 
-export type IntegrationProvider = 'hubspot' | 'instagram';
+export type IntegrationProvider = 'hubspot' | 'instagram' | 'google_sheets';
+
+export interface GoogleSheetsState {
+  connected: boolean;
+  /** Address the merchant must share their spreadsheet with. */
+  serviceAccountEmail?: string;
+  /** Whether the server has a service account configured at all. */
+  available: boolean;
+  spreadsheetId?: string;
+  spreadsheetUrl?: string;
+  title?: string;
+  leadsTab: string;
+  contactsTab: string;
+  reportsTab: string;
+  syncLeads: boolean;
+}
 
 export interface IntegrationsState {
   ok: boolean;
   hubspot: { connected: boolean };
   instagram: { connected: boolean; pageId?: string };
+  googleSheets: GoogleSheetsState;
   error?: string;
+}
+
+export interface BroadcastRow {
+  id: string;
+  template_key: string;
+  source: string | null;
+  status: string;
+  total: number;
+  sent: number;
+  failed: number;
+  created_at: string;
+  completed_at: string | null;
 }

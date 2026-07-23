@@ -24,7 +24,7 @@ import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
   createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv, HubSpotService,
   createTranscriptionServiceFromEnv, createTtsServiceFromEnv,
-  createSheetsServiceFromEnv, SheetsService, parseSpreadsheetId,
+  createSheetsServiceFromEnv, parseSpreadsheetId,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -1746,6 +1746,129 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       if (provider === 'google_sheets') sheetConfigCache.delete(op.organizationId);
       await audit(op.organizationId, 'integration.disconnect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: provider, operation: 'update' });
       res.status(200).json({ ok: true });
+    });
+
+    // ── Use case 2: Bulk messaging — broadcast an approved WhatsApp template to
+    // a Google Sheet of contacts. Business-initiated messages require an approved
+    // template. Runs in the background; poll GET /api/broadcasts for status.
+    const BROADCAST_MAX = 500; // per-run cap (serverless time budget); larger lists need batching
+    function pickField(row: Record<string, string>, keys: string[]): string {
+      for (const k of keys) { const v = row[k]; if (v) return v; }
+      return '';
+    }
+    app.post('/api/broadcast', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      if (!sheets.isConfigured) { res.status(503).json({ ok: false, error: 'Google Sheets is not configured on this server.' }); return; }
+      const cfg = await sheetConfigForOrg(op.organizationId);
+      if (!cfg) { res.status(400).json({ ok: false, error: 'Connect a Google Sheet first.' }); return; }
+      const b = (req.body ?? {}) as { templateKey?: string; tab?: string; limit?: number };
+      const templateKey = (b.templateKey ?? '').trim() || (env['REENGAGEMENT_TEMPLATE'] ?? 'hello_world');
+      const tab = (b.tab ?? '').trim() || cfg.contactsTab;
+
+      let rows: Record<string, string>[];
+      try {
+        rows = await sheets.readAsObjects(cfg.spreadsheetId, tab);
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'Could not read the contacts tab.' });
+        return;
+      }
+      const recipients = rows
+        .map((r) => ({
+          phone: pickField(r, ['phone', 'phone number', 'whatsapp', 'mobile', 'number', 'contact']),
+          name: pickField(r, ['name', 'first name', 'full name', 'customer']),
+        }))
+        .filter((r) => r.phone);
+      if (recipients.length === 0) { res.status(400).json({ ok: false, error: `No phone numbers found in "${tab}". Add a "Phone" column.` }); return; }
+
+      const requested = recipients.length;
+      const cap = Math.min(BROADCAST_MAX, b.limit && b.limit > 0 ? b.limit : BROADCAST_MAX);
+      const targets = recipients.slice(0, cap);
+
+      const { data: bc } = await tenantDb(op.organizationId).from('broadcasts').insert({
+        template_key: templateKey,
+        source: `google_sheets:${tab}`,
+        status: 'running',
+        total: targets.length,
+        started_by: 'user:' + op.userId,
+      }).select('id').maybeSingle();
+      const broadcastId = (bc as { id?: string } | null)?.id;
+      await audit(op.organizationId, 'broadcast.start', { actor: 'user:' + op.userId, resource: 'broadcasts', resourceId: broadcastId, operation: 'insert', details: { templateKey, total: targets.length, tab } });
+
+      // Send off the reply path so the request returns immediately.
+      const run = (async () => {
+        const orgAdapter = await adapterForOrg(op.organizationId);
+        const runId = broadcastId ?? `bc-${Date.now()}`;
+        let sent = 0; const errors: { phone: string; error: string }[] = [];
+        for (const r of targets) {
+          try {
+            const sr = await orgAdapter.sendMessage(op.organizationId, {
+              to: r.phone, type: 'template', templateKey,
+              templateParams: { name: r.name || 'there' },
+              text: `Hi ${r.name || 'there'}!`,
+              idempotencyKey: `broadcast:${runId}:${r.phone}`,
+            });
+            if (sr.success) sent++;
+            else errors.push({ phone: r.phone, error: sr.error ?? 'send failed' });
+          } catch (err) {
+            errors.push({ phone: r.phone, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        const failed = targets.length - sent;
+        if (broadcastId) {
+          await tenantDb(op.organizationId).from('broadcasts').update({
+            status: 'completed', sent, failed, errors: errors.slice(0, 50), completed_at: new Date().toISOString(),
+          }).eq('id', broadcastId);
+        }
+        // Use case 3 overlap: log the run to the report tab (best-effort).
+        try {
+          await sheets.ensureHeader(cfg.spreadsheetId, cfg.reportsTab, ['Timestamp', 'Report', 'Detail', 'Value']);
+          await sheets.appendRows(cfg.spreadsheetId, cfg.reportsTab, [[
+            new Date().toISOString(), 'Broadcast', templateKey,
+            `${sent}/${targets.length} sent${failed ? `, ${failed} failed` : ''}`,
+          ]]);
+        } catch { /* reporting is best-effort */ }
+        logger.info('Broadcast complete', { orgId: op.organizationId, broadcastId, sent, failed });
+      })();
+      try { waitUntil(run); } catch { void run; }
+
+      res.status(202).json({ ok: true, broadcastId, total: targets.length, requested, truncated: requested > targets.length });
+    });
+
+    app.get('/api/broadcasts', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await tenantDb(op.organizationId).from('broadcasts')
+        .select('id, template_key, source, status, total, sent, failed, created_at, completed_at')
+        .order('created_at', { ascending: false }).limit(20);
+      res.status(200).json({ ok: true, broadcasts: data ?? [] });
+    });
+
+    // ── Use case 3: Reporting — export current analytics to the report tab. ──
+    app.post('/api/integrations/google_sheets/export', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      if (!sheets.isConfigured) { res.status(503).json({ ok: false, error: 'Google Sheets is not configured on this server.' }); return; }
+      const cfg = await sheetConfigForOrg(op.organizationId);
+      if (!cfg) { res.status(400).json({ ok: false, error: 'Connect a Google Sheet first.' }); return; }
+      try {
+        const s = await store.getBusinessSummary(op.organizationId, new Date());
+        const ts = new Date().toISOString();
+        const rows: (string | number)[][] = [
+          [ts, 'Analytics', 'Today enquiries', s.todayEnquiries],
+          [ts, 'Analytics', 'Qualified leads', s.qualifiedLeads],
+          [ts, 'Analytics', 'Hot leads', s.hotLeads],
+          [ts, 'Analytics', 'Stale leads', s.staleLeads],
+          [ts, 'Analytics', 'Pending payments', s.pendingPayments],
+          [ts, 'Analytics', 'Pipeline value', s.pipelineText],
+        ];
+        await sheets.ensureHeader(cfg.spreadsheetId, cfg.reportsTab, ['Timestamp', 'Report', 'Detail', 'Value']);
+        await sheets.appendRows(cfg.spreadsheetId, cfg.reportsTab, rows);
+        await audit(op.organizationId, 'sheets.export', { actor: 'user:' + op.userId, resource: 'google_sheets', resourceId: cfg.spreadsheetId, operation: 'insert', details: { rows: rows.length } });
+        res.status(200).json({ ok: true, exported: rows.length, tab: cfg.reportsTab });
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'Export failed.' });
+      }
     });
 
     /** Platform billing — create a Stripe checkout session for a plan. */

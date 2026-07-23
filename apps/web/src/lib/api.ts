@@ -11,6 +11,7 @@ import type {
   CheckoutResult,
   IntegrationProvider,
   IntegrationsState,
+  BroadcastRow,
   MerchantStatus,
   ContactNote,
   ContactRow,
@@ -1214,6 +1215,15 @@ export async function setMerchantStatus(
 /* ─── Per-tenant integrations (HubSpot, Instagram/Messenger) ──────── */
 
 /** Read the merchant's current integration connection state. Never throws. */
+const EMPTY_SHEETS: IntegrationsState['googleSheets'] = {
+  connected: false,
+  available: false,
+  leadsTab: 'Leads',
+  contactsTab: 'Contacts',
+  reportsTab: 'Reports',
+  syncLeads: true,
+};
+
 export async function fetchIntegrations(token: string): Promise<IntegrationsState> {
   try {
     const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations`, {
@@ -1223,6 +1233,7 @@ export async function fetchIntegrations(token: string): Promise<IntegrationsStat
       ok?: boolean;
       hubspot?: { connected?: boolean };
       instagram?: { connected?: boolean; pageId?: string };
+      googleSheets?: Partial<IntegrationsState['googleSheets']>;
       error?: string;
     };
     if (!res.ok || body.ok === false) {
@@ -1230,9 +1241,11 @@ export async function fetchIntegrations(token: string): Promise<IntegrationsStat
         ok: false,
         hubspot: { connected: false },
         instagram: { connected: false },
+        googleSheets: EMPTY_SHEETS,
         error: body.error ?? `HTTP ${res.status}`,
       };
     }
+    const gs = body.googleSheets ?? {};
     return {
       ok: true,
       hubspot: { connected: Boolean(body.hubspot?.connected) },
@@ -1240,12 +1253,25 @@ export async function fetchIntegrations(token: string): Promise<IntegrationsStat
         connected: Boolean(body.instagram?.connected),
         pageId: body.instagram?.pageId,
       },
+      googleSheets: {
+        connected: Boolean(gs.connected),
+        available: Boolean(gs.available),
+        serviceAccountEmail: gs.serviceAccountEmail,
+        spreadsheetId: gs.spreadsheetId,
+        spreadsheetUrl: gs.spreadsheetUrl,
+        title: gs.title,
+        leadsTab: gs.leadsTab ?? 'Leads',
+        contactsTab: gs.contactsTab ?? 'Contacts',
+        reportsTab: gs.reportsTab ?? 'Reports',
+        syncLeads: gs.syncLeads !== false,
+      },
     };
   } catch (err) {
     return {
       ok: false,
       hubspot: { connected: false },
       instagram: { connected: false },
+      googleSheets: EMPTY_SHEETS,
       error: err instanceof Error ? err.message : 'Network error',
     };
   }
@@ -1302,6 +1328,75 @@ export async function disconnectIntegration(
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Connect a Google Sheet (paste its URL after sharing with the SA). Never throws. */
+export async function connectGoogleSheets(
+  token: string,
+  input: { spreadsheetUrl: string; leadsTab?: string; contactsTab?: string; reportsTab?: string; syncLeads?: boolean }
+): Promise<{ ok: boolean; title?: string; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations/google_sheets`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; title?: string; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, title: body.title };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Broadcast an approved template to the connected sheet's contacts. Never throws. */
+export async function broadcastFromSheet(
+  token: string,
+  input: { templateKey?: string; tab?: string; limit?: number }
+): Promise<{ ok: boolean; total?: number; truncated?: boolean; requested?: number; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/broadcast`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; total?: number; truncated?: boolean; requested?: number; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, total: body.total, truncated: body.truncated, requested: body.requested };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/** Recent broadcast runs for the org. Never throws. */
+export async function fetchBroadcasts(token: string): Promise<BroadcastRow[]> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/broadcasts`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; broadcasts?: BroadcastRow[] };
+    if (!res.ok || body.ok === false) return [];
+    return body.broadcasts ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Export current analytics to the connected sheet's report tab. Never throws. */
+export async function exportAnalyticsToSheet(
+  token: string
+): Promise<{ ok: boolean; exported?: number; tab?: string; error?: string }> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_GATEWAY_URL}/api/integrations/google_sheets/export`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; exported?: number; tab?: string; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, exported: body.exported, tab: body.tab };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }
