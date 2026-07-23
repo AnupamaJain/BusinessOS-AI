@@ -430,6 +430,72 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
+  // ── Google Sheets (lightweight CRM / data source) ──
+  // Auth is platform-level (`sheets`); per-tenant we store only the spreadsheet
+  // id + tab prefs in integration_connections. Cache mirrors hubspotCache and is
+  // invalidated on connect/disconnect.
+  interface SheetConfig {
+    spreadsheetId: string;
+    leadsTab: string;
+    contactsTab: string;
+    reportsTab: string;
+    syncLeads: boolean;
+  }
+  const sheetConfigCache = new Map<string, SheetConfig | null>();
+  async function sheetConfigForOrg(orgId: string): Promise<SheetConfig | null> {
+    const cached = sheetConfigCache.get(orgId);
+    if (cached !== undefined) return cached;
+    let cfg: SheetConfig | null = null;
+    try {
+      const conn = await store.getIntegrationConnection(orgId, 'google_sheets');
+      if (conn?.status === 'active' && conn.config['spreadsheetId']) {
+        cfg = {
+          spreadsheetId: String(conn.config['spreadsheetId']),
+          leadsTab: String(conn.config['leadsTab'] ?? 'Leads'),
+          contactsTab: String(conn.config['contactsTab'] ?? 'Contacts'),
+          reportsTab: String(conn.config['reportsTab'] ?? 'Reports'),
+          syncLeads: conn.config['syncLeads'] !== false,
+        };
+      }
+    } catch { /* treat as not connected */ }
+    sheetConfigCache.set(orgId, cfg);
+    return cfg;
+  }
+
+  /**
+   * Use case 1 — Lead collection: append a newly qualified lead as a row to the
+   * merchant's Sheet. Best-effort, non-blocking (called via waitUntil).
+   */
+  async function appendLeadToSheet(orgId: string, leadId: string): Promise<void> {
+    if (!sheets.isConfigured) return;
+    const cfg = await sheetConfigForOrg(orgId);
+    if (!cfg || !cfg.syncLeads) return;
+    try {
+      const { data: lead } = await tenantDb(orgId).from('leads')
+        .select('id, contact_id, service_interest, score, stage, created_at')
+        .eq('id', leadId).maybeSingle();
+      if (!lead?.contact_id) return;
+      const { data: contact } = await tenantDb(orgId).from('contacts')
+        .select('id, name, email').eq('id', lead.contact_id).maybeSingle();
+      const realPhone = (await store.findContactById(orgId, lead.contact_id))?.phone ?? '';
+      await sheets.ensureHeader(cfg.spreadsheetId, cfg.leadsTab,
+        ['Date', 'Name', 'Phone', 'Email', 'Interest', 'Score', 'Stage']);
+      await sheets.appendRows(cfg.spreadsheetId, cfg.leadsTab, [[
+        new Date(String(lead.created_at ?? new Date().toISOString())).toISOString(),
+        contact?.name ?? '',
+        realPhone,
+        contact?.email ?? '',
+        String(lead.service_interest ?? ''),
+        String(lead.score ?? ''),
+        String(lead.stage ?? ''),
+      ]]);
+      await audit(orgId, 'sheets.lead_append', { actor: 'agent', resource: 'google_sheets', resourceId: cfg.spreadsheetId, operation: 'insert', details: { leadId } });
+      logger.info('Lead appended to Google Sheet', { orgId, leadId });
+    } catch (err) {
+      logger.warn('Sheet lead append failed', { orgId, leadId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   function agentDeps(orgId: string, org: OrgContext): AgentGraphDeps {
     return {
       llm,
@@ -831,6 +897,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         // Per-org HubSpot sync (resolves the merchant's own token; no-ops if none).
         const work = syncLeadToHubSpot(orgId, out.leadId);
         try { waitUntil(work); } catch { void work; }
+        // Per-org Google Sheets append (no-ops if not connected / sync off).
+        const sheetWork = appendLeadToSheet(orgId, out.leadId);
+        try { waitUntil(sheetWork); } catch { void sheetWork; }
       }
 
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
@@ -1583,10 +1652,24 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
       const hs = await store.getIntegrationConnection(op.organizationId, 'hubspot').catch(() => null);
       const ig = await store.getIntegrationConnection(op.organizationId, 'instagram').catch(() => null);
+      const gs = await store.getIntegrationConnection(op.organizationId, 'google_sheets').catch(() => null);
       res.status(200).json({
         ok: true,
         hubspot: { connected: hs?.status === 'active' },
         instagram: { connected: ig?.status === 'active', pageId: ig?.config['pageId'] as string | undefined },
+        googleSheets: {
+          connected: gs?.status === 'active',
+          // The address merchants must share their spreadsheet with (Editor).
+          serviceAccountEmail: sheets.serviceAccountEmail,
+          available: sheets.isConfigured,
+          spreadsheetId: gs?.config['spreadsheetId'] as string | undefined,
+          spreadsheetUrl: gs?.config['spreadsheetUrl'] as string | undefined,
+          title: gs?.config['title'] as string | undefined,
+          leadsTab: (gs?.config['leadsTab'] as string | undefined) ?? 'Leads',
+          contactsTab: (gs?.config['contactsTab'] as string | undefined) ?? 'Contacts',
+          reportsTab: (gs?.config['reportsTab'] as string | undefined) ?? 'Reports',
+          syncLeads: gs?.config['syncLeads'] !== false,
+        },
       });
     });
 
@@ -1618,13 +1701,49 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       res.status(200).json({ ok: true });
     });
 
+    // Connect a Google Sheet: the merchant pastes the sheet URL after sharing it
+    // with our service account. We verify access (read title/tabs), then store
+    // the id + tab prefs. No secrets — auth is the platform service account.
+    app.post('/api/integrations/google_sheets', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      if (!sheets.isConfigured) { res.status(503).json({ ok: false, error: 'Google Sheets is not configured on this server (missing service account).' }); return; }
+      const b = (req.body ?? {}) as { spreadsheetUrl?: string; leadsTab?: string; contactsTab?: string; reportsTab?: string; syncLeads?: boolean };
+      const spreadsheetId = parseSpreadsheetId(b.spreadsheetUrl ?? '');
+      if (!spreadsheetId) { res.status(400).json({ ok: false, error: 'Paste a valid Google Sheets link.' }); return; }
+      let title = 'Untitled';
+      try {
+        const meta = await sheets.getMeta(spreadsheetId);
+        title = meta.title;
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'Could not open that spreadsheet.' });
+        return;
+      }
+      await store.saveIntegrationConnection(op.organizationId, 'google_sheets', {
+        config: {
+          spreadsheetId,
+          spreadsheetUrl: (b.spreadsheetUrl ?? '').trim(),
+          title,
+          leadsTab: (b.leadsTab ?? '').trim() || 'Leads',
+          contactsTab: (b.contactsTab ?? '').trim() || 'Contacts',
+          reportsTab: (b.reportsTab ?? '').trim() || 'Reports',
+          syncLeads: b.syncLeads !== false,
+        },
+        status: 'active',
+      });
+      sheetConfigCache.delete(op.organizationId);
+      await audit(op.organizationId, 'integration.connect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: 'google_sheets', operation: 'update', details: { spreadsheetId, title } });
+      res.status(200).json({ ok: true, title });
+    });
+
     app.delete('/api/integrations/:provider', async (req, res) => {
       const op = await authoriseOperator(req);
       if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
       const provider = req.params.provider;
-      if (!['hubspot', 'instagram'].includes(provider)) { res.status(400).json({ ok: false, error: 'Unknown provider' }); return; }
+      if (!['hubspot', 'instagram', 'google_sheets'].includes(provider)) { res.status(400).json({ ok: false, error: 'Unknown provider' }); return; }
       await store.saveIntegrationConnection(op.organizationId, provider, { config: {}, status: 'inactive' });
       if (provider === 'hubspot') hubspotCache.delete(op.organizationId);
+      if (provider === 'google_sheets') sheetConfigCache.delete(op.organizationId);
       await audit(op.organizationId, 'integration.disconnect', { actor: 'user:' + op.userId, resource: 'integration_connections', resourceId: provider, operation: 'update' });
       res.status(200).json({ ok: true });
     });
