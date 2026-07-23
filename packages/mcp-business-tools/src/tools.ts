@@ -724,7 +724,7 @@ export async function generatePromoMedia(store: BusinessStore, input: GeneratePr
     mediaType,
     durationSec: duration,
     caption,
-    providerUsed: 'openmontage_ai_pipeline',
+    providerUsed: 'openmontage_zero_cost_engine',
   };
 }
 

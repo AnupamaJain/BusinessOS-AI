@@ -18,7 +18,7 @@ describe('generatePromoMedia tool', () => {
     expect(result.mediaType).toBe('video');
     expect(result.durationSec).toBe(15);
     expect(result.caption).toContain('Bali Honeymoon Private Villa');
-    expect(result.providerUsed).toBe('openmontage_ai_pipeline');
+    expect(result.providerUsed).toBe('openmontage_zero_cost_engine');
 
     expect(store.auditEvents.length).toBe(1);
     expect(store.auditEvents[0]?.action).toBe('promo_media_generated');
