@@ -272,3 +272,78 @@ export const GeneratePromoMediaOutput = z.object({
 });
 export type GeneratePromoMediaOutput = z.infer<typeof GeneratePromoMediaOutput>;
 
+// ─── MBG Services Suite (Local SEO, SEO Marketing, Lead Gen, Chat Automation) ───
+
+export const AnalyzeLocalSeoInput = z.object({
+  organizationId: z.string().uuid(),
+  businessName: z.string().min(1),
+  city: z.string().min(1),
+  targetKeywords: z.array(z.string()).default(['local services', 'near me']),
+});
+export type AnalyzeLocalSeoInput = z.infer<typeof AnalyzeLocalSeoInput>;
+
+export const AnalyzeLocalSeoOutput = z.object({
+  napScore: z.number(),
+  localRankings: z.array(z.object({
+    keyword: z.string(),
+    position: z.number(),
+    searchVolume: z.number(),
+  })),
+  recommendations: z.array(z.string()),
+  citationsBuilt: z.number(),
+});
+export type AnalyzeLocalSeoOutput = z.infer<typeof AnalyzeLocalSeoOutput>;
+
+export const RunSeoAuditInput = z.object({
+  organizationId: z.string().uuid(),
+  websiteUrl: z.string().url(),
+  depth: z.enum(['quick', 'full']).default('quick'),
+});
+export type RunSeoAuditInput = z.infer<typeof RunSeoAuditInput>;
+
+export const RunSeoAuditOutput = z.object({
+  healthScore: z.number(),
+  totalImpressions: z.string(),
+  averageCtr: z.string(),
+  averagePosition: z.number(),
+  technicalIssues: z.array(z.string()),
+  contentOpportunities: z.array(z.string()),
+});
+export type RunSeoAuditOutput = z.infer<typeof RunSeoAuditOutput>;
+
+export const ManageLeadFunnelInput = z.object({
+  organizationId: z.string().uuid(),
+  campaignName: z.string().min(1),
+  targetAudience: z.string().min(1),
+  monthlyBudgetInr: z.number().positive(),
+  channel: z.enum(['paid_ads', 'whatsapp_funnel', 'b2b_outreach', 'all']).default('all'),
+});
+export type ManageLeadFunnelInput = z.infer<typeof ManageLeadFunnelInput>;
+
+export const ManageLeadFunnelOutput = z.object({
+  funnelId: z.string(),
+  status: z.string(),
+  expectedLeadsPerMonth: z.number(),
+  estimatedCacInr: z.number(),
+  conversionRatePercent: z.number(),
+  nurturingSequence: z.array(z.string()),
+});
+export type ManageLeadFunnelOutput = z.infer<typeof ManageLeadFunnelOutput>;
+
+export const ConfigureChatAutomationInput = z.object({
+  organizationId: z.string().uuid(),
+  channels: z.array(z.enum(['whatsapp', 'messenger', 'website_widget'])).min(1),
+  enable247Replies: z.boolean().default(true),
+  autoBooking: z.boolean().default(true),
+});
+export type ConfigureChatAutomationInput = z.infer<typeof ConfigureChatAutomationInput>;
+
+export const ConfigureChatAutomationOutput = z.object({
+  automationId: z.string(),
+  activeChannels: z.array(z.string()),
+  botStatus: z.string(),
+  handOffEscalationRule: z.string(),
+});
+export type ConfigureChatAutomationOutput = z.infer<typeof ConfigureChatAutomationOutput>;
+
+

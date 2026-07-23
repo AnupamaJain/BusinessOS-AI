@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Sparkles, ArrowRight, Check, Plus, ShieldCheck, Lock, UserCheck, FileText, Zap, Clock,
   Compass, Utensils, Stethoscope, Scissors, GraduationCap, ShoppingBag, Briefcase, Loader,
-  Car, Home,
+  Car, Home, BarChart3, ChevronRight,
 } from 'lucide-react';
 import { joinWaitlist } from './lib/api';
 import { PrivacyPolicy, TermsOfService } from './LegalContent';
@@ -163,6 +163,76 @@ const WHY_DIFFERENT = [
   ['Dashboard you must log into', 'Lives where your customers already are'],
 ];
 
+const MBG_SERVICES = [
+  {
+    id: 'smm',
+    num: '01 / 06',
+    title: 'Social Media Marketing',
+    badgeText: 'MBG SERVICE: SMM',
+    description: 'Elevate your brand presence across Instagram, Facebook, and LinkedIn with automated content calendars and targeted viral campaigns.',
+    highlights: ['Content strategy & viral creation', 'Audience engagement & growth', 'Social ad campaign management'],
+    btnText: 'Explore SMM',
+    color: '#00F2FE',
+    accent: '#00FF87',
+  },
+  {
+    id: 'seo',
+    num: '02 / 06',
+    title: 'Search Engine Optimization',
+    badgeText: 'MBG SERVICE: Organic SEO',
+    description: 'Boost your website domain authority and rank #1 for high-value search queries with our comprehensive organic search optimization.',
+    highlights: ['Keyword research & ranking', 'Technical site speed audit', 'On-page & off-page optimization'],
+    btnText: 'Explore SEO',
+    color: '#7CF9FF',
+    accent: '#2B6CFF',
+  },
+  {
+    id: 'local_seo',
+    num: '03 / 06',
+    title: 'Local Business SEO',
+    badgeText: 'MBG SERVICE: Local Business SEO',
+    description: 'Dominate your local market and ensure customers find you first with our specialized Local SEO strategies. We help your business rise to the top of local search results, connecting you with customers who are actively looking for your products or services in your area.',
+    highlights: ['Hyper-local keyword targeting', 'Citation building & NAP consistency', 'High-quality local backlinks'],
+    btnText: 'Explore Local',
+    color: '#20B2AA',
+    accent: '#00FF87',
+    stats: { impressions: '17.6K', ctr: '1.3%', position: '25.2' },
+  },
+  {
+    id: 'seo_marketing',
+    num: '04 / 06',
+    title: 'SEO Marketing',
+    badgeText: 'MBG SERVICE: SEO Marketing',
+    description: 'Achieve sustainable long-term growth and maximize your organic visibility with our comprehensive SEO marketing solutions. We go beyond basic keywords to implement a data-driven strategy that aligns with your business goals.',
+    highlights: ['Data-driven content marketing', 'Authoritative link-building', 'Technical SEO audits'],
+    btnText: 'Explore SEO',
+    color: '#FFA500',
+    accent: '#FF8C00',
+  },
+  {
+    id: 'lead_gen',
+    num: '05 / 06',
+    title: 'Lead Generation',
+    badgeText: 'MBG SERVICE: Lead Generation',
+    description: 'Fuel your sales pipeline with high-quality, conversion-ready prospects through our targeted Lead Generation services. We move beyond vanity metrics to deliver leads that actually impact your bottom line.',
+    highlights: ['Targeted paid ads & funnels', 'B2B and B2C lead nurturing', 'Lower CAC, higher conversion'],
+    btnText: 'Explore Lead',
+    color: '#FF4500',
+    accent: '#FFD700',
+  },
+  {
+    id: 'chat_automation',
+    num: '06 / 06',
+    title: 'Chat Automation',
+    badgeText: 'MBG SERVICE: Chat Automation',
+    description: 'Transform your customer support and engagement with our intelligent Chat Automation solutions. We deploy advanced chatbots on popular platforms like WhatsApp, Facebook Messenger, and your website to provide instant, 24/7 assistance.',
+    highlights: ['WhatsApp + Messenger + website bots', '24/7 automated replies & booking', 'Free your team for complex queries'],
+    btnText: 'Explore Chat',
+    color: '#00E5FF',
+    accent: '#25D366',
+  },
+];
+
 const FAQ = [
   { q: 'Do my customers need to install anything?', a: 'No. Everything happens inside WhatsApp — the app your customers already use every day. There is nothing new for them to download or learn.' },
   { q: 'How long does it take to go live?', a: 'Most businesses are live in about five minutes. Connect your WhatsApp Business number, pick your vertical template, and your AI teammate starts replying.' },
@@ -180,6 +250,8 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
   const [wlError, setWlError] = useState<string | null>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const [legal, setLegal] = useState<null | 'privacy' | 'terms'>(null);
+  const [activeMbgSlide, setActiveMbgSlide] = useState(2); // default to 03 / 06 Local Business SEO
+  const [modalMbgService, setModalMbgService] = useState<typeof MBG_SERVICES[0] | null>(null);
 
   const openLegal = (page: 'privacy' | 'terms') => {
     setLegal(page);
@@ -385,6 +457,242 @@ export function LandingPage({ onLaunchApp }: LandingPageProps) {
           </Reveal>
         </div>
       </section>
+
+      {/* ─── MBG Services Suite (Interactive Carousel) ─── */}
+      <section id="services-suite" style={{ backgroundColor: C.bg, borderTop: `1px solid ${C.line}`, padding: '96px 0' }}>
+        <div style={{ maxWidth: `${MAXW}px`, margin: '0 auto', padding: '0 32px' }}>
+          <Reveal style={{ textAlign: 'center', marginBottom: '40px' }}>
+            <Eyebrow color={C.cyan}>MBG Services Suite</Eyebrow>
+            <H2>Full-Spectrum Business Growth &amp; Automation</H2>
+            <p style={{ color: C.muted, fontSize: '16px', maxWidth: '640px', margin: '14px auto 0', lineHeight: 1.6 }}>
+              From hyper-local SEO ranking and targeted lead generation to 24/7 multi-channel chat automation — powered by SaarthiOne.
+            </p>
+          </Reveal>
+
+          {/* Carousel Slide Indicators */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '32px', flexWrap: 'wrap' }}>
+            {MBG_SERVICES.map((s, idx) => (
+              <button
+                key={s.id}
+                onClick={() => setActiveMbgSlide(idx)}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '20px',
+                  border: idx === activeMbgSlide ? `1.5px solid ${C.cyan}` : `1px solid ${C.line}`,
+                  backgroundColor: idx === activeMbgSlide ? 'rgba(0, 229, 255, 0.1)' : C.card,
+                  color: idx === activeMbgSlide ? C.cyan : C.muted,
+                  fontWeight: 700,
+                  fontSize: '12.5px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                {s.num.split(' ')[0]} {s.title}
+              </button>
+            ))}
+          </div>
+
+          {/* Active Carousel Card */}
+          {(() => {
+            const current = MBG_SERVICES[activeMbgSlide]!;
+            return (
+              <Reveal key={current.id}>
+                <div
+                  style={{
+                    backgroundColor: C.card,
+                    borderRadius: '24px',
+                    border: `1px solid ${C.line}`,
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: '40px',
+                    padding: '48px',
+                    alignItems: 'center',
+                    minHeight: '480px',
+                  }}
+                  className="lp-smb"
+                >
+                  {/* Left Column */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '5px 14px', borderRadius: '20px', backgroundColor: 'rgba(0, 229, 255, 0.08)', border: '1px solid rgba(0, 229, 255, 0.25)', color: C.cyan, width: 'fit-content', fontSize: '13px', fontWeight: 800, fontFamily: 'monospace' }}>
+                      <Sparkles size={14} /> {current.num}
+                    </div>
+                    <h3 style={{ fontSize: '38px', fontWeight: 800, color: '#fff', fontFamily: 'Outfit, sans-serif', letterSpacing: '-0.5px', lineHeight: 1.1 }}>
+                      {current.title}
+                    </h3>
+                    <p style={{ color: C.muted, fontSize: '15px', lineHeight: 1.65 }}>
+                      {current.description}
+                    </p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', margin: '8px 0' }}>
+                      {current.highlights.map((h) => (
+                        <div key={h} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14.5px', color: '#e2e8f0', fontWeight: 500 }}>
+                          <span style={{ width: '22px', height: '22px', borderRadius: '50%', border: `1.5px solid ${current.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <Check size={13} style={{ color: current.color }} />
+                          </span>
+                          {h}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '12px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => setModalMbgService(current)}
+                        style={{
+                          padding: '14px 28px',
+                          borderRadius: '30px',
+                          background: `linear-gradient(135deg, ${current.color}, ${current.accent})`,
+                          color: '#000',
+                          border: 'none',
+                          fontWeight: 800,
+                          fontSize: '14.5px',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          boxShadow: `0 8px 24px ${current.color}40`,
+                        }}
+                      >
+                        {current.btnText} <ArrowRight size={17} />
+                      </button>
+
+                      <button
+                        onClick={() => setActiveMbgSlide((activeMbgSlide + 1) % MBG_SERVICES.length)}
+                        style={{
+                          background: 'transparent',
+                          color: C.muted,
+                          border: 'none',
+                          fontWeight: 700,
+                          fontSize: '14.5px',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        Next service <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Visual Dashboard Mockup with Floating Badge */}
+                  <div style={{ position: 'relative', height: '100%', minHeight: '340px', borderRadius: '18px', backgroundColor: '#070b12', border: `1px solid ${C.line}`, overflow: 'hidden', padding: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    {/* Top Dashboard Bar */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${C.line}`, paddingBottom: '14px' }}>
+                      <span style={{ fontSize: '12px', color: C.faint, fontWeight: 600 }}>Site: Last 6 months ✎</span>
+                      <span style={{ fontSize: '12px', color: C.cyan, fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>+ NEW</span>
+                    </div>
+
+                    {/* Stats Header */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', margin: '20px 0' }}>
+                      <div style={{ backgroundColor: 'rgba(0, 229, 255, 0.08)', borderRadius: '12px', padding: '14px', border: '1px solid rgba(0, 229, 255, 0.2)' }}>
+                        <div style={{ fontSize: '11px', color: C.faint }}>Total impressions</div>
+                        <div style={{ fontSize: '24px', fontWeight: 800, color: C.cyan, marginTop: '4px' }}>{current.stats?.impressions ?? '17.6K'}</div>
+                      </div>
+                      <div style={{ backgroundColor: 'rgba(37, 211, 102, 0.08)', borderRadius: '12px', padding: '14px', border: '1px solid rgba(37, 211, 102, 0.2)' }}>
+                        <div style={{ fontSize: '11px', color: C.faint }}>Average CTR</div>
+                        <div style={{ fontSize: '24px', fontWeight: 800, color: C.green, marginTop: '4px' }}>{current.stats?.ctr ?? '1.3%'}</div>
+                      </div>
+                      <div style={{ backgroundColor: 'rgba(255, 165, 0, 0.08)', borderRadius: '12px', padding: '14px', border: '1px solid rgba(255, 165, 0, 0.2)' }}>
+                        <div style={{ fontSize: '11px', color: C.faint }}>Average position</div>
+                        <div style={{ fontSize: '24px', fontWeight: 800, color: '#FFA500', marginTop: '4px' }}>{current.stats?.position ?? '25.2'}</div>
+                      </div>
+                    </div>
+
+                    {/* SVG Line Graph Visualization */}
+                    <div style={{ height: '140px', width: '100%', position: 'relative', marginTop: '10px' }}>
+                      <svg width="100%" height="100%" viewBox="0 0 400 120" preserveAspectRatio="none">
+                        <defs>
+                          <linearGradient id={`grad-${current.id}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={current.color} stopOpacity="0.4" />
+                            <stop offset="100%" stopColor={current.color} stopOpacity="0" />
+                          </linearGradient>
+                        </defs>
+                        <path d="M0,90 Q50,30 100,70 T200,40 T300,80 T400,20 L400,120 L0,120 Z" fill={`url(#grad-${current.id})`} />
+                        <path d="M0,90 Q50,30 100,70 T200,40 T300,80 T400,20" fill="none" stroke={current.color} strokeWidth="3.5" />
+                        <path d="M0,100 Q60,50 120,80 T240,60 T360,90 L400,40" fill="none" stroke={current.accent} strokeWidth="2.5" strokeDasharray="4 4" />
+                      </svg>
+                    </div>
+
+                    {/* Floating Bottom-Right Service Badge */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '16px',
+                        right: '16px',
+                        backgroundColor: '#fff',
+                        color: '#000',
+                        borderRadius: '16px',
+                        padding: '10px 16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                        boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '10px',
+                          backgroundColor: current.color,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#000',
+                          fontWeight: 800,
+                        }}
+                      >
+                        <BarChart3 size={18} />
+                      </span>
+                      <div>
+                        <div style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>MBG SERVICE</div>
+                        <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>{current.title}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Reveal>
+            );
+          })()}
+        </div>
+      </section>
+
+      {/* ─── Service Detail Modal Popup ─── */}
+      {modalMbgService && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(10px)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+          <div style={{ backgroundColor: C.card, borderRadius: '24px', border: `1px solid ${C.cyan}`, padding: '36px', maxWidth: '560px', width: '100%', position: 'relative', boxShadow: '0 20px 50px rgba(0,229,255,0.2)' }}>
+            <button onClick={() => setModalMbgService(null)} style={{ position: 'absolute', top: '20px', right: '20px', background: 'transparent', border: 'none', color: C.muted, fontSize: '20px', cursor: 'pointer' }}>✕</button>
+
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '4px 12px', borderRadius: '16px', backgroundColor: 'rgba(0,229,255,0.1)', color: C.cyan, fontSize: '12px', fontWeight: 800, marginBottom: '14px' }}>
+              {modalMbgService.num} · {modalMbgService.badgeText}
+            </div>
+
+            <h3 style={{ fontSize: '28px', fontWeight: 800, color: '#fff', fontFamily: 'Outfit, sans-serif', marginBottom: '12px' }}>
+              {modalMbgService.title}
+            </h3>
+
+            <p style={{ color: C.muted, fontSize: '14.5px', lineHeight: 1.6, marginBottom: '20px' }}>
+              {modalMbgService.description}
+            </p>
+
+            <div style={{ backgroundColor: '#070b12', borderRadius: '16px', padding: '16px', border: `1px solid ${C.line}`, marginBottom: '24px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: '#fff', marginBottom: '10px' }}>Included Core Deliverables:</div>
+              {modalMbgService.highlights.map((h) => (
+                <div key={h} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13.5px', color: '#cbd5e1', marginBottom: '6px' }}>
+                  <Check size={15} style={{ color: C.green }} /> {h}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button onClick={() => { setModalMbgService(null); onLaunchApp(); }} style={{ ...primaryBtn, flex: 1, justifyContent: 'center' }}>
+                Launch in Operator Dashboard <ArrowRight size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ─── Security & trust ─── */}
       <section id="security" className="lp-section" style={sectionPad}>

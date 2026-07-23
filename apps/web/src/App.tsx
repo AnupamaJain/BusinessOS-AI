@@ -24,6 +24,8 @@ import {
   X,
   Plug,
   Users,
+  Sparkles,
+  MapPin,
 } from 'lucide-react';
 import { LandingPage } from './LandingPage';
 import { useAuth } from './hooks/useAuth';
@@ -106,6 +108,7 @@ type TabKey =
   | 'crm'
   | 'payments'
   | 'scheduler'
+  | 'growth-seo'
   | 'compliance'
   | 'kb'
   | 'analytics'
@@ -3227,6 +3230,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </div>
 
           <div
+            className={`nav-item ${activeTab === 'growth-seo' ? 'active' : ''}`}
+            onClick={() => setActiveTab('growth-seo')}
+          >
+            <Sparkles className="nav-icon" />
+            <span>Growth &amp; SEO Studio</span>
+          </div>
+
+          <div
             className={`nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
             onClick={() => setActiveTab('analytics')}
           >
@@ -3309,6 +3320,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'crm' && 'CRM Context & Product Directory'}
             {activeTab === 'payments' && 'Payments — Bookings Awaiting Confirmation'}
             {activeTab === 'scheduler' && 'Consent-Safe Auto Campaigns'}
+            {activeTab === 'growth-seo' && 'Growth & SEO Studio — Local SEO, Lead Funnels & Automation'}
             {activeTab === 'compliance' && 'AI Usage & Safety Observability'}
             {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
@@ -4577,6 +4589,146 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Growth & SEO Studio ───────────────────────── */}
+        {activeTab === 'growth-seo' && (
+          <div className="report-workspace" style={{ display: 'grid', gap: '24px' }}>
+            {/* Top Grid: Local Business SEO & SEO Marketing */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '24px' }}>
+              {/* 03: Local Business SEO */}
+              <div className="report-card" style={{ backgroundColor: 'var(--bg-card)', borderRadius: '16px', padding: '24px', border: '1px solid var(--border-muted)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <div className="report-card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 800 }}>
+                    <MapPin size={22} style={{ color: '#00F2FE' }} />
+                    03 / 06 Local Business SEO
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: 800, padding: '4px 10px', borderRadius: '12px', backgroundColor: 'rgba(0,242,254,0.1)', color: '#00F2FE' }}>NAP Score: 92%</span>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.5, marginBottom: '20px' }}>
+                  Hyper-local keyword targeting, Google Business Profile RAG optimization, citation building &amp; NAP consistency.
+                </p>
+
+                <div style={{ backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: '12px', padding: '16px', border: '1px solid var(--border-muted)', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '10px' }}>Local Keyword Rankings (Mumbai)</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>1. "best travel agency in Mumbai"</span>
+                      <strong style={{ color: '#00FF87' }}>#1 Rank (1,200 vol)</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>2. "custom bali tour package Mumbai"</span>
+                      <strong style={{ color: '#00FF87' }}>#2 Rank (1,050 vol)</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Local Citations Built: <strong>28 active</strong></span>
+                  <button className="btn btn-primary" style={{ padding: '6px 14px', fontSize: '12px' }} onClick={() => alert('Local SEO Audit initiated for your business!')}>
+                    Run Local SEO Audit
+                  </button>
+                </div>
+              </div>
+
+              {/* 04: SEO Marketing */}
+              <div className="report-card" style={{ backgroundColor: 'var(--bg-card)', borderRadius: '16px', padding: '24px', border: '1px solid var(--border-muted)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <div className="report-card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 800 }}>
+                    <Sparkles size={22} style={{ color: '#FFA500' }} />
+                    04 / 06 SEO Marketing
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: 800, padding: '4px 10px', borderRadius: '12px', backgroundColor: 'rgba(255,165,0,0.1)', color: '#FFA500' }}>Health: 88/100</span>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.5, marginBottom: '20px' }}>
+                  Data-driven content marketing, authoritative link building, and technical SEO audits for long-term organic visibility.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '16px' }}>
+                  <div style={{ backgroundColor: 'rgba(0,242,254,0.08)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Impressions</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#00F2FE' }}>17.6K</div>
+                  </div>
+                  <div style={{ backgroundColor: 'rgba(37,211,102,0.08)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Average CTR</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#25D366' }}>1.3%</div>
+                  </div>
+                  <div style={{ backgroundColor: 'rgba(255,165,0,0.08)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Avg Position</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#FFA500' }}>25.2</div>
+                  </div>
+                </div>
+
+                <button className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', fontSize: '12px' }} onClick={() => alert('Technical SEO audit report generated!')}>
+                  Run Technical SEO Audit
+                </button>
+              </div>
+            </div>
+
+            {/* Bottom Grid: Lead Generation & Chat Automation */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '24px' }}>
+              {/* 05: Lead Generation */}
+              <div className="report-card" style={{ backgroundColor: 'var(--bg-card)', borderRadius: '16px', padding: '24px', border: '1px solid var(--border-muted)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <div className="report-card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 800 }}>
+                    <Users size={22} style={{ color: '#FF4500' }} />
+                    05 / 06 Lead Generation
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: 800, padding: '4px 10px', borderRadius: '12px', backgroundColor: 'rgba(255,69,0,0.1)', color: '#FF4500' }}>Funnel Active</span>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.5, marginBottom: '20px' }}>
+                  Fuel your sales pipeline with targeted paid ads, B2B/B2C lead nurturing, lower CAC, and higher conversion.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: '12px', padding: '14px', marginBottom: '16px' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Est. Monthly Leads</div>
+                    <strong style={{ fontSize: '20px', color: '#00F2FE' }}>100 leads</strong>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Est. CAC</div>
+                    <strong style={{ fontSize: '20px', color: '#00FF87' }}>₹450 / lead</strong>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                  ⚡ Auto-Nurture: Day 0 Welcome → Day 1 Quote Check-in → Day 3 Discount Push
+                </div>
+
+                <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: '12px' }} onClick={() => alert('Lead Funnel campaign configured!')}>
+                  Configure Lead Funnel
+                </button>
+              </div>
+
+              {/* 06: Chat Automation */}
+              <div className="report-card" style={{ backgroundColor: 'var(--bg-card)', borderRadius: '16px', padding: '24px', border: '1px solid var(--border-muted)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <div className="report-card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 800 }}>
+                    <MessageSquare size={22} style={{ color: '#00E5FF' }} />
+                    06 / 06 Chat Automation
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: 800, padding: '4px 10px', borderRadius: '12px', backgroundColor: 'rgba(37,211,102,0.1)', color: '#25D366' }}>24/7 Live</span>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.5, marginBottom: '20px' }}>
+                  Deploy intelligent chatbots across WhatsApp, Facebook Messenger, and your website for instant 24/7 assistance and booking.
+                </p>
+
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                  <span style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: 'rgba(37,211,102,0.15)', color: '#25D366', fontSize: '12px', fontWeight: 700 }}>🟢 WhatsApp</span>
+                  <span style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: 'rgba(0,149,255,0.15)', color: '#0095FF', fontSize: '12px', fontWeight: 700 }}>Messenger</span>
+                  <span style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: 'rgba(0,242,254,0.15)', color: '#00F2FE', fontSize: '12px', fontWeight: 700 }}>Web Widget</span>
+                </div>
+
+                <div style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: '10px', padding: '12px', fontSize: '11px', fontFamily: 'monospace', color: '#00F2FE', overflowX: 'auto', marginBottom: '16px' }}>
+                  &lt;script src="https://saarthione.vercel.app/widget.js"&gt;&lt;/script&gt;
+                </div>
+
+                <button className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', fontSize: '12px' }} onClick={() => navigator.clipboard.writeText('<script src="https://saarthione.vercel.app/widget.js"></script>').then(() => alert('Web Chat Widget code copied to clipboard!'))}>
+                  Copy Web Chat Widget Code
+                </button>
+              </div>
             </div>
           </div>
         )}

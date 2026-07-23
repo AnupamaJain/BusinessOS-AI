@@ -24,6 +24,7 @@ import {
   createEmailServiceFromEnv, createOcrServiceFromEnv, buildQuotationEmail,
   createBillingServiceFromEnv, PLANS, createHubSpotServiceFromEnv, HubSpotService,
   createTranscriptionServiceFromEnv, createTtsServiceFromEnv,
+  createSheetsServiceFromEnv, SheetsService, parseSpreadsheetId,
 } from '@business-os-ai/integrations';
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
@@ -359,6 +360,9 @@ export function buildServer(env: Record<string, string | undefined> = process.en
   const ttsService = createTtsServiceFromEnv(env);
   const billing = createBillingServiceFromEnv(env);
   const hubspot = createHubSpotServiceFromEnv(env); // platform env fallback (default org)
+  // One platform Google service account signs for every tenant; each merchant
+  // shares their own spreadsheet with its email (see createSheetsServiceFromEnv).
+  const sheets = createSheetsServiceFromEnv(env);
 
   // Each merchant connects their OWN HubSpot (integration_connections); resolve
   // per-org, falling back to the platform env token.

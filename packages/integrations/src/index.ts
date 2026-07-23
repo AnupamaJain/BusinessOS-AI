@@ -5,4 +5,5 @@ export * from './tts';
 export * from './billing';
 export * from './hubspot';
 export * from './media';
+export * from './sheets';
 
