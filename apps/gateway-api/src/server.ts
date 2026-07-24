@@ -29,6 +29,10 @@ import {
 import { SchedulerWorker } from '@business-os-ai/scheduler-worker';
 import { logger } from '@business-os-ai/shared-types';
 import { waitUntil } from '@vercel/functions';
+import {
+  normalizeFilter, computeStats, engagementScore, personalize,
+  wrapEmailLinks, verifyTrack, type SegmentFilter,
+} from './marketing';
 
 /** Real-embedding similarity threshold for grounding decisions. */
 const PROD_RETRIEVAL_THRESHOLD = 0.35;
@@ -496,6 +500,126 @@ export function buildServer(env: Record<string, string | undefined> = process.en
     }
   }
 
+  // ── Data-driven marketing: campaigns, segmentation, tracking ──────
+  // HMAC secret for stateless tracked-link tokens (/r/:token).
+  const trackSecret = env['ENCRYPTION_KEY'] || env['INTERNAL_API_KEY'] || 'saarthi-track';
+
+  interface AudienceMember { contactId: string; name: string; phone: string; email: string }
+
+  /** Resolve a segment filter into a de-duplicated list of reachable contacts. */
+  async function resolveAudience(orgId: string, filter: SegmentFilter, channel: 'whatsapp' | 'email'): Promise<AudienceMember[]> {
+    let q = tenantDb(orgId).from('leads')
+      .select('contact_id, stage, score, service_interest, updated_at, contacts(name, email, phone_number, phone_enc)');
+    if (filter.stages?.length) q = q.in('stage', filter.stages);
+    if (filter.minScore) q = q.gte('score', filter.minScore);
+    if (filter.serviceInterest) q = q.ilike('service_interest', `%${filter.serviceInterest}%`);
+    if (filter.recencyDays) q = q.gte('updated_at', new Date(Date.now() - filter.recencyDays * 86_400_000).toISOString());
+    const { data } = await q.limit(3000);
+
+    const seen = new Map<string, { name: string; email: string }>();
+    for (const row of (data ?? []) as Array<{ contact_id?: string; contacts?: { name?: string; email?: string } | { name?: string; email?: string }[] }>) {
+      const cid = row.contact_id;
+      if (!cid || seen.has(cid)) continue;
+      const c = Array.isArray(row.contacts) ? row.contacts[0] : row.contacts;
+      seen.set(cid, { name: c?.name ?? '', email: c?.email ?? '' });
+    }
+
+    const out: AudienceMember[] = [];
+    for (const [contactId, c] of seen) {
+      if (channel === 'email') {
+        if (!c.email) continue;
+        out.push({ contactId, name: c.name, phone: '', email: c.email });
+      } else {
+        const phone = (await store.findContactById(orgId, contactId))?.phone ?? '';
+        if (!phone) continue;
+        out.push({ contactId, name: c.name, phone, email: c.email });
+      }
+    }
+    return out;
+  }
+
+  interface CampaignRow {
+    id: string; channel: 'whatsapp' | 'email'; template_key: string | null;
+    email_subject: string | null; email_html: string | null; target_url: string | null;
+    sent_at: string | null;
+  }
+
+  /** Execute a campaign: create recipient rows, send per channel, record outcomes. */
+  async function runCampaign(orgId: string, campaign: CampaignRow, audience: AudienceMember[]): Promise<void> {
+    const nowIso = () => new Date().toISOString();
+    const byContact = new Map(audience.map((a) => [a.contactId, a]));
+    const rows = audience.map((a) => ({
+      campaign_id: campaign.id, contact_id: a.contactId, channel: campaign.channel,
+      address: campaign.channel === 'email' ? a.email : a.phone, status: 'queued',
+    }));
+    const { data: inserted } = await tenantDb(orgId).from('campaign_recipients')
+      .insert(rows).select('id, contact_id, address');
+    const recipients = (inserted ?? []) as Array<{ id: string; contact_id: string; address: string }>;
+    await tenantDb(orgId).from('campaigns').update({ total: recipients.length, sent_at: campaign.sent_at ?? nowIso() }).eq('id', campaign.id);
+
+    let sent = 0, failed = 0;
+    const adapter = campaign.channel === 'whatsapp' ? await adapterForOrg(orgId) : null;
+
+    for (const r of recipients) {
+      const a = byContact.get(r.contact_id);
+      try {
+        if (campaign.channel === 'whatsapp' && adapter) {
+          const sr = await adapter.sendMessage(orgId, {
+            to: r.address, type: 'template', templateKey: campaign.template_key ?? 'hello_world',
+            templateParams: { name: a?.name || 'there' }, text: `Hi ${a?.name || 'there'}!`,
+            idempotencyKey: `campaign:${campaign.id}:${r.address}`,
+          });
+          if (sr.success) { sent++; await tenantDb(orgId).from('campaign_recipients').update({ status: 'sent', provider_message_id: sr.providerMessageId ?? null, updated_at: nowIso() }).eq('id', r.id); }
+          else { failed++; await tenantDb(orgId).from('campaign_recipients').update({ status: 'failed', error: sr.error ?? 'send failed', updated_at: nowIso() }).eq('id', r.id); }
+        } else {
+          // Email: personalize, then route every link through /r/ for CTR.
+          const vars = { name: a?.name || 'there', url: campaign.target_url ?? '' };
+          let html = personalize(campaign.email_html ?? '', vars);
+          html = wrapEmailLinks(html, publicBaseUrl, trackSecret, campaign.id, r.id);
+          const er = await emailService.send({ to: r.address, subject: personalize(campaign.email_subject ?? '', vars), html });
+          if (er.sent) { sent++; await tenantDb(orgId).from('campaign_recipients').update({ status: 'sent', provider_message_id: er.id ?? null, updated_at: nowIso() }).eq('id', r.id); }
+          else { failed++; await tenantDb(orgId).from('campaign_recipients').update({ status: 'failed', error: er.error ?? 'send failed', updated_at: nowIso() }).eq('id', r.id); }
+        }
+      } catch (err) {
+        failed++;
+        await tenantDb(orgId).from('campaign_recipients').update({ status: 'failed', error: err instanceof Error ? err.message : String(err), updated_at: nowIso() }).eq('id', r.id);
+      }
+    }
+    await tenantDb(orgId).from('campaigns').update({
+      status: sent === 0 && failed > 0 ? 'failed' : 'sent', sent, failed, completed_at: nowIso(),
+    }).eq('id', campaign.id);
+    logger.info('Campaign sent', { orgId, campaignId: campaign.id, sent, failed });
+  }
+
+  /** Attribute a new lead to the contact's most recent campaign touch (last 30d). */
+  async function attributeConversion(orgId: string, contactId: string): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
+      const { data } = await tenantDb(orgId).from('campaign_recipients')
+        .select('id').eq('contact_id', contactId).is('converted_at', null).gte('created_at', cutoff)
+        .order('created_at', { ascending: false }).limit(1);
+      const id = (data as Array<{ id: string }> | null)?.[0]?.id;
+      if (!id) return;
+      await tenantDb(orgId).from('campaign_recipients').update({ converted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id);
+    } catch { /* attribution is best-effort */ }
+  }
+
+  /** Delivery-status webhook handler (WhatsApp sent/delivered/read) → recipients. */
+  async function applyStatusEvents(events: Array<{ providerMessageId: string; status: string }>): Promise<void> {
+    const nowIso = new Date().toISOString();
+    for (const e of events) {
+      try {
+        if (e.status === 'read') {
+          await db.from('campaign_recipients').update({ status: 'read', opened_at: nowIso, updated_at: nowIso }).eq('provider_message_id', e.providerMessageId);
+        } else if (e.status === 'delivered') {
+          await db.from('campaign_recipients').update({ status: 'delivered', delivered_at: nowIso, updated_at: nowIso }).eq('provider_message_id', e.providerMessageId).in('status', ['sent', 'queued']);
+        } else if (e.status === 'failed') {
+          await db.from('campaign_recipients').update({ status: 'failed', error: 'delivery failed', updated_at: nowIso }).eq('provider_message_id', e.providerMessageId).in('status', ['sent', 'queued', 'delivered']);
+        }
+      } catch { /* best-effort */ }
+    }
+  }
+
   function agentDeps(orgId: string, org: OrgContext): AgentGraphDeps {
     return {
       llm,
@@ -900,6 +1024,11 @@ export function buildServer(env: Record<string, string | undefined> = process.en
         // Per-org Google Sheets append (no-ops if not connected / sync off).
         const sheetWork = appendLeadToSheet(orgId, out.leadId);
         try { waitUntil(sheetWork); } catch { void sheetWork; }
+        // Marketing: attribute this conversion to a recent campaign touch.
+        if (msg.contactId) {
+          const conv = attributeConversion(orgId, msg.contactId);
+          try { waitUntil(conv); } catch { void conv; }
+        }
       }
 
       await idempotencyService.markProcessed(msg.providerMessageId, orgId);
@@ -1871,6 +2000,177 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       }
     });
 
+    // ═══ Data-driven marketing: campaigns + segmentation + real analytics ═══
+
+    // Preview a segment: how many reachable contacts match + a small name sample.
+    app.post('/api/segments/preview', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as { filter?: unknown; channel?: string };
+      const channel = b.channel === 'email' ? 'email' : 'whatsapp';
+      const audience = await resolveAudience(op.organizationId, normalizeFilter(b.filter), channel);
+      res.status(200).json({ ok: true, count: audience.length, sample: audience.slice(0, 5).map((a) => a.name || a.email || a.phone) });
+    });
+
+    app.get('/api/segments', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await tenantDb(op.organizationId).from('segments').select('id, name, filters, created_at').order('created_at', { ascending: false }).limit(50);
+      res.status(200).json({ ok: true, segments: data ?? [] });
+    });
+
+    app.post('/api/segments', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as { name?: string; filter?: unknown };
+      const name = (b.name ?? '').trim();
+      if (!name) { res.status(400).json({ ok: false, error: 'Segment name is required' }); return; }
+      const { data } = await tenantDb(op.organizationId).from('segments').insert({ name, filters: normalizeFilter(b.filter) }).select('id').maybeSingle();
+      await audit(op.organizationId, 'segment.create', { actor: 'user:' + op.userId, resource: 'segments', resourceId: (data as { id?: string } | null)?.id, operation: 'insert' });
+      res.status(200).json({ ok: true, id: (data as { id?: string } | null)?.id });
+    });
+
+    // Create + send a campaign (WhatsApp template or Email). Runs in background.
+    app.post('/api/campaigns', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const b = (req.body ?? {}) as { name?: string; channel?: string; filter?: unknown; templateKey?: string; emailSubject?: string; emailHtml?: string; targetUrl?: string };
+      const name = (b.name ?? '').trim();
+      const channel = b.channel === 'email' ? 'email' : 'whatsapp';
+      if (!name) { res.status(400).json({ ok: false, error: 'Campaign name is required' }); return; }
+      if (channel === 'email') {
+        if (!emailService.isConfigured) { res.status(503).json({ ok: false, error: 'Email is not configured on this server.' }); return; }
+        if (!(b.emailSubject ?? '').trim() || !(b.emailHtml ?? '').trim()) { res.status(400).json({ ok: false, error: 'Email subject and body are required' }); return; }
+      }
+      const filter = normalizeFilter(b.filter);
+      const { data: camp } = await tenantDb(op.organizationId).from('campaigns').insert({
+        name, channel, status: 'sending', audience: filter,
+        template_key: channel === 'whatsapp' ? ((b.templateKey ?? '').trim() || env['REENGAGEMENT_TEMPLATE'] || 'hello_world') : null,
+        email_subject: channel === 'email' ? (b.emailSubject ?? '').trim() : null,
+        email_html: channel === 'email' ? (b.emailHtml ?? '') : null,
+        target_url: (b.targetUrl ?? '').trim() || null,
+        started_by: 'user:' + op.userId,
+      }).select('id, channel, template_key, email_subject, email_html, target_url, sent_at').maybeSingle();
+      const campaign = camp as CampaignRow | null;
+      if (!campaign) { res.status(500).json({ ok: false, error: 'Could not create campaign' }); return; }
+      await audit(op.organizationId, 'campaign.send', { actor: 'user:' + op.userId, resource: 'campaigns', resourceId: campaign.id, operation: 'insert', details: { channel, name } });
+      const work = (async () => {
+        try {
+          const audience = await resolveAudience(op.organizationId, filter, channel);
+          if (audience.length === 0) { await tenantDb(op.organizationId).from('campaigns').update({ status: 'sent', total: 0, completed_at: new Date().toISOString() }).eq('id', campaign.id); return; }
+          await runCampaign(op.organizationId, campaign, audience);
+        } catch (err) {
+          logger.error('Campaign run failed', { campaignId: campaign.id }, err instanceof Error ? err : new Error(String(err)));
+          try { await tenantDb(op.organizationId).from('campaigns').update({ status: 'failed' }).eq('id', campaign.id); } catch { /* ignore */ }
+        }
+      })();
+      try { waitUntil(work); } catch { void work; }
+      res.status(202).json({ ok: true, campaignId: campaign.id });
+    });
+
+    app.get('/api/campaigns', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data } = await tenantDb(op.organizationId).from('campaigns').select('id, name, channel, status, total, sent, failed, created_at, sent_at, completed_at').order('created_at', { ascending: false }).limit(50);
+      res.status(200).json({ ok: true, campaigns: data ?? [] });
+    });
+
+    // Campaign detail with REAL computed analytics (from recipient tracking).
+    app.get('/api/campaigns/:id', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data: camp } = await tenantDb(op.organizationId).from('campaigns').select('id, name, channel, status, total, sent, failed, target_url, created_at, sent_at, completed_at').eq('id', req.params.id).maybeSingle();
+      if (!camp) { res.status(404).json({ ok: false, error: 'Not found' }); return; }
+      const { data: rcpts } = await tenantDb(op.organizationId).from('campaign_recipients').select('status, delivered_at, opened_at, clicked_at, converted_at').eq('campaign_id', req.params.id).limit(5000);
+      res.status(200).json({ ok: true, campaign: camp, stats: computeStats(rcpts ?? []) });
+    });
+
+    // Marketing overview: aggregate metrics + top engaged contacts.
+    app.get('/api/marketing/overview', async (req, res) => {
+      const op = await authoriseOperator(req);
+      if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
+      const { data: rcpts } = await tenantDb(op.organizationId).from('campaign_recipients').select('contact_id, status, delivered_at, opened_at, clicked_at, converted_at, created_at').limit(5000);
+      const rows = (rcpts ?? []) as Array<{ contact_id?: string; status: string; delivered_at?: string | null; opened_at?: string | null; clicked_at?: string | null; converted_at?: string | null; created_at?: string }>;
+      const byC = new Map<string, { opens: number; clicks: number; conversions: number; last: number }>();
+      for (const r of rows) {
+        if (!r.contact_id) continue;
+        const e = byC.get(r.contact_id) ?? { opens: 0, clicks: 0, conversions: 0, last: 0 };
+        if (r.opened_at) e.opens++;
+        if (r.clicked_at) e.clicks++;
+        if (r.converted_at) e.conversions++;
+        const t = Date.parse(r.opened_at ?? r.clicked_at ?? r.created_at ?? '');
+        if (!Number.isNaN(t)) e.last = Math.max(e.last, t);
+        byC.set(r.contact_id, e);
+      }
+      const top = [...byC.entries()]
+        .map(([contactId, e]) => ({ contactId, score: engagementScore({ opens: e.opens, clicks: e.clicks, conversions: e.conversions, inboundMessages: 0, daysSinceLastActivity: e.last ? Math.floor((Date.now() - e.last) / 86_400_000) : null }) }))
+        .sort((a, b) => b.score - a.score).slice(0, 10);
+      const names = new Map<string, string>();
+      if (top.length) {
+        const { data: cs } = await tenantDb(op.organizationId).from('contacts').select('id, name').in('id', top.map((t) => t.contactId));
+        for (const c of (cs ?? []) as Array<{ id: string; name?: string }>) names.set(c.id, c.name ?? '');
+      }
+      res.status(200).json({ ok: true, stats: computeStats(rows), topContacts: top.map((t) => ({ ...t, name: names.get(t.contactId) ?? '' })) });
+    });
+
+    // Public tracked-link redirect → records the click, then 302s to the target.
+    app.get('/r/:token', async (req, res) => {
+      const p = verifyTrack(trackSecret, req.params.token);
+      if (!p) { res.status(400).send('Invalid or expired link'); return; }
+      const work = (async () => {
+        try {
+          const nowIso = new Date().toISOString();
+          const { data } = await db.from('campaign_recipients').select('click_count, opened_at').eq('id', p.r).maybeSingle();
+          const cur = data as { click_count?: number; opened_at?: string | null } | null;
+          await db.from('campaign_recipients').update({ clicked_at: nowIso, opened_at: cur?.opened_at ?? nowIso, click_count: (cur?.click_count ?? 0) + 1, updated_at: nowIso }).eq('id', p.r);
+        } catch { /* tracking is best-effort — never block the redirect */ }
+      })();
+      try { waitUntil(work); } catch { void work; }
+      res.redirect(302, p.u);
+    });
+
+    // Resend email events (delivered/opened/clicked) → recipient tracking.
+    app.post('/webhooks/resend', async (req, res) => {
+      // Verify the Svix signature when a secret is configured.
+      const secret = env['RESEND_WEBHOOK_SECRET'];
+      if (secret) {
+        const raw = (req as express.Request & { rawBody?: Buffer }).rawBody;
+        const svixId = req.headers['svix-id'] as string | undefined;
+        const svixTs = req.headers['svix-timestamp'] as string | undefined;
+        const svixSig = req.headers['svix-signature'] as string | undefined;
+        let ok = false;
+        if (raw && svixId && svixTs && svixSig) {
+          try {
+            const { createHmac: hmacFn } = await import('crypto');
+            const key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
+            const expected = hmacFn('sha256', key).update(`${svixId}.${svixTs}.${raw.toString('utf8')}`).digest('base64');
+            ok = svixSig.split(' ').some((part) => part.split(',')[1] === expected);
+          } catch { ok = false; }
+        }
+        if (!ok) { res.status(401).json({ error: 'Invalid signature' }); return; }
+      }
+      res.status(200).json({ received: true });
+      try {
+        const body = req.body as { type?: string; data?: { email_id?: string } };
+        const id = body.data?.email_id;
+        if (!id || !body.type) return;
+        const nowIso = new Date().toISOString();
+        if (body.type === 'email.opened') {
+          await db.from('campaign_recipients').update({ opened_at: nowIso, status: 'opened', updated_at: nowIso }).eq('provider_message_id', id).is('opened_at', null);
+        } else if (body.type === 'email.clicked') {
+          const { data } = await db.from('campaign_recipients').select('click_count, opened_at').eq('provider_message_id', id).maybeSingle();
+          const cur = data as { click_count?: number; opened_at?: string | null } | null;
+          await db.from('campaign_recipients').update({ clicked_at: nowIso, opened_at: cur?.opened_at ?? nowIso, click_count: (cur?.click_count ?? 0) + 1, updated_at: nowIso }).eq('provider_message_id', id);
+        } else if (body.type === 'email.delivered') {
+          await db.from('campaign_recipients').update({ delivered_at: nowIso, updated_at: nowIso }).eq('provider_message_id', id).in('status', ['sent', 'queued']);
+        } else if (body.type === 'email.bounced' || body.type === 'email.complained') {
+          await db.from('campaign_recipients').update({ status: 'failed', error: body.type, updated_at: nowIso }).eq('provider_message_id', id);
+        }
+      } catch (err) {
+        logger.warn('Resend webhook error', { error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     /** Platform billing — create a Stripe checkout session for a plan. */
     app.post('/api/billing/checkout', async (req, res) => {
       const operator = await authoriseOperator(req);
@@ -2328,6 +2628,7 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
     // A per-org reply adapter (from Embedded Signup) overrides the default when present.
     onInboundMessage: (orgId, msg, replyAdapter) => handleInbound(orgId, msg, replyAdapter ?? metaAdapter ?? adapter),
     resolveInbound,
+    onStatusEvents: applyStatusEvents,
     registerRoutes,
     backgroundTask: (work) => {
       try {

@@ -74,6 +74,14 @@ export interface SendResult {
   error?: string;
 }
 
+/** Delivery-status update for a previously-sent outbound message. */
+export interface StatusEvent {
+  providerMessageId: string;
+  status: 'sent' | 'delivered' | 'read' | 'failed';
+  recipientId?: string;
+  timestamp?: Date;
+}
+
 /**
  * WhatsApp adapter interface — abstracts provider-specific API calls.
  */
@@ -81,6 +89,9 @@ export interface WhatsAppAdapter {
   sendMessage(organizationId: string, message: OutboundMessage): Promise<SendResult>;
   verifyWebhook(token: string, challenge: string): string | null;
   parseInboundEvent(body: unknown): InboundMessage[];
+  /** Optional: parse delivery-status events (sent/delivered/read) from a
+   *  webhook body. Powers campaign read-rate analytics. */
+  parseStatusEvents?(body: unknown): StatusEvent[];
   /** Optional: send a voice note (audio). Only channels that support media
    *  upload implement this; callers must feature-detect it. */
   sendVoiceNote?(organizationId: string, params: { to: string; audioBase64: string; mimeType?: string; idempotencyKey?: string }): Promise<SendResult>;

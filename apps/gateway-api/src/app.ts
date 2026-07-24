@@ -23,6 +23,8 @@ export interface CreateAppDeps {
   onInboundMessage?: (orgId: string, message: InboundCallbackMessage, replyAdapter?: WhatsAppAdapter) => void | Promise<void>;
   /** Multi-tenant: resolve the owning org + reply adapter for an inbound message. */
   resolveInbound?: (message: InboundMessage) => Promise<{ organizationId: string; replyAdapter: WhatsAppAdapter } | null>;
+  /** Delivery-status events (sent/delivered/read) — powers campaign read-rate analytics. */
+  onStatusEvents?: (events: Array<{ providerMessageId: string; status: string; timestamp?: Date }>) => void | Promise<void>;
   /** Meta app secret — enables X-Hub-Signature-256 verification when set. */
   appSecret?: string;
   /** Allowed browser origins for /api/* routes (operator dashboard). */
@@ -114,6 +116,12 @@ export function createApp(deps: CreateAppDeps): express.Express {
     // Process asynchronously (kept alive via waitUntil on serverless)
     const processing = (async () => {
       try {
+        // Delivery-status events (sent/delivered/read) for outbound campaign
+        // messages — no idempotency gate, they're cheap upserts by message id.
+        if (deps.onStatusEvents && adapter.parseStatusEvents) {
+          const statuses = adapter.parseStatusEvents(req.body);
+          if (statuses.length > 0) await deps.onStatusEvents(statuses);
+        }
         const messages = adapter.parseInboundEvent(req.body);
         for (const msg of messages) {
           // Idempotency check (durable in production)

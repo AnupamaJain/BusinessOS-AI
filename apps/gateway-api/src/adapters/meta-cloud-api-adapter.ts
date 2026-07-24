@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { WhatsAppAdapter, InboundMessage, OutboundMessage, SendResult } from './types';
+import type { WhatsAppAdapter, InboundMessage, OutboundMessage, SendResult, StatusEvent } from './types';
 import { logger } from '@business-os-ai/shared-types';
 
 /**
@@ -40,7 +40,12 @@ const MetaWebhookBodySchema = z.object({
           profile: z.object({ name: z.string().optional() }).optional(),
         })).optional(),
         messages: z.array(MetaInboundMessageSchema).optional(),
-        statuses: z.array(z.unknown()).optional(),
+        statuses: z.array(z.object({
+          id: z.string(),
+          status: z.string(),
+          recipient_id: z.string().optional(),
+          timestamp: z.string().optional(),
+        })).optional(),
       }),
       field: z.string(),
     })),
@@ -137,6 +142,27 @@ export class MetaCloudApiAdapter implements WhatsAppAdapter {
       }
     }
     return messages;
+  }
+
+  /** Delivery-status events (sent → delivered → read) for outbound messages. */
+  parseStatusEvents(body: unknown): StatusEvent[] {
+    const parsed = MetaWebhookBodySchema.safeParse(body);
+    if (!parsed.success) return [];
+    const events: StatusEvent[] = [];
+    for (const entry of parsed.data.entry) {
+      for (const change of entry.changes) {
+        for (const s of change.value.statuses ?? []) {
+          if (s.status !== 'sent' && s.status !== 'delivered' && s.status !== 'read' && s.status !== 'failed') continue;
+          events.push({
+            providerMessageId: s.id,
+            status: s.status,
+            recipientId: s.recipient_id,
+            timestamp: s.timestamp ? new Date(parseInt(s.timestamp, 10) * 1000) : undefined,
+          });
+        }
+      }
+    }
+    return events;
   }
 
   async sendMessage(organizationId: string, message: OutboundMessage): Promise<SendResult> {

@@ -305,3 +305,44 @@ export interface BroadcastRow {
   created_at: string;
   completed_at: string | null;
 }
+
+/* ─── Data-driven marketing (campaigns + analytics) ────────────────── */
+
+export interface SegmentFilter {
+  stages?: string[];
+  minScore?: number;
+  serviceInterest?: string;
+  recencyDays?: number;
+  requireEmail?: boolean;
+}
+
+export interface CampaignRow {
+  id: string;
+  name: string;
+  channel: 'whatsapp' | 'email';
+  status: string;
+  total: number;
+  sent: number;
+  failed: number;
+  created_at: string;
+  sent_at: string | null;
+  completed_at: string | null;
+}
+
+export interface CampaignStats {
+  total: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  converted: number;
+  deliveryRate: number;
+  openRate: number;
+  ctr: number;
+  conversionRate: number;
+}
+
+export interface MarketingOverview {
+  stats: CampaignStats;
+  topContacts: Array<{ contactId: string; name: string; score: number }>;
+}

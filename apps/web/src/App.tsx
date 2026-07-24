@@ -87,6 +87,10 @@ import {
   broadcastFromSheet,
   fetchBroadcasts,
   exportAnalyticsToSheet,
+  previewSegment,
+  createCampaign,
+  fetchCampaigns,
+  fetchMarketingOverview,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
 import { decodeUpiQrFromFile } from './lib/qr';
@@ -107,6 +111,7 @@ import type {
   MessageRow,
   TemplateCategory,
   TimelineEvent,
+  SegmentFilter,
 } from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
@@ -119,6 +124,7 @@ type TabKey =
   | 'compliance'
   | 'kb'
   | 'analytics'
+  | 'marketing'
   | 'ai-settings'
   | 'integrations'
   | 'admin';
@@ -755,6 +761,20 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [broadcastTemplate, setBroadcastTemplate] = useState('');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  // Marketing / campaigns
+  const [campName, setCampName] = useState('');
+  const [campChannel, setCampChannel] = useState<'whatsapp' | 'email'>('whatsapp');
+  const [campTemplate, setCampTemplate] = useState('');
+  const [campSubject, setCampSubject] = useState('');
+  const [campHtml, setCampHtml] = useState('');
+  const [campTargetUrl, setCampTargetUrl] = useState('');
+  const [segStages, setSegStages] = useState<string[]>([]);
+  const [segMinScore, setSegMinScore] = useState('');
+  const [segInterest, setSegInterest] = useState('');
+  const [segRecency, setSegRecency] = useState('');
+  const [segPreview, setSegPreview] = useState<{ count: number; sample: string[] } | null>(null);
+  const [campBusy, setCampBusy] = useState(false);
+  const [campNotice, setCampNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   function toggleAgent(id: string): void {
     setAiConfigNotice(null);
@@ -1423,6 +1443,53 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     setSheetsNotice({ kind: 'success', text: `Exported ${res.exported ?? 0} rows to the “${res.tab ?? 'Reports'}” tab.` });
   }
 
+  function currentSegmentFilter(): SegmentFilter {
+    const f: SegmentFilter = {};
+    if (segStages.length) f.stages = segStages;
+    const ms = parseInt(segMinScore, 10);
+    if (!Number.isNaN(ms) && ms > 0) f.minScore = ms;
+    if (segInterest.trim()) f.serviceInterest = segInterest.trim();
+    const rd = parseInt(segRecency, 10);
+    if (!Number.isNaN(rd) && rd > 0) f.recencyDays = rd;
+    if (campChannel === 'email') f.requireEmail = true;
+    return f;
+  }
+
+  function toggleSegStage(stage: string): void {
+    setSegPreview(null);
+    setSegStages((prev) => (prev.includes(stage) ? prev.filter((s) => s !== stage) : [...prev, stage]));
+  }
+
+  async function handlePreviewSegment(): Promise<void> {
+    const res = await previewSegment(session.access_token, currentSegmentFilter(), campChannel);
+    setSegPreview(res);
+  }
+
+  async function handleCreateCampaign(): Promise<void> {
+    if (!campName.trim()) { setCampNotice({ kind: 'error', text: 'Name your campaign first.' }); return; }
+    if (campChannel === 'email' && (!campSubject.trim() || !campHtml.trim())) {
+      setCampNotice({ kind: 'error', text: 'Email needs a subject and body.' });
+      return;
+    }
+    setCampBusy(true);
+    setCampNotice(null);
+    const res = await createCampaign(session.access_token, {
+      name: campName.trim(),
+      channel: campChannel,
+      filter: currentSegmentFilter(),
+      templateKey: campChannel === 'whatsapp' ? campTemplate.trim() || undefined : undefined,
+      emailSubject: campChannel === 'email' ? campSubject.trim() : undefined,
+      emailHtml: campChannel === 'email' ? campHtml : undefined,
+      targetUrl: campTargetUrl.trim() || undefined,
+    });
+    setCampBusy(false);
+    if (!res.ok) { setCampNotice({ kind: 'error', text: res.error ?? 'Could not start the campaign.' }); return; }
+    setCampName(''); setCampTemplate(''); setCampSubject(''); setCampHtml(''); setCampTargetUrl('');
+    setSegPreview(null);
+    setCampNotice({ kind: 'success', text: 'Campaign is sending — metrics will populate below as it lands.' });
+    setTimeout(() => { void campaignsQuery.refetch(); void marketingQuery.refetch(); }, 1500);
+  }
+
   /* Live data (10s polling while the relevant view is active) */
   const orgQuery = usePolling(fetchOrganization, [session.user.id], 60_000, true);
   const kpisQuery = usePolling(fetchDashboardKpis, [], 15_000, inDashboard);
@@ -1478,6 +1545,19 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     [],
     15_000,
     integrationsActive
+  );
+  const marketingActive = inDashboard && activeTab === 'marketing';
+  const campaignsQuery = usePolling(
+    () => fetchCampaigns(session.access_token),
+    [],
+    15_000,
+    marketingActive
+  );
+  const marketingQuery = usePolling(
+    () => fetchMarketingOverview(session.access_token),
+    [],
+    20_000,
+    marketingActive
   );
 
   const org = orgQuery.data;
@@ -3325,6 +3405,14 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
           </div>
 
           <div
+            className={`nav-item ${activeTab === 'marketing' ? 'active' : ''}`}
+            onClick={() => setActiveTab('marketing')}
+          >
+            <Megaphone className="nav-icon" />
+            <span>Marketing</span>
+          </div>
+
+          <div
             className={`nav-item ${activeTab === 'integrations' ? 'active' : ''}`}
             onClick={() => setActiveTab('integrations')}
           >
@@ -3380,6 +3468,7 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
             {activeTab === 'analytics' && 'Activity Analytics & Lead Funnel'}
             {activeTab === 'kb' && 'RAG Knowledge Directory'}
             {activeTab === 'ai-settings' && 'AI Team, Business Rules & Live Test'}
+            {activeTab === 'marketing' && 'Marketing — Campaigns & Analytics'}
             {activeTab === 'integrations' && 'Integrations — Connect Your Own Tools'}
             {activeTab === 'admin' && 'Platform Admin — Merchant Management'}
           </h1>
@@ -4946,6 +5035,193 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
                 the rules above.
               </p>
               {renderTestChat("Try: 'What are your charges for a Delhi to Jaipur cab?'")}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Tab View: Marketing (campaigns + analytics) ─────────── */}
+        {activeTab === 'marketing' && (
+          <div className="report-workspace" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '20px' }}>
+            {/* Analytics overview */}
+            {(() => {
+              const s = marketingQuery.data?.stats;
+              const top = marketingQuery.data?.topContacts ?? [];
+              const metrics: Array<{ label: string; value: string; sub: string }> = [
+                { label: 'Open rate', value: `${s?.openRate ?? 0}%`, sub: `${s?.opened ?? 0} opened / read` },
+                { label: 'Click-through', value: `${s?.ctr ?? 0}%`, sub: `${s?.clicked ?? 0} clicked` },
+                { label: 'Conversion', value: `${s?.conversionRate ?? 0}%`, sub: `${s?.converted ?? 0} became leads` },
+                { label: 'Delivered', value: `${s?.delivered ?? 0}`, sub: `of ${s?.sent ?? 0} sent` },
+              ];
+              return (
+                <div className="report-card" style={{ width: '100%' }}>
+                  <div className="report-card-title" style={{ marginBottom: '4px' }}>
+                    <BarChart3 size={20} style={{ color: 'var(--color-primary)' }} />
+                    Performance
+                  </div>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+                    Real metrics across all campaigns — read receipts, tracked-link clicks and lead conversions.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
+                    {metrics.map((m) => (
+                      <div key={m.label} style={{ padding: '16px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--border-muted)' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{m.label}</div>
+                        <div style={{ fontSize: '28px', fontWeight: 700, color: 'var(--text-main)', margin: '4px 0', fontVariantNumeric: 'tabular-nums' }}>{m.value}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{m.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {top.length > 0 && (
+                    <div style={{ marginTop: '18px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px' }}>Most engaged customers</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {top.slice(0, 8).map((c) => (
+                          <div key={c.contactId} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', padding: '6px 12px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '999px', border: '1px solid var(--border-muted)' }}>
+                            <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{c.name || 'Customer'}</span>
+                            <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>{c.score}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* New campaign */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title" style={{ marginBottom: '4px' }}>
+                <Megaphone size={20} style={{ color: 'var(--color-primary)' }} />
+                New campaign
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 18px' }}>
+                Target a segment of your customers and send on WhatsApp or Email. Every send is tracked.
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '620px' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Campaign name <span style={{ color: 'var(--color-danger)' }}>*</span></span>
+                  <input className="chat-input" placeholder="e.g. Diwali offer — hot leads" value={campName} onChange={(e) => setCampName(e.target.value)} />
+                </label>
+
+                {/* Channel */}
+                <div>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Channel</span>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+                    {(['whatsapp', 'email'] as const).map((ch) => (
+                      <button
+                        key={ch}
+                        className={`btn ${campChannel === ch ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ textTransform: 'capitalize' }}
+                        onClick={() => { setCampChannel(ch); setSegPreview(null); }}
+                      >
+                        {ch === 'whatsapp' ? <MessageSquare size={14} /> : <Send size={14} />} {ch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Segment builder */}
+                <div style={{ padding: '16px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--border-muted)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '13px', color: 'var(--text-main)', marginBottom: '10px' }}>
+                    <UserCheck size={16} style={{ color: 'var(--color-primary)' }} /> Audience segment
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>Lead stage</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+                    {['new', 'contacted', 'qualified', 'converted'].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => toggleSegStage(st)}
+                        className={`btn ${segStages.includes(st) ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ padding: '4px 12px', fontSize: '12px', textTransform: 'capitalize' }}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Min lead score</span>
+                      <input className="chat-input" type="number" placeholder="e.g. 50" value={segMinScore} onChange={(e) => { setSegMinScore(e.target.value); setSegPreview(null); }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Interested in</span>
+                      <input className="chat-input" placeholder="e.g. spa" value={segInterest} onChange={(e) => { setSegInterest(e.target.value); setSegPreview(null); }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Active within (days)</span>
+                      <input className="chat-input" type="number" placeholder="e.g. 30" value={segRecency} onChange={(e) => { setSegRecency(e.target.value); setSegPreview(null); }} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px', flexWrap: 'wrap' }}>
+                    <button className="btn btn-secondary" style={{ padding: '6px 14px', fontSize: '12px' }} onClick={() => { void handlePreviewSegment(); }}>
+                      <Search size={14} /> Preview audience
+                    </button>
+                    {segPreview && (
+                      <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>
+                        <strong>{segPreview.count}</strong> reachable {campChannel === 'email' ? 'emails' : 'numbers'}
+                        {segPreview.sample.length > 0 && <span style={{ color: 'var(--text-muted)' }}> — {segPreview.sample.slice(0, 3).join(', ')}…</span>}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Channel-specific content */}
+                {campChannel === 'whatsapp' ? (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Approved template name</span>
+                    <input className="chat-input" placeholder="hello_world (or your approved template)" value={campTemplate} onChange={(e) => setCampTemplate(e.target.value)} />
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>WhatsApp requires an approved template for business-initiated messages.</span>
+                  </label>
+                ) : (
+                  <>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Subject <span style={{ color: 'var(--color-danger)' }}>*</span></span>
+                      <input className="chat-input" placeholder="A little something for you, {{name}}" value={campSubject} onChange={(e) => setCampSubject(e.target.value)} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Body (HTML) <span style={{ color: 'var(--color-danger)' }}>*</span></span>
+                      <textarea className="chat-input" style={{ minHeight: '120px', fontFamily: 'inherit', resize: 'vertical' }} placeholder={'<p>Hi {{name}}, we saved you a spot…</p>\n<a href="{{url}}">Book now</a>'} value={campHtml} onChange={(e) => setCampHtml(e.target.value)} />
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Use <code>{'{{name}}'}</code> and <code>{'{{url}}'}</code>. Links are auto-tracked for click-through.</span>
+                    </label>
+                  </>
+                )}
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)' }}>Call-to-action link <span style={{ color: 'var(--text-muted)' }}>(optional)</span></span>
+                  <input className="chat-input" placeholder="https://your-site.com/book — tracked for CTR" value={campTargetUrl} onChange={(e) => setCampTargetUrl(e.target.value)} />
+                </label>
+
+                <div>
+                  <button className="btn btn-primary" disabled={campBusy} style={{ opacity: campBusy ? 0.6 : 1, cursor: campBusy ? 'not-allowed' : 'pointer' }} onClick={() => { void handleCreateCampaign(); }}>
+                    <Send size={14} /> {campBusy ? 'Launching…' : 'Launch campaign'}
+                  </button>
+                </div>
+                {campNotice && (
+                  <div style={{ fontSize: '12px', color: campNotice.kind === 'error' ? 'var(--color-danger)' : 'var(--color-success)' }}>{campNotice.text}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Campaign history */}
+            <div className="report-card" style={{ width: '100%' }}>
+              <div className="report-card-title" style={{ marginBottom: '12px' }}>
+                <Clock size={20} style={{ color: 'var(--color-primary)' }} />
+                Campaigns
+              </div>
+              {(campaignsQuery.data ?? []).length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No campaigns yet — launch your first above.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {(campaignsQuery.data ?? []).map((c) => (
+                    <div key={c.id} style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-muted)' }}>
+                      <span style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '14px' }}>{c.name}</span>
+                      <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>{c.channel}</span>
+                      <span style={{ fontSize: '12px', color: c.status === 'failed' ? 'var(--color-danger)' : c.status === 'sending' ? 'var(--text-muted)' : 'var(--color-success)' }}>
+                        {c.status === 'sending' ? '⏳ sending' : c.status === 'failed' ? '⚠ failed' : `✅ ${c.sent}/${c.total} sent`}
+                      </span>
+                      <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-muted)' }}>{new Date(c.created_at).toLocaleString('en-IN')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

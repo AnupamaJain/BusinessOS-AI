@@ -12,6 +12,10 @@ import type {
   IntegrationProvider,
   IntegrationsState,
   BroadcastRow,
+  SegmentFilter,
+  CampaignRow,
+  CampaignStats,
+  MarketingOverview,
   MerchantStatus,
   ContactNote,
   ContactRow,
@@ -1399,6 +1403,91 @@ export async function exportAnalyticsToSheet(
     return { ok: true, exported: body.exported, tab: body.tab };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/* ─── Data-driven marketing ─────────────────────────────────────── */
+
+const GW = () => import.meta.env.VITE_GATEWAY_URL;
+const authHeaders = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+export async function previewSegment(
+  token: string,
+  filter: SegmentFilter,
+  channel: 'whatsapp' | 'email'
+): Promise<{ count: number; sample: string[] }> {
+  try {
+    const res = await fetch(`${GW()}/api/segments/preview`, {
+      method: 'POST',
+      headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filter, channel }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { count?: number; sample?: string[] };
+    return { count: body.count ?? 0, sample: body.sample ?? [] };
+  } catch {
+    return { count: 0, sample: [] };
+  }
+}
+
+export async function createCampaign(
+  token: string,
+  input: {
+    name: string;
+    channel: 'whatsapp' | 'email';
+    filter: SegmentFilter;
+    templateKey?: string;
+    emailSubject?: string;
+    emailHtml?: string;
+    targetUrl?: string;
+  }
+): Promise<{ ok: boolean; campaignId?: string; error?: string }> {
+  try {
+    const res = await fetch(`${GW()}/api/campaigns`, {
+      method: 'POST',
+      headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; campaignId?: string; error?: string };
+    if (!res.ok || body.ok === false) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, campaignId: body.campaignId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+export async function fetchCampaigns(token: string): Promise<CampaignRow[]> {
+  try {
+    const res = await fetch(`${GW()}/api/campaigns`, { headers: authHeaders(token) });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; campaigns?: CampaignRow[] };
+    if (!res.ok || body.ok === false) return [];
+    return body.campaigns ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchCampaignDetail(
+  token: string,
+  id: string
+): Promise<{ campaign: CampaignRow; stats: CampaignStats } | null> {
+  try {
+    const res = await fetch(`${GW()}/api/campaigns/${id}`, { headers: authHeaders(token) });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; campaign?: CampaignRow; stats?: CampaignStats };
+    if (!res.ok || body.ok === false || !body.campaign || !body.stats) return null;
+    return { campaign: body.campaign, stats: body.stats };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchMarketingOverview(token: string): Promise<MarketingOverview | null> {
+  try {
+    const res = await fetch(`${GW()}/api/marketing/overview`, { headers: authHeaders(token) });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean } & Partial<MarketingOverview>;
+    if (!res.ok || body.ok === false || !body.stats) return null;
+    return { stats: body.stats, topContacts: body.topContacts ?? [] };
+  } catch {
+    return null;
   }
 }
 
