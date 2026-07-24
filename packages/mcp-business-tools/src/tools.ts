@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { logger, TenantAccessError, ConsentRequiredError } from '@business-os-ai/shared-types';
 import { assertTenantMatch } from '@business-os-ai/database';
+import { createMediaServiceFromEnv } from '@business-os-ai/integrations';
 import type {
   GetCustomerContextInput, GetCustomerContextOutput,
   UpsertQualifiedLeadInput, CreateHumanHandoffInput,
@@ -702,33 +703,50 @@ export async function createServiceBooking(store: BusinessStore, input: CreateSe
 export async function generatePromoMedia(store: BusinessStore, input: GeneratePromoMediaInput): Promise<GeneratePromoMediaOutput> {
   const duration = input.durationSec ?? 15;
   const style = input.style ?? 'travel_reel';
-  const sampleMediaId = Math.floor(100000 + Math.random() * 900000);
+  const media = createMediaServiceFromEnv();
 
-  const mediaUrl = input.campaignType === 'voice_narration'
-    ? `https://cdn.saarthione.ai/audio/narration_${sampleMediaId}.mp3`
-    : `https://cdn.saarthione.ai/media/promos/${style}_${sampleMediaId}.mp4`;
+  if (input.campaignType === 'voice_narration') {
+    const narration = await media.generateVoiceNarration(input.topic);
+    await store.insertAuditEvent({
+      id: randomUUID(), organizationId: input.organizationId, action: 'promo_media_generated',
+      entityType: 'campaign_media', entityId: `narration-${randomUUID()}`, actorType: 'agent',
+      details: { campaignType: input.campaignType, topic: input.topic, provider: narration.provider }, createdAt: new Date().toISOString(),
+    });
+    return {
+      success: !narration.skipped,
+      // base64 audio isn't a URL; callers send it as a voice note.
+      mediaUrl: narration.audioBase64 ? `data:${narration.mimeType};base64,${narration.audioBase64}` : '',
+      mediaType: 'audio', durationSec: narration.durationSec, caption: input.topic,
+      providerUsed: narration.provider,
+      renderStatus: narration.skipped ? 'unconfigured' : 'done',
+      note: narration.skipped ? 'Set GOOGLE_CLOUD_TTS_API_KEY to generate real narration audio.' : undefined,
+    };
+  }
 
-  const mediaType = input.campaignType === 'voice_narration' ? 'audio' : 'video';
-  const caption = `🎬 SaarthiOne OpenMontage AI (${style}): "${input.topic}"`;
-
-  await store.insertAuditEvent({
-    id: randomUUID(),
-    organizationId: input.organizationId,
-    action: 'promo_media_generated',
-    entityType: 'campaign_media',
-    entityId: `media-${sampleMediaId}`,
-    actorType: 'agent',
-    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration },
-    createdAt: new Date().toISOString(),
-  });
-
-  return {
-    success: true,
-    mediaUrl,
-    mediaType,
+  const teaser = await media.generateVideoTeaser({
+    topic: input.topic,
+    style: style as 'cinematic' | 'anime' | 'documentary' | 'product_ad' | 'travel_reel',
     durationSec: duration,
-    caption,
-    providerUsed: 'openmontage_zero_cost_engine',
+    aspectRatio: input.targetChannel === 'instagram' ? '1:1' : '9:16',
+  });
+  await store.insertAuditEvent({
+    id: randomUUID(), organizationId: input.organizationId, action: 'promo_media_generated',
+    entityType: 'campaign_media', entityId: `media-${randomUUID()}`, actorType: 'agent',
+    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration, renderStatus: teaser.renderStatus, provider: teaser.providerUsed }, createdAt: new Date().toISOString(),
+  });
+  return {
+    success: teaser.success,
+    mediaUrl: teaser.mediaUrl,
+    mediaType: 'video',
+    durationSec: teaser.durationSec,
+    caption: teaser.caption,
+    providerUsed: teaser.providerUsed,
+    renderStatus: teaser.renderStatus,
+    note: teaser.renderStatus === 'unconfigured'
+      ? 'Set PEXELS_API_KEY / PIXABAY_API_KEY (footage) + SHOTSTACK_API_KEY (render) to produce a real reel.'
+      : teaser.renderStatus === 'assets_ready'
+        ? 'Real footage + narration ready; add SHOTSTACK_API_KEY to auto-render a single MP4.'
+        : undefined,
   };
 }
 

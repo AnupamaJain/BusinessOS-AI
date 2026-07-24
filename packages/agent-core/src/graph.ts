@@ -733,7 +733,17 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
     });
     state.toolCalls.push({ tool: 'upsert_qualified_lead', input: { serviceInterest: state.inboundMessage }, output: leadResult });
   } else {
-    state.proposedResponse = "I'd love to help you find the right product! Could you tell me a bit more about your skin type and what you're looking for? Our team can also give personalized recommendations.";
+    // No catalog match. Compose a helpful, on-brand reply via the LLM (its
+    // persona/tone already describes the business), so non-skincare tenants
+    // don't get skincare copy. Fall back to a vertical-neutral line.
+    const llmReply = hasRealLLM(deps)
+      ? await composeReplyWithLLM(deps.llm!, state, deps,
+          'The customer has a buying/enquiry intent but no exact catalog item matched. Warmly help them: acknowledge their need, ask one focused clarifying question (e.g. their goal, budget or timeline), and mention you can suggest suitable options or connect them with the team. Stay in the business\'s domain and follow all business rules.',
+          {})
+      : null;
+    const business = deps.businessName ?? 'our team';
+    state.proposedResponse = llmReply ??
+      `Thanks for reaching out to ${business}! Tell me a little more about what you're looking for — your goal, budget or timeline — and I'll point you to the right option, or connect you with our team.`;
   }
   return state;
 }

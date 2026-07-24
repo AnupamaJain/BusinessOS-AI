@@ -55924,6 +55924,1272 @@ function assertTenantMatch(resourceOrgId, expectedOrgId) {
 
 // ../../packages/mcp-business-tools/src/tools.ts
 var import_crypto4 = require("crypto");
+
+// ../../packages/integrations/src/email.ts
+var RESEND_ENDPOINT = "https://api.resend.com/emails";
+var DEFAULT_FROM_NAME = "SaarthiOne";
+function escapeHtml(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+var EmailService = class {
+  apiKey;
+  fromEmail;
+  fromName;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.fromEmail = config.fromEmail;
+    this.fromName = config.fromName ?? DEFAULT_FROM_NAME;
+  }
+  /** True when an API key is present and email can actually be sent. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async send(params) {
+    if (!this.apiKey) {
+      return {
+        sent: false,
+        skipped: true,
+        error: "RESEND_API_KEY not configured"
+      };
+    }
+    const from = `${this.fromName} <${this.fromEmail}>`;
+    const body = {
+      from,
+      to: [params.to],
+      subject: params.subject,
+      html: params.html
+    };
+    if (params.replyTo) {
+      body.reply_to = params.replyTo;
+    }
+    let response;
+    try {
+      response = await fetch(RESEND_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { sent: false, error: err.message };
+    }
+    if (response.status === 200 || response.status === 201) {
+      try {
+        const data = await response.json();
+        return { sent: true, id: data.id };
+      } catch {
+        return { sent: true };
+      }
+    }
+    let error = `Resend responded with status ${response.status}`;
+    try {
+      const text = await response.text();
+      if (text) error = text;
+    } catch {
+    }
+    return { sent: false, error };
+  }
+};
+function createEmailServiceFromEnv(env = process.env) {
+  return new EmailService({
+    apiKey: env.RESEND_API_KEY,
+    fromEmail: env.EMAIL_FROM ?? "onboarding@resend.dev",
+    fromName: env.EMAIL_FROM_NAME ?? DEFAULT_FROM_NAME
+  });
+}
+var NAVY = "#0B1220";
+var CYAN = "#00F2FE";
+var INK = "#1a2233";
+var MUTED = "#5b6472";
+var BORDER = "#e5e8ee";
+var BG = "#f4f6fa";
+function shell(businessName, heading, inner) {
+  const safeBusiness = escapeHtml(businessName);
+  const safeHeading = escapeHtml(heading);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="x-apple-disable-message-reformatting" />
+<title>${safeHeading}</title>
+</head>
+<body style="margin:0;padding:0;background:${BG};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BG};padding:24px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid ${BORDER};font-family:Arial,Helvetica,sans-serif;">
+<tr>
+<td style="background:${NAVY};padding:28px 32px;border-bottom:4px solid ${CYAN};">
+<div style="color:${CYAN};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;">${safeBusiness}</div>
+<div style="color:#ffffff;font-size:22px;font-weight:bold;margin-top:6px;">${safeHeading}</div>
+</td>
+</tr>
+<tr>
+<td style="padding:32px;color:${INK};font-size:15px;line-height:1.6;">
+${inner}
+</td>
+</tr>
+<tr>
+<td style="padding:20px 32px;background:#fafbfd;border-top:1px solid ${BORDER};color:${MUTED};font-size:12px;line-height:1.5;">
+Sent by ${safeBusiness} via SaarthiOne. Please do not reply directly to this automated message.
+</td>
+</tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+function greeting(customerName) {
+  return `<p style="margin:0 0 16px;">Hi ${escapeHtml(customerName)},</p>`;
+}
+function refRow(label, value) {
+  return `<tr>
+<td style="padding:8px 0;color:${MUTED};font-size:13px;">${escapeHtml(label)}</td>
+<td style="padding:8px 0;color:${INK};font-size:14px;font-weight:bold;text-align:right;">${escapeHtml(value)}</td>
+</tr>`;
+}
+function ctaButton(url, label) {
+  const safeUrl = escapeHtml(url);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0;">
+<tr><td style="border-radius:8px;background:${NAVY};">
+<a href="${safeUrl}" style="display:inline-block;padding:12px 28px;color:${CYAN};font-size:15px;font-weight:bold;text-decoration:none;border-radius:8px;border:1px solid ${CYAN};">${escapeHtml(label)}</a>
+</td></tr>
+</table>`;
+}
+function buildQuotationEmail(params) {
+  const { businessName, customerName, quotationNumber, viewUrl, amountText } = params;
+  const rows = [refRow("Quotation number", quotationNumber)];
+  if (amountText) rows.push(refRow("Total", amountText));
+  const inner = `${greeting(customerName)}
+<p style="margin:0 0 20px;">Thank you for your interest. Please find your quotation below.</p>
+<div style="background:${BG};border:1px solid ${BORDER};border-radius:10px;padding:16px 20px;margin:0 0 20px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows.join("")}</table>
+</div>
+${ctaButton(viewUrl, "View Quotation")}
+<p style="margin:16px 0 0;color:${MUTED};">This quotation is valid subject to the terms shared. Let us know if you would like to proceed.</p>`;
+  return {
+    subject: `Your quotation ${quotationNumber} from ${businessName}`,
+    html: shell(businessName, "Your Quotation", inner)
+  };
+}
+
+// ../../packages/integrations/src/ocr.ts
+var DEFAULT_MODEL = "gemini-2.0-flash";
+var GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+function buildPrompt(fields, documentHint) {
+  const docType = documentHint ? `a ${documentHint}` : "the attached document";
+  const fieldList = fields.map((f) => `"${f}"`).join(", ");
+  return [
+    `You are a precise document data extraction engine.`,
+    `The attached image is ${docType}.`,
+    `Extract EXACTLY these fields: ${fieldList}.`,
+    `Return a single flat JSON object whose keys are exactly those field names.`,
+    `Use the value found in the document as a string.`,
+    `If a field is not present or not legible, set its value to null.`,
+    `Do not add extra keys, commentary, or markdown fences \u2014 output only the JSON object.`
+  ].join(" ");
+}
+function parseModelJson(text) {
+  const trimmed = text.trim();
+  const candidates = [trimmed];
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence && fence[1]) candidates.push(fence[1].trim());
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    candidates.push(trimmed.slice(first, last + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+var OcrService = class {
+  apiKey;
+  model;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? DEFAULT_MODEL;
+  }
+  /** True when an API key is present and extraction can actually run. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async extract(params) {
+    if (!this.apiKey) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "GOOGLE_API_KEY not configured"
+      };
+    }
+    let base64 = params.imageBase64;
+    let mimeType = params.mimeType ?? "image/jpeg";
+    if (params.imageUrl) {
+      try {
+        const imgRes = await fetch(params.imageUrl);
+        if (!imgRes.ok) {
+          return {
+            ok: false,
+            error: `Failed to fetch image (status ${imgRes.status})`
+          };
+        }
+        const contentType = imgRes.headers.get("content-type");
+        if (contentType) mimeType = contentType.split(";")[0].trim();
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        base64 = buffer.toString("base64");
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    if (!base64) {
+      return { ok: false, error: "No image provided (imageBase64 or imageUrl required)" };
+    }
+    const url = `${GEMINI_BASE}/${this.model}:generateContent?key=${this.apiKey}`;
+    const body = {
+      contents: [
+        {
+          parts: [
+            { text: buildPrompt(params.fields, params.documentHint) },
+            { inline_data: { mime_type: mimeType, data: base64 } }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0,
+        response_mime_type: "application/json"
+      }
+    };
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Gemini responded with status ${response.status}`;
+      try {
+        const text2 = await response.text();
+        if (text2) error = text2;
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const text = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    const data = parseModelJson(text);
+    if (data) {
+      return { ok: true, data };
+    }
+    return { ok: true, raw: text };
+  }
+  extractPassport(image) {
+    return this.extract({
+      ...image,
+      documentHint: "passport",
+      fields: [
+        "full_name",
+        "passport_number",
+        "nationality",
+        "date_of_birth",
+        "expiry_date"
+      ]
+    });
+  }
+  extractIdCard(image) {
+    return this.extract({
+      ...image,
+      documentHint: "ID card",
+      fields: ["full_name", "id_number", "date_of_birth"]
+    });
+  }
+  extractPaymentReceipt(image) {
+    return this.extract({
+      ...image,
+      documentHint: "Indian UPI / payment-app screenshot (GPay, PhonePe, Paytm, BHIM, or bank UPI)",
+      fields: [
+        "amount",
+        "reference",
+        "date",
+        "upi_id",
+        "status",
+        "payer_name"
+      ]
+    });
+  }
+};
+function createOcrServiceFromEnv(env = process.env) {
+  return new OcrService({
+    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY
+  });
+}
+
+// ../../packages/integrations/src/transcription.ts
+var DEFAULT_MODEL2 = "gemini-2.0-flash";
+var GEMINI_BASE2 = "https://generativelanguage.googleapis.com/v1beta/models";
+var TRANSCRIBE_PROMPT = "Transcribe this audio to plain text. Return ONLY the spoken words, verbatim, with no commentary, labels, or quotes. If the audio is silent or unintelligible, return an empty string.";
+function cleanMimeType(mimeType) {
+  const bare = (mimeType ?? "audio/ogg").split(";")[0].trim();
+  return bare || "audio/ogg";
+}
+function stripWrappingQuotes(text) {
+  let out = text.trim();
+  const pairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"]
+  ];
+  const fence = out.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/);
+  if (fence && fence[1] !== void 0) out = fence[1].trim();
+  for (const [open, close] of pairs) {
+    if (out.length >= 2 && out.startsWith(open) && out.endsWith(close)) {
+      out = out.slice(open.length, out.length - close.length).trim();
+      break;
+    }
+  }
+  return out;
+}
+var GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+var DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo";
+function mimeToExt(mime) {
+  if (mime.includes("ogg") || mime.includes("opus")) return "ogg";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("wav")) return "wav";
+  if (mime.includes("m4a") || mime.includes("mp4") || mime.includes("aac")) return "m4a";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("flac")) return "flac";
+  return "ogg";
+}
+var TranscriptionService = class {
+  apiKey;
+  model;
+  groqApiKey;
+  groqModel;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? DEFAULT_MODEL2;
+    this.groqApiKey = config.groqApiKey;
+    this.groqModel = config.groqModel ?? DEFAULT_GROQ_MODEL;
+  }
+  /** True when any transcription provider is configured. */
+  get isConfigured() {
+    return Boolean(this.groqApiKey || this.apiKey);
+  }
+  async transcribe(audio) {
+    if (!this.groqApiKey && !this.apiKey) {
+      return { ok: false, skipped: true, error: "No transcription key configured (GROQ_API_KEY or GOOGLE_API_KEY)" };
+    }
+    if (!audio.audioBase64) {
+      return { ok: false, error: "No audio provided (audioBase64 required)" };
+    }
+    const mimeType = cleanMimeType(audio.mimeType);
+    if (this.groqApiKey) {
+      const g = await this.transcribeGroq(audio.audioBase64, mimeType);
+      if (g.ok || !this.apiKey) return g;
+    }
+    return this.transcribeGemini(audio.audioBase64, mimeType);
+  }
+  async transcribeGroq(audioBase64, mimeType) {
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), `audio.${mimeToExt(mimeType)}`);
+      form.append("model", this.groqModel);
+      form.append("response_format", "text");
+      const res = await fetch(GROQ_TRANSCRIBE_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.groqApiKey}` },
+        body: form
+      });
+      if (!res.ok) return { ok: false, error: `Groq responded ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}` };
+      const text = stripWrappingQuotes(await res.text());
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+  async transcribeGemini(audioBase64, mimeType) {
+    if (!this.apiKey) return { ok: false, error: "Gemini key not configured" };
+    const url = `${GEMINI_BASE2}/${this.model}:generateContent?key=${this.apiKey}`;
+    const audio = { audioBase64 };
+    const body = {
+      contents: [
+        {
+          parts: [
+            { text: TRANSCRIBE_PROMPT },
+            { inline_data: { mime_type: mimeType, data: audio.audioBase64 } }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0
+      }
+    };
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Gemini responded with status ${response.status}`;
+      try {
+        const text2 = await response.text();
+        if (text2) error = text2;
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const raw = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    const text = stripWrappingQuotes(raw);
+    return { ok: true, text };
+  }
+};
+function createTranscriptionServiceFromEnv(env = process.env) {
+  return new TranscriptionService({
+    groqApiKey: env.GROQ_API_KEY,
+    // primary — Whisper, separate free quota
+    groqModel: env.GROQ_WHISPER_MODEL,
+    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY,
+    // fallback — Gemini
+    model: env.TRANSCRIPTION_MODEL
+  });
+}
+
+// ../../packages/integrations/src/tts.ts
+var DEFAULT_LANGUAGE_CODE = "en-IN";
+var TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
+var MAX_TEXT_LENGTH = 4800;
+var TtsService = class {
+  apiKey;
+  languageCode;
+  voiceName;
+  constructor(config = {}) {
+    this.apiKey = config.apiKey;
+    this.languageCode = config.languageCode ?? DEFAULT_LANGUAGE_CODE;
+    this.voiceName = config.voiceName;
+  }
+  /** True when an API key is present and synthesis can actually run. */
+  get isConfigured() {
+    return Boolean(this.apiKey);
+  }
+  async synthesize(params) {
+    if (!this.apiKey) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "GOOGLE_CLOUD_TTS_API_KEY not configured"
+      };
+    }
+    const text = (params.text ?? "").trim();
+    if (!text) {
+      return { ok: false, error: "No text to synthesize" };
+    }
+    const languageCode = params.languageCode ?? this.languageCode;
+    const voiceName = params.voiceName ?? this.voiceName;
+    const voice = { languageCode };
+    if (voiceName) voice.name = voiceName;
+    const body = {
+      input: { text: text.slice(0, MAX_TEXT_LENGTH) },
+      voice,
+      audioConfig: { audioEncoding: "OGG_OPUS" }
+    };
+    const url = `${TTS_URL}?key=${this.apiKey}`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (!response.ok) {
+      let error = `Cloud TTS responded with status ${response.status}`;
+      try {
+        const errText = await response.text();
+        if (errText) error = errText.slice(0, 500);
+      } catch {
+      }
+      return { ok: false, error };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const audioContent = payload.audioContent;
+    if (!audioContent) {
+      return { ok: false, error: "Cloud TTS response missing audioContent" };
+    }
+    return { ok: true, audioBase64: audioContent, mimeType: "audio/ogg" };
+  }
+};
+function createTtsServiceFromEnv(env = process.env) {
+  return new TtsService({
+    apiKey: env.GOOGLE_CLOUD_TTS_API_KEY,
+    languageCode: env.TTS_LANGUAGE_CODE,
+    voiceName: env.TTS_VOICE_NAME
+  });
+}
+
+// ../../packages/integrations/src/billing.ts
+var import_node_crypto = require("node:crypto");
+var STRIPE_API_BASE = "https://api.stripe.com";
+var PLANS = [
+  { id: "starter", name: "Starter", priceEnvVar: "STRIPE_PRICE_STARTER", monthly: "\u20B9999" },
+  { id: "growth", name: "Growth", priceEnvVar: "STRIPE_PRICE_GROWTH", monthly: "\u20B92,999" },
+  { id: "scale", name: "Scale", priceEnvVar: "STRIPE_PRICE_SCALE", monthly: "\u20B97,999" }
+];
+var WEBHOOK_EVENT_TYPES = /* @__PURE__ */ new Set([
+  "checkout.session.completed",
+  "customer.subscription.updated",
+  "customer.subscription.deleted"
+]);
+var StripeBillingService = class {
+  secretKey;
+  webhookSecret;
+  constructor(config = {}) {
+    this.secretKey = config.secretKey;
+    this.webhookSecret = config.webhookSecret;
+  }
+  /** True when a secret key is present and Stripe calls can actually be made. */
+  get isConfigured() {
+    return Boolean(this.secretKey);
+  }
+  /**
+   * POST a form-encoded request to the Stripe API and return the parsed body,
+   * or a normalized error result. Never throws.
+   */
+  async postForm(path2, body) {
+    let response;
+    try {
+      response = await fetch(`${STRIPE_API_BASE}${path2}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const data = await response.json();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    let error = `Stripe responded with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (payload?.error?.message) error = payload.error.message;
+    } catch {
+    }
+    return { ok: false, error };
+  }
+  async createCheckoutSession(params) {
+    if (!this.secretKey) {
+      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
+    }
+    const body = new URLSearchParams();
+    body.set("mode", "subscription");
+    body.set("line_items[0][price]", params.priceId);
+    body.set("line_items[0][quantity]", "1");
+    body.set("success_url", params.successUrl);
+    body.set("cancel_url", params.cancelUrl);
+    body.set("client_reference_id", params.organizationId);
+    if (params.customerEmail) {
+      body.set("customer_email", params.customerEmail);
+    }
+    body.set("metadata[organization_id]", params.organizationId);
+    const result = await this.postForm("/v1/checkout/sessions", body);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const { id, url } = result.data;
+    return { ok: true, sessionId: id, url };
+  }
+  async createBillingPortalSession(params) {
+    if (!this.secretKey) {
+      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
+    }
+    const body = new URLSearchParams();
+    body.set("customer", params.customerId);
+    body.set("return_url", params.returnUrl);
+    const result = await this.postForm("/v1/billing_portal/sessions", body);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const { url } = result.data;
+    return { ok: true, url };
+  }
+  /**
+   * Verify a Stripe webhook signature.
+   *
+   * The `Stripe-Signature` header looks like `t=timestamp,v1=signature`. We
+   * compute the HMAC-SHA256 hex of `${t}.${payload}` keyed by the webhook
+   * secret and timing-safe compare it to the header's v1 value. Returns false
+   * if the secret is missing or the header is malformed.
+   */
+  verifyWebhookSignature(payload, sigHeader) {
+    if (!this.webhookSecret || !sigHeader) return false;
+    let timestamp;
+    let signature;
+    for (const part of sigHeader.split(",")) {
+      const eq = part.indexOf("=");
+      if (eq === -1) continue;
+      const key = part.slice(0, eq).trim();
+      const value = part.slice(eq + 1).trim();
+      if (key === "t") timestamp = value;
+      else if (key === "v1") signature = value;
+    }
+    if (!timestamp || !signature) return false;
+    const payloadStr = typeof payload === "string" ? payload : payload.toString("utf8");
+    const expected = (0, import_node_crypto.createHmac)("sha256", this.webhookSecret).update(`${timestamp}.${payloadStr}`, "utf8").digest("hex");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const actualBuf = Buffer.from(signature, "utf8");
+    if (expectedBuf.length !== actualBuf.length) return false;
+    try {
+      return (0, import_node_crypto.timingSafeEqual)(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Parse a raw webhook body into a normalized event. Returns null for unknown
+   * or malformed events. Never throws. Signature verification is separate —
+   * call {@link verifyWebhookSignature} first.
+   */
+  async parseWebhookEvent(rawBody) {
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch {
+      return null;
+    }
+    if (!event || typeof event !== "object") return null;
+    const { type, data } = event;
+    if (typeof type !== "string" || !WEBHOOK_EVENT_TYPES.has(type)) return null;
+    const obj = data?.object;
+    if (!obj || typeof obj !== "object") return null;
+    const metadata = obj.metadata;
+    const organizationId = asString(obj.client_reference_id) ?? asString(metadata?.organization_id);
+    const subscriptionId = asString(obj.subscription) ?? (type === "checkout.session.completed" ? void 0 : asString(obj.id));
+    return {
+      type,
+      organizationId,
+      customerId: asString(obj.customer),
+      subscriptionId,
+      status: asString(obj.status)
+    };
+  }
+};
+function asString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function createBillingServiceFromEnv(env = process.env) {
+  return new StripeBillingService({
+    secretKey: env.STRIPE_SECRET_KEY,
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET
+  });
+}
+
+// ../../packages/integrations/src/hubspot.ts
+var import_node_crypto2 = require("node:crypto");
+var HUBSPOT_API_BASE = "https://api.hubapi.com";
+var NO_TOKEN_ERROR = "HUBSPOT_ACCESS_TOKEN not configured";
+var HubSpotService = class {
+  accessToken;
+  webhookSecret;
+  constructor(config = {}) {
+    this.accessToken = config.accessToken;
+    this.webhookSecret = config.webhookSecret;
+  }
+  /** True when an access token is present and HubSpot calls can actually be made. */
+  get isConfigured() {
+    return Boolean(this.accessToken);
+  }
+  /**
+   * Send a JSON request to the HubSpot API and return the parsed body, or a
+   * normalized error result. Never throws.
+   */
+  async request(method, path2, body) {
+    let response;
+    try {
+      response = await fetch(`${HUBSPOT_API_BASE}${path2}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: body === void 0 ? void 0 : JSON.stringify(body)
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const data = await response.json();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+    let error = `HubSpot responded with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (payload?.message) error = payload.message;
+    } catch {
+    }
+    return { ok: false, error };
+  }
+  /**
+   * Upsert a contact keyed by phone number. HubSpot has no native phone-based
+   * upsert, so we search by phone first, then PATCH the existing contact or
+   * POST a new one.
+   */
+  async upsertContact(params) {
+    if (!this.accessToken) {
+      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
+    }
+    const search = await this.request("POST", "/crm/v3/objects/contacts/search", {
+      filterGroups: [
+        { filters: [{ propertyName: "phone", operator: "EQ", value: params.phone }] }
+      ],
+      properties: ["phone", "email"]
+    });
+    if (!search.ok) {
+      return { ok: false, error: search.error };
+    }
+    const searchData = search.data;
+    const existingId = searchData.results?.[0]?.id;
+    const properties = { phone: params.phone };
+    if (params.email !== void 0) properties.email = params.email;
+    if (params.firstName !== void 0) properties.firstname = params.firstName;
+    if (params.lastName !== void 0) properties.lastname = params.lastName;
+    if (params.lifecycleStage !== void 0) properties.lifecyclestage = params.lifecycleStage;
+    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/contacts/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/contacts", { properties });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const id = result.data.id ?? existingId;
+    return { ok: true, id };
+  }
+  /**
+   * Upsert a deal keyed by an external id (matched against `dealname`). Creates
+   * or patches the deal, and — when a new deal is created with a `contactId` —
+   * best-effort associates the deal to that contact.
+   */
+  async upsertDeal(params) {
+    if (!this.accessToken) {
+      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
+    }
+    const search = await this.request("POST", "/crm/v3/objects/deals/search", {
+      filterGroups: [
+        { filters: [{ propertyName: "dealname", operator: "EQ", value: params.externalId }] }
+      ],
+      properties: ["dealname"]
+    });
+    if (!search.ok) {
+      return { ok: false, error: search.error };
+    }
+    const searchData = search.data;
+    const existingId = searchData.results?.[0]?.id;
+    const properties = {
+      dealname: params.dealName,
+      pipeline: "default"
+    };
+    if (params.amount !== void 0) properties.amount = String(params.amount);
+    if (params.stage !== void 0) properties.dealstage = params.stage;
+    const created = !existingId;
+    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/deals/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/deals", { properties });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const id = result.data.id ?? existingId;
+    if (created && id && params.contactId) {
+      await this.request(
+        "PUT",
+        `/crm/v3/objects/deals/${id}/associations/contacts/${params.contactId}/deal_to_contact`
+      );
+    }
+    return { ok: true, id };
+  }
+  /**
+   * Verify a HubSpot v3 webhook signature.
+   *
+   * The signature is `base64( HMAC-SHA256( method + uri + body + timestamp,
+   * clientSecret ) )`, delivered in the `X-HubSpot-Signature-v3` header. We
+   * recompute it and timing-safe compare. Returns false if the webhook secret
+   * is missing or the header is absent.
+   */
+  verifyWebhookSignature(params) {
+    if (!this.webhookSecret || !params.signature) return false;
+    const base = `${params.method}${params.uri}${params.body}${params.timestamp}`;
+    const expected = (0, import_node_crypto2.createHmac)("sha256", this.webhookSecret).update(base, "utf8").digest("base64");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const actualBuf = Buffer.from(params.signature, "utf8");
+    if (expectedBuf.length !== actualBuf.length) return false;
+    try {
+      return (0, import_node_crypto2.timingSafeEqual)(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Parse a raw HubSpot webhook body — an ARRAY of subscription events — into
+   * normalized events. `objectType` is derived from the `subscriptionType`
+   * prefix (e.g. `contact.propertyChange` → `contact`). Returns [] for
+   * malformed input. Never throws. Signature verification is separate — call
+   * {@link verifyWebhookSignature} first.
+   */
+  parseWebhookEvents(rawBody) {
+    let parsed;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+    const events = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const raw = item;
+      const subscriptionType = asString2(raw.subscriptionType);
+      const objectId = asString2(raw.objectId) ?? asNumberString(raw.objectId);
+      if (!subscriptionType || objectId === void 0) continue;
+      const objectType2 = subscriptionType.split(".")[0];
+      const event = { objectType: objectType2, objectId };
+      const propertyName = asString2(raw.propertyName);
+      if (propertyName !== void 0) event.propertyName = propertyName;
+      const propertyValue = asString2(raw.propertyValue);
+      if (propertyValue !== void 0) event.propertyValue = propertyValue;
+      const changeType = asString2(raw.changeType);
+      if (changeType !== void 0) event.changeType = changeType;
+      events.push(event);
+    }
+    return events;
+  }
+};
+function asString2(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function asNumberString(value) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : void 0;
+}
+function createHubSpotServiceFromEnv(env = process.env) {
+  return new HubSpotService({
+    accessToken: env.HUBSPOT_ACCESS_TOKEN,
+    webhookSecret: env.HUBSPOT_WEBHOOK_SECRET
+  });
+}
+
+// ../../packages/integrations/src/media.ts
+var SHOTSTACK_ASPECTS = { "16:9": "16:9", "9:16": "9:16", "1:1": "1:1" };
+var OpenMontageMediaService = class {
+  pexelsKey;
+  pixabayKey;
+  shotstackKey;
+  shotstackEnv;
+  tts;
+  constructor(env = process.env) {
+    this.pexelsKey = env["PEXELS_API_KEY"];
+    this.pixabayKey = env["PIXABAY_API_KEY"];
+    this.shotstackKey = env["SHOTSTACK_API_KEY"];
+    this.shotstackEnv = env["SHOTSTACK_ENV"] ?? "stage";
+    this.tts = new TtsService({
+      apiKey: env["GOOGLE_CLOUD_TTS_API_KEY"],
+      languageCode: env["TTS_LANGUAGE_CODE"] ?? "en-IN",
+      voiceName: env["TTS_VOICE_NAME"]
+    });
+  }
+  get canSearchStock() {
+    return Boolean(this.pexelsKey || this.pixabayKey);
+  }
+  get canNarrate() {
+    return this.tts.isConfigured;
+  }
+  get canRender() {
+    return Boolean(this.shotstackKey);
+  }
+  /** Configured enough to produce *some* real asset. */
+  get isConfigured() {
+    return this.canSearchStock || this.canNarrate;
+  }
+  // ── 1. Stock footage (real Pexels / Pixabay) ─────────────────────
+  async searchStockFootage(options) {
+    const limit = Math.min(options.limit ?? 5, 20);
+    const type = options.mediaType ?? "video";
+    try {
+      if (this.pexelsKey) {
+        const items = await this.searchPexels(options.query, type, limit);
+        if (items.length) return { items };
+      }
+      if (this.pixabayKey) {
+        const items = await this.searchPixabay(options.query, type, limit);
+        if (items.length) return { items };
+      }
+    } catch {
+    }
+    return { items: [] };
+  }
+  async searchPexels(query, type, limit) {
+    const url = type === "video" ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}` : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}`;
+    const res = await fetch(url, { headers: { Authorization: this.pexelsKey ?? "" } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (type === "video") {
+      return (data.videos ?? []).map((v) => {
+        const file = v.video_files.find((f) => f.quality === "hd" && f.file_type === "video/mp4") ?? v.video_files.find((f) => f.file_type === "video/mp4") ?? v.video_files[0];
+        return { id: `pexels-${v.id}`, url: file?.link ?? "", previewUrl: v.image, provider: "pexels", title: `${query} clip` };
+      }).filter((i) => i.url);
+    }
+    return (data.photos ?? []).map((p) => ({ id: `pexels-${p.id}`, url: p.src.large, previewUrl: p.src.medium, provider: "pexels", title: p.alt || `${query} photo` }));
+  }
+  async searchPixabay(query, type, limit) {
+    const base = type === "video" ? "https://pixabay.com/api/videos/" : "https://pixabay.com/api/";
+    const res = await fetch(`${base}?key=${this.pixabayKey}&q=${encodeURIComponent(query)}&per_page=${limit}&safesearch=true`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.hits ?? []).map((h) => {
+      if (type === "video") {
+        const v = h.videos?.large?.url ?? h.videos?.medium?.url ?? "";
+        return { id: `pixabay-${h.id}`, url: v, previewUrl: "", provider: "pixabay", title: h.tags || `${query} clip` };
+      }
+      return { id: `pixabay-${h.id}`, url: h.largeImageURL ?? h.webformatURL ?? "", previewUrl: h.previewURL ?? "", provider: "pixabay", title: h.tags || `${query} photo` };
+    }).filter((i) => i.url);
+  }
+  // ── 2. Voice narration (real Google Cloud TTS) ───────────────────
+  async generateVoiceNarration(text, opts) {
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    const durationSec = Math.max(3, Math.ceil(words / 2.5));
+    if (!this.tts.isConfigured) {
+      return { durationSec, provider: "none", skipped: true };
+    }
+    const r = await this.tts.synthesize({ text, languageCode: opts?.languageCode, voiceName: opts?.voiceName });
+    if (!r.ok || !r.audioBase64) return { durationSec, provider: "google-tts", skipped: true };
+    return { audioBase64: r.audioBase64, mimeType: r.mimeType ?? "audio/ogg", durationSec, provider: "google-tts" };
+  }
+  // ── 3. Video teaser (real assets → optional Shotstack render) ────
+  async generateVideoTeaser(options) {
+    const duration = options.durationSec ?? 15;
+    const style = options.style ?? "product_ad";
+    const aspect = options.aspectRatio ?? "9:16";
+    const narrationText = options.narration ?? `Discover ${options.topic}. Book with us today.`;
+    const caption = `\u{1F3AC} ${options.topic} (${style})`;
+    if (!this.isConfigured) {
+      return {
+        success: false,
+        mediaUrl: "",
+        mediaType: "video",
+        durationSec: duration,
+        providerUsed: "none",
+        caption,
+        costEstUsd: 0,
+        renderStatus: "unconfigured",
+        metadata: { hint: "Set PEXELS_API_KEY / PIXABAY_API_KEY (footage), GOOGLE_CLOUD_TTS_API_KEY (narration), SHOTSTACK_API_KEY (render)." }
+      };
+    }
+    const stock = await this.searchStockFootage({ query: options.topic, mediaType: "video", limit: 3 });
+    const narration = await this.generateVoiceNarration(narrationText);
+    const clips = stock.items.map((i) => ({ url: i.url, previewUrl: i.previewUrl, provider: i.provider, title: i.title }));
+    const baseMeta = {
+      style,
+      aspectRatio: aspect,
+      narrationScript: narrationText,
+      clips,
+      narrationDurationSec: narration.durationSec,
+      narrationProvider: narration.provider,
+      hasNarrationAudio: Boolean(narration.audioBase64)
+    };
+    if (this.canRender && clips.length > 0) {
+      try {
+        const rendered = await this.renderWithShotstack(clips, options.topic, duration, aspect);
+        return {
+          success: true,
+          mediaUrl: rendered.url ?? "",
+          mediaType: "video",
+          durationSec: duration,
+          providerUsed: `shotstack-${this.shotstackEnv}`,
+          caption,
+          costEstUsd: 0,
+          renderStatus: rendered.status,
+          renderId: rendered.id,
+          metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64 }
+        };
+      } catch (err) {
+        return {
+          success: false,
+          mediaUrl: "",
+          mediaType: "video",
+          durationSec: duration,
+          providerUsed: "shotstack",
+          caption,
+          costEstUsd: 0,
+          renderStatus: "failed",
+          metadata: { ...baseMeta, error: err instanceof Error ? err.message : String(err) }
+        };
+      }
+    }
+    return {
+      success: clips.length > 0 || Boolean(narration.audioBase64),
+      mediaUrl: "",
+      mediaType: "video",
+      durationSec: duration,
+      providerUsed: `${clips[0]?.provider ?? "stock"}+${narration.provider}`,
+      caption,
+      costEstUsd: 0,
+      renderStatus: "assets_ready",
+      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: "Real footage + narration ready; set SHOTSTACK_API_KEY to auto-render a single MP4." }
+    };
+  }
+  async renderWithShotstack(clips, title, duration, aspect) {
+    const per = Math.max(2, Math.round(duration / clips.length));
+    const videoClips = clips.map((c, i) => ({
+      asset: { type: "video", src: c.url },
+      start: i * per,
+      length: per,
+      fit: "crop",
+      transition: { in: "fade", out: "fade" }
+    }));
+    const titleClip = { asset: { type: "title", text: title, style: "minimal", size: "medium" }, start: 0, length: Math.min(duration, per) };
+    const body = {
+      timeline: { background: "#000000", tracks: [{ clips: [titleClip] }, { clips: videoClips }] },
+      output: { format: "mp4", aspectRatio: SHOTSTACK_ASPECTS[aspect] ?? "9:16" }
+    };
+    const submit = await fetch(`https://api.shotstack.io/${this.shotstackEnv}/render`, {
+      method: "POST",
+      headers: { "x-api-key": this.shotstackKey ?? "", "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!submit.ok) throw new Error(`Shotstack submit failed (${submit.status})`);
+    const id = (await submit.json()).response?.id;
+    if (!id) throw new Error("Shotstack returned no render id");
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 5e3));
+      const poll = await fetch(`https://api.shotstack.io/${this.shotstackEnv}/render/${id}`, { headers: { "x-api-key": this.shotstackKey ?? "" } });
+      if (!poll.ok) continue;
+      const st = (await poll.json()).response;
+      if (st?.status === "done") return { status: "done", url: st.url, id };
+      if (st?.status === "failed") return { status: "failed", id };
+    }
+    return { status: "rendering", id };
+  }
+};
+function createMediaServiceFromEnv(env = process.env) {
+  return new OpenMontageMediaService(env);
+}
+
+// ../../packages/integrations/src/sheets.ts
+var import_node_crypto3 = require("node:crypto");
+var TOKEN_URL = "https://oauth2.googleapis.com/token";
+var SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
+var SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+function b64url(input) {
+  return Buffer.from(input).toString("base64url");
+}
+function parseSpreadsheetId(urlOrId) {
+  const trimmed = (urlOrId || "").trim();
+  if (!trimmed) return null;
+  const m = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m) return m[1] ?? null;
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) return trimmed;
+  return null;
+}
+function tabRange(tab, span = "A:Z") {
+  return encodeURIComponent(`'${tab.replace(/'/g, "''")}'!${span}`);
+}
+var SheetsService = class {
+  clientEmail;
+  privateKey;
+  token;
+  constructor(config = {}) {
+    this.clientEmail = config.clientEmail;
+    this.privateKey = config.privateKey?.replace(/\\n/g, "\n");
+  }
+  get isConfigured() {
+    return Boolean(this.clientEmail && this.privateKey);
+  }
+  /** The address merchants must share their spreadsheet with (Editor access). */
+  get serviceAccountEmail() {
+    return this.clientEmail;
+  }
+  async accessToken() {
+    const now = Math.floor(Date.now() / 1e3);
+    if (this.token && this.token.expiresAt > now + 60) return this.token.value;
+    if (!this.clientEmail || !this.privateKey) {
+      throw new Error("Google Sheets service account is not configured");
+    }
+    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+    const claim = b64url(
+      JSON.stringify({
+        iss: this.clientEmail,
+        scope: SCOPE,
+        aud: TOKEN_URL,
+        iat: now,
+        exp: now + 3600
+      })
+    );
+    const signingInput = `${header}.${claim}`;
+    const signature = (0, import_node_crypto3.createSign)("RSA-SHA256").update(signingInput).sign(this.privateKey, "base64url");
+    const jwt = `${signingInput}.${signature}`;
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: jwt
+      })
+    });
+    if (!res.ok) {
+      throw new Error(`Google token exchange failed (${res.status}): ${await res.text()}`);
+    }
+    const data = await res.json();
+    this.token = { value: data.access_token, expiresAt: now + (data.expires_in ?? 3600) };
+    return this.token.value;
+  }
+  async api(path2, init) {
+    const token = await this.accessToken();
+    return fetch(`${SHEETS_API}/${path2}`, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        ...init?.headers ?? {}
+      }
+    });
+  }
+  /** Fetch title + tab names. Throws on 403 (not shared) / 404 (bad id). */
+  async getMeta(spreadsheetId) {
+    const res = await this.api(
+      `${spreadsheetId}?fields=${encodeURIComponent("properties.title,sheets.properties.title")}`
+    );
+    if (res.status === 403) {
+      throw new Error(
+        `Access denied \u2014 share the sheet with ${this.clientEmail} (Editor) and try again.`
+      );
+    }
+    if (!res.ok) {
+      throw new Error(`Could not open spreadsheet (${res.status}): ${await res.text()}`);
+    }
+    const data = await res.json();
+    return {
+      spreadsheetId,
+      title: data.properties?.title ?? "Untitled",
+      tabs: (data.sheets ?? []).map((s) => s.properties?.title ?? "").filter(Boolean)
+    };
+  }
+  /** Create a tab if it doesn't exist (idempotent). */
+  async ensureTab(spreadsheetId, tab) {
+    const meta = await this.getMeta(spreadsheetId);
+    if (meta.tabs.includes(tab)) return;
+    const res = await this.api(`${spreadsheetId}:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tab } } }] })
+    });
+    if (!res.ok) throw new Error(`Could not create tab "${tab}" (${res.status})`);
+  }
+  /**
+   * Ensure the tab exists and its first row matches `header`. Only writes the
+   * header when the tab is empty, so we never clobber a merchant's own columns.
+   */
+  async ensureHeader(spreadsheetId, tab, header) {
+    await this.ensureTab(spreadsheetId, tab);
+    const existing = await this.readRows(spreadsheetId, tab);
+    if (existing.length === 0) {
+      await this.api(`${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=RAW`, {
+        method: "POST",
+        body: JSON.stringify({ values: [header] })
+      });
+    }
+  }
+  /** Append rows to the bottom of a tab. */
+  async appendRows(spreadsheetId, tab, rows) {
+    if (rows.length === 0) return;
+    const res = await this.api(
+      `${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      { method: "POST", body: JSON.stringify({ values: rows }) }
+    );
+    if (!res.ok) throw new Error(`Append failed (${res.status}): ${await res.text()}`);
+  }
+  /** Read all rows of a tab as a 2D string array (including any header row). */
+  async readRows(spreadsheetId, tab) {
+    const res = await this.api(`${spreadsheetId}/values/${tabRange(tab)}`);
+    if (res.status === 400) return [];
+    if (!res.ok) throw new Error(`Read failed (${res.status}): ${await res.text()}`);
+    const data = await res.json();
+    return data.values ?? [];
+  }
+  /**
+   * Read a tab as objects keyed by its header row (lower-cased, trimmed).
+   * Returns [] when the tab is empty or missing.
+   */
+  async readAsObjects(spreadsheetId, tab) {
+    const rows = await this.readRows(spreadsheetId, tab);
+    if (rows.length < 2) return [];
+    const header = (rows[0] ?? []).map((h) => h.trim().toLowerCase());
+    return rows.slice(1).map((row) => {
+      const obj = {};
+      header.forEach((key, i) => {
+        if (key) obj[key] = (row[i] ?? "").trim();
+      });
+      return obj;
+    });
+  }
+};
+function createSheetsServiceFromEnv(env = process.env) {
+  const raw = env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (raw) {
+    try {
+      const json = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
+      const parsed = JSON.parse(json);
+      return new SheetsService({
+        clientEmail: parsed.client_email,
+        privateKey: parsed.private_key
+      });
+    } catch {
+    }
+  }
+  return new SheetsService({
+    clientEmail: env.GOOGLE_SHEETS_CLIENT_EMAIL,
+    privateKey: env.GOOGLE_SHEETS_PRIVATE_KEY
+  });
+}
+
+// ../../packages/mcp-business-tools/src/tools.ts
 async function getCustomerContext(store, input) {
   const contact = await store.findContactById(input.organizationId, input.contactId);
   if (!contact) {
@@ -56192,27 +57458,56 @@ async function createServiceBooking(store, input) {
 async function generatePromoMedia(store, input) {
   const duration = input.durationSec ?? 15;
   const style = input.style ?? "travel_reel";
-  const sampleMediaId = Math.floor(1e5 + Math.random() * 9e5);
-  const mediaUrl = input.campaignType === "voice_narration" ? `https://cdn.saarthione.ai/audio/narration_${sampleMediaId}.mp3` : `https://cdn.saarthione.ai/media/promos/${style}_${sampleMediaId}.mp4`;
-  const mediaType = input.campaignType === "voice_narration" ? "audio" : "video";
-  const caption = `\u{1F3AC} SaarthiOne OpenMontage AI (${style}): "${input.topic}"`;
+  const media = createMediaServiceFromEnv();
+  if (input.campaignType === "voice_narration") {
+    const narration = await media.generateVoiceNarration(input.topic);
+    await store.insertAuditEvent({
+      id: (0, import_crypto4.randomUUID)(),
+      organizationId: input.organizationId,
+      action: "promo_media_generated",
+      entityType: "campaign_media",
+      entityId: `narration-${(0, import_crypto4.randomUUID)()}`,
+      actorType: "agent",
+      details: { campaignType: input.campaignType, topic: input.topic, provider: narration.provider },
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    return {
+      success: !narration.skipped,
+      // base64 audio isn't a URL; callers send it as a voice note.
+      mediaUrl: narration.audioBase64 ? `data:${narration.mimeType};base64,${narration.audioBase64}` : "",
+      mediaType: "audio",
+      durationSec: narration.durationSec,
+      caption: input.topic,
+      providerUsed: narration.provider,
+      renderStatus: narration.skipped ? "unconfigured" : "done",
+      note: narration.skipped ? "Set GOOGLE_CLOUD_TTS_API_KEY to generate real narration audio." : void 0
+    };
+  }
+  const teaser = await media.generateVideoTeaser({
+    topic: input.topic,
+    style,
+    durationSec: duration,
+    aspectRatio: input.targetChannel === "instagram" ? "1:1" : "9:16"
+  });
   await store.insertAuditEvent({
     id: (0, import_crypto4.randomUUID)(),
     organizationId: input.organizationId,
     action: "promo_media_generated",
     entityType: "campaign_media",
-    entityId: `media-${sampleMediaId}`,
+    entityId: `media-${(0, import_crypto4.randomUUID)()}`,
     actorType: "agent",
-    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration },
+    details: { campaignType: input.campaignType, topic: input.topic, style, durationSec: duration, renderStatus: teaser.renderStatus, provider: teaser.providerUsed },
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   });
   return {
-    success: true,
-    mediaUrl,
-    mediaType,
-    durationSec: duration,
-    caption,
-    providerUsed: "openmontage_zero_cost_engine"
+    success: teaser.success,
+    mediaUrl: teaser.mediaUrl,
+    mediaType: "video",
+    durationSec: teaser.durationSec,
+    caption: teaser.caption,
+    providerUsed: teaser.providerUsed,
+    renderStatus: teaser.renderStatus,
+    note: teaser.renderStatus === "unconfigured" ? "Set PEXELS_API_KEY / PIXABAY_API_KEY (footage) + SHOTSTACK_API_KEY (render) to produce a real reel." : teaser.renderStatus === "assets_ready" ? "Real footage + narration ready; add SHOTSTACK_API_KEY to auto-render a single MP4." : void 0
   };
 }
 
@@ -57076,7 +58371,10 @@ var GeneratePromoMediaOutput = external_exports.object({
   mediaType: external_exports.enum(["video", "image", "audio"]),
   durationSec: external_exports.number(),
   caption: external_exports.string(),
-  providerUsed: external_exports.string()
+  providerUsed: external_exports.string(),
+  /** 'done' | 'rendering' | 'assets_ready' | 'unconfigured' | 'failed'. */
+  renderStatus: external_exports.string().optional(),
+  note: external_exports.string().optional()
 });
 var AnalyzeLocalSeoInput = external_exports.object({
   organizationId: external_exports.string().uuid(),
@@ -58407,7 +59705,15 @@ Would you like to know more, or shall I connect you with our specialist?`;
     });
     state.toolCalls.push({ tool: "upsert_qualified_lead", input: { serviceInterest: state.inboundMessage }, output: leadResult });
   } else {
-    state.proposedResponse = "I'd love to help you find the right product! Could you tell me a bit more about your skin type and what you're looking for? Our team can also give personalized recommendations.";
+    const llmReply = hasRealLLM(deps) ? await composeReplyWithLLM(
+      deps.llm,
+      state,
+      deps,
+      "The customer has a buying/enquiry intent but no exact catalog item matched. Warmly help them: acknowledge their need, ask one focused clarifying question (e.g. their goal, budget or timeline), and mention you can suggest suitable options or connect them with the team. Stay in the business's domain and follow all business rules.",
+      {}
+    ) : null;
+    const business = deps.businessName ?? "our team";
+    state.proposedResponse = llmReply ?? `Thanks for reaching out to ${business}! Tell me a little more about what you're looking for \u2014 your goal, budget or timeline \u2014 and I'll point you to the right option, or connect you with our team.`;
   }
   return state;
 }
@@ -59312,7 +60618,7 @@ var RazorpayPaymentService = class {
 };
 
 // ../../packages/commerce/src/documents.ts
-function escapeHtml(value) {
+function escapeHtml2(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function formatMoney(value, currency) {
@@ -59464,9 +60770,9 @@ var BASE_STYLES = `
 `;
 function renderItemsTable(lines, currency) {
   const rows = lines.map((line) => {
-    const desc = line.description ? `<div class="item-desc">${escapeHtml(line.description)}</div>` : "";
+    const desc = line.description ? `<div class="item-desc">${escapeHtml2(line.description)}</div>` : "";
     return `        <tr>
-          <td><div class="item-title">${escapeHtml(line.title)}</div>${desc}</td>
+          <td><div class="item-title">${escapeHtml2(line.title)}</div>${desc}</td>
           <td class="num">${line.quantity}</td>
           <td class="num">${formatMoney(line.unitPrice, currency)}</td>
           <td class="num">${formatMoney(line.amount, currency)}</td>
@@ -59490,8 +60796,8 @@ function renderCustomer(name, phone) {
   if (!name && !phone) {
     return "";
   }
-  const nameLine = name ? `<div class="name">${escapeHtml(name)}</div>` : "";
-  const phoneLine = phone ? `<div class="phone">${escapeHtml(phone)}</div>` : "";
+  const nameLine = name ? `<div class="name">${escapeHtml2(name)}</div>` : "";
+  const phoneLine = phone ? `<div class="phone">${escapeHtml2(phone)}</div>` : "";
   return `      <div class="customer">
         <h2>Billed To</h2>
         ${nameLine}
@@ -59500,10 +60806,10 @@ function renderCustomer(name, phone) {
 }
 function renderHeader(businessName, docType, number) {
   return `    <div class="header">
-      <div class="brand">${escapeHtml(businessName)}</div>
+      <div class="brand">${escapeHtml2(businessName)}</div>
       <div class="doc-meta">
-        <div class="doc-type">${escapeHtml(docType)}</div>
-        <div class="doc-number">${escapeHtml(number)}</div>
+        <div class="doc-type">${escapeHtml2(docType)}</div>
+        <div class="doc-number">${escapeHtml2(number)}</div>
       </div>
     </div>`;
 }
@@ -59511,7 +60817,7 @@ function renderNotes(notes) {
   if (!notes) {
     return "";
   }
-  return `<div class="notes">${escapeHtml(notes)}</div>`;
+  return `<div class="notes">${escapeHtml2(notes)}</div>`;
 }
 function wrapDocument(title, inner) {
   return `<!doctype html>
@@ -59519,7 +60825,7 @@ function wrapDocument(title, inner) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeHtml2(title)}</title>
   <style>${BASE_STYLES}</style>
 </head>
 <body>
@@ -59540,10 +60846,10 @@ function buildQuotationHtml(doc) {
         <div class="row"><span class="label">Subtotal</span><span class="num">${formatMoney(subtotal, currency)}</span></div>
         <div class="row grand"><span class="label">Total</span><span class="num">${formatMoney(total, currency)}</span></div>
       </div>`;
-  const validUntil = doc.validUntil ? `        <div><div class="label">Valid Until</div>${escapeHtml(doc.validUntil)}</div>` : "";
+  const validUntil = doc.validUntil ? `        <div><div class="label">Valid Until</div>${escapeHtml2(doc.validUntil)}</div>` : "";
   const footer = `    <div class="footer">
       <div class="meta">
-        <div><div class="label">Issued</div>${escapeHtml(doc.issuedAt)}</div>
+        <div><div class="label">Issued</div>${escapeHtml2(doc.issuedAt)}</div>
 ${validUntil}
       </div>
       ${renderNotes(doc.notes)}
@@ -59570,7 +60876,7 @@ function buildInvoiceHtml(doc) {
   const customer = renderCustomer(doc.customerName, doc.customerPhone);
   const table = renderItemsTable(lines, currency);
   const statusLabel = status.replace("_", " ");
-  const badge = `<span class="badge ${status}">${escapeHtml(statusLabel)}</span>`;
+  const badge = `<span class="badge ${status}">${escapeHtml2(statusLabel)}</span>`;
   const taxRow = taxRate > 0 ? `        <div class="row"><span class="label">Tax (${(taxRate * 100).toLocaleString("en-IN")}%)</span><span class="num">${formatMoney(tax, currency)}</span></div>` : "";
   const totals = `      <div class="totals">
         <div class="row"><span class="label">Subtotal</span><span class="num">${formatMoney(subtotal, currency)}</span></div>
@@ -59579,10 +60885,10 @@ ${taxRow}
         <div class="row"><span class="label">Amount Paid</span><span class="num">${formatMoney(amountPaid, currency)}</span></div>
         <div class="row"><span class="label">Balance Due</span><span class="num">${formatMoney(balanceDue, currency)}</span></div>
       </div>`;
-  const dueDate = doc.dueDate ? `        <div><div class="label">Due Date</div>${escapeHtml(doc.dueDate)}</div>` : "";
+  const dueDate = doc.dueDate ? `        <div><div class="label">Due Date</div>${escapeHtml2(doc.dueDate)}</div>` : "";
   const footer = `    <div class="footer">
       <div class="meta">
-        <div><div class="label">Issued</div>${escapeHtml(doc.issuedAt)}</div>
+        <div><div class="label">Issued</div>${escapeHtml2(doc.issuedAt)}</div>
 ${dueDate}
       </div>
       ${renderNotes(doc.notes)}
@@ -59598,1074 +60904,6 @@ ${totals}
     </div>
 ${footer}`;
   return wrapDocument(`Invoice ${doc.number}`, inner);
-}
-
-// ../../packages/integrations/src/email.ts
-var RESEND_ENDPOINT = "https://api.resend.com/emails";
-var DEFAULT_FROM_NAME = "SaarthiOne";
-function escapeHtml2(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-var EmailService = class {
-  apiKey;
-  fromEmail;
-  fromName;
-  constructor(config = {}) {
-    this.apiKey = config.apiKey;
-    this.fromEmail = config.fromEmail;
-    this.fromName = config.fromName ?? DEFAULT_FROM_NAME;
-  }
-  /** True when an API key is present and email can actually be sent. */
-  get isConfigured() {
-    return Boolean(this.apiKey);
-  }
-  async send(params) {
-    if (!this.apiKey) {
-      return {
-        sent: false,
-        skipped: true,
-        error: "RESEND_API_KEY not configured"
-      };
-    }
-    const from = `${this.fromName} <${this.fromEmail}>`;
-    const body = {
-      from,
-      to: [params.to],
-      subject: params.subject,
-      html: params.html
-    };
-    if (params.replyTo) {
-      body.reply_to = params.replyTo;
-    }
-    let response;
-    try {
-      response = await fetch(RESEND_ENDPOINT, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      return { sent: false, error: err.message };
-    }
-    if (response.status === 200 || response.status === 201) {
-      try {
-        const data = await response.json();
-        return { sent: true, id: data.id };
-      } catch {
-        return { sent: true };
-      }
-    }
-    let error = `Resend responded with status ${response.status}`;
-    try {
-      const text = await response.text();
-      if (text) error = text;
-    } catch {
-    }
-    return { sent: false, error };
-  }
-};
-function createEmailServiceFromEnv(env = process.env) {
-  return new EmailService({
-    apiKey: env.RESEND_API_KEY,
-    fromEmail: env.EMAIL_FROM ?? "onboarding@resend.dev",
-    fromName: env.EMAIL_FROM_NAME ?? DEFAULT_FROM_NAME
-  });
-}
-var NAVY = "#0B1220";
-var CYAN = "#00F2FE";
-var INK = "#1a2233";
-var MUTED = "#5b6472";
-var BORDER = "#e5e8ee";
-var BG = "#f4f6fa";
-function shell(businessName, heading, inner) {
-  const safeBusiness = escapeHtml2(businessName);
-  const safeHeading = escapeHtml2(heading);
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="x-apple-disable-message-reformatting" />
-<title>${safeHeading}</title>
-</head>
-<body style="margin:0;padding:0;background:${BG};">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BG};padding:24px 0;">
-<tr><td align="center">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid ${BORDER};font-family:Arial,Helvetica,sans-serif;">
-<tr>
-<td style="background:${NAVY};padding:28px 32px;border-bottom:4px solid ${CYAN};">
-<div style="color:${CYAN};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;">${safeBusiness}</div>
-<div style="color:#ffffff;font-size:22px;font-weight:bold;margin-top:6px;">${safeHeading}</div>
-</td>
-</tr>
-<tr>
-<td style="padding:32px;color:${INK};font-size:15px;line-height:1.6;">
-${inner}
-</td>
-</tr>
-<tr>
-<td style="padding:20px 32px;background:#fafbfd;border-top:1px solid ${BORDER};color:${MUTED};font-size:12px;line-height:1.5;">
-Sent by ${safeBusiness} via SaarthiOne. Please do not reply directly to this automated message.
-</td>
-</tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
-}
-function greeting(customerName) {
-  return `<p style="margin:0 0 16px;">Hi ${escapeHtml2(customerName)},</p>`;
-}
-function refRow(label, value) {
-  return `<tr>
-<td style="padding:8px 0;color:${MUTED};font-size:13px;">${escapeHtml2(label)}</td>
-<td style="padding:8px 0;color:${INK};font-size:14px;font-weight:bold;text-align:right;">${escapeHtml2(value)}</td>
-</tr>`;
-}
-function ctaButton(url, label) {
-  const safeUrl = escapeHtml2(url);
-  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0;">
-<tr><td style="border-radius:8px;background:${NAVY};">
-<a href="${safeUrl}" style="display:inline-block;padding:12px 28px;color:${CYAN};font-size:15px;font-weight:bold;text-decoration:none;border-radius:8px;border:1px solid ${CYAN};">${escapeHtml2(label)}</a>
-</td></tr>
-</table>`;
-}
-function buildQuotationEmail(params) {
-  const { businessName, customerName, quotationNumber, viewUrl, amountText } = params;
-  const rows = [refRow("Quotation number", quotationNumber)];
-  if (amountText) rows.push(refRow("Total", amountText));
-  const inner = `${greeting(customerName)}
-<p style="margin:0 0 20px;">Thank you for your interest. Please find your quotation below.</p>
-<div style="background:${BG};border:1px solid ${BORDER};border-radius:10px;padding:16px 20px;margin:0 0 20px;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows.join("")}</table>
-</div>
-${ctaButton(viewUrl, "View Quotation")}
-<p style="margin:16px 0 0;color:${MUTED};">This quotation is valid subject to the terms shared. Let us know if you would like to proceed.</p>`;
-  return {
-    subject: `Your quotation ${quotationNumber} from ${businessName}`,
-    html: shell(businessName, "Your Quotation", inner)
-  };
-}
-
-// ../../packages/integrations/src/ocr.ts
-var DEFAULT_MODEL = "gemini-2.0-flash";
-var GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-function buildPrompt(fields, documentHint) {
-  const docType = documentHint ? `a ${documentHint}` : "the attached document";
-  const fieldList = fields.map((f) => `"${f}"`).join(", ");
-  return [
-    `You are a precise document data extraction engine.`,
-    `The attached image is ${docType}.`,
-    `Extract EXACTLY these fields: ${fieldList}.`,
-    `Return a single flat JSON object whose keys are exactly those field names.`,
-    `Use the value found in the document as a string.`,
-    `If a field is not present or not legible, set its value to null.`,
-    `Do not add extra keys, commentary, or markdown fences \u2014 output only the JSON object.`
-  ].join(" ");
-}
-function parseModelJson(text) {
-  const trimmed = text.trim();
-  const candidates = [trimmed];
-  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence && fence[1]) candidates.push(fence[1].trim());
-  const first = trimmed.indexOf("{");
-  const last = trimmed.lastIndexOf("}");
-  if (first !== -1 && last !== -1 && last > first) {
-    candidates.push(trimmed.slice(first, last + 1));
-  }
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-var OcrService = class {
-  apiKey;
-  model;
-  constructor(config = {}) {
-    this.apiKey = config.apiKey;
-    this.model = config.model ?? DEFAULT_MODEL;
-  }
-  /** True when an API key is present and extraction can actually run. */
-  get isConfigured() {
-    return Boolean(this.apiKey);
-  }
-  async extract(params) {
-    if (!this.apiKey) {
-      return {
-        ok: false,
-        skipped: true,
-        error: "GOOGLE_API_KEY not configured"
-      };
-    }
-    let base64 = params.imageBase64;
-    let mimeType = params.mimeType ?? "image/jpeg";
-    if (params.imageUrl) {
-      try {
-        const imgRes = await fetch(params.imageUrl);
-        if (!imgRes.ok) {
-          return {
-            ok: false,
-            error: `Failed to fetch image (status ${imgRes.status})`
-          };
-        }
-        const contentType = imgRes.headers.get("content-type");
-        if (contentType) mimeType = contentType.split(";")[0].trim();
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        base64 = buffer.toString("base64");
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-    if (!base64) {
-      return { ok: false, error: "No image provided (imageBase64 or imageUrl required)" };
-    }
-    const url = `${GEMINI_BASE}/${this.model}:generateContent?key=${this.apiKey}`;
-    const body = {
-      contents: [
-        {
-          parts: [
-            { text: buildPrompt(params.fields, params.documentHint) },
-            { inline_data: { mime_type: mimeType, data: base64 } }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0,
-        response_mime_type: "application/json"
-      }
-    };
-    let response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    if (!response.ok) {
-      let error = `Gemini responded with status ${response.status}`;
-      try {
-        const text2 = await response.text();
-        if (text2) error = text2;
-      } catch {
-      }
-      return { ok: false, error };
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    const text = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    const data = parseModelJson(text);
-    if (data) {
-      return { ok: true, data };
-    }
-    return { ok: true, raw: text };
-  }
-  extractPassport(image) {
-    return this.extract({
-      ...image,
-      documentHint: "passport",
-      fields: [
-        "full_name",
-        "passport_number",
-        "nationality",
-        "date_of_birth",
-        "expiry_date"
-      ]
-    });
-  }
-  extractIdCard(image) {
-    return this.extract({
-      ...image,
-      documentHint: "ID card",
-      fields: ["full_name", "id_number", "date_of_birth"]
-    });
-  }
-  extractPaymentReceipt(image) {
-    return this.extract({
-      ...image,
-      documentHint: "Indian UPI / payment-app screenshot (GPay, PhonePe, Paytm, BHIM, or bank UPI)",
-      fields: [
-        "amount",
-        "reference",
-        "date",
-        "upi_id",
-        "status",
-        "payer_name"
-      ]
-    });
-  }
-};
-function createOcrServiceFromEnv(env = process.env) {
-  return new OcrService({
-    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY
-  });
-}
-
-// ../../packages/integrations/src/transcription.ts
-var DEFAULT_MODEL2 = "gemini-2.0-flash";
-var GEMINI_BASE2 = "https://generativelanguage.googleapis.com/v1beta/models";
-var TRANSCRIBE_PROMPT = "Transcribe this audio to plain text. Return ONLY the spoken words, verbatim, with no commentary, labels, or quotes. If the audio is silent or unintelligible, return an empty string.";
-function cleanMimeType(mimeType) {
-  const bare = (mimeType ?? "audio/ogg").split(";")[0].trim();
-  return bare || "audio/ogg";
-}
-function stripWrappingQuotes(text) {
-  let out = text.trim();
-  const pairs = [
-    ['"', '"'],
-    ["'", "'"],
-    ["`", "`"]
-  ];
-  const fence = out.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/);
-  if (fence && fence[1] !== void 0) out = fence[1].trim();
-  for (const [open, close] of pairs) {
-    if (out.length >= 2 && out.startsWith(open) && out.endsWith(close)) {
-      out = out.slice(open.length, out.length - close.length).trim();
-      break;
-    }
-  }
-  return out;
-}
-var GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-var DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo";
-function mimeToExt(mime) {
-  if (mime.includes("ogg") || mime.includes("opus")) return "ogg";
-  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
-  if (mime.includes("wav")) return "wav";
-  if (mime.includes("m4a") || mime.includes("mp4") || mime.includes("aac")) return "m4a";
-  if (mime.includes("webm")) return "webm";
-  if (mime.includes("flac")) return "flac";
-  return "ogg";
-}
-var TranscriptionService = class {
-  apiKey;
-  model;
-  groqApiKey;
-  groqModel;
-  constructor(config = {}) {
-    this.apiKey = config.apiKey;
-    this.model = config.model ?? DEFAULT_MODEL2;
-    this.groqApiKey = config.groqApiKey;
-    this.groqModel = config.groqModel ?? DEFAULT_GROQ_MODEL;
-  }
-  /** True when any transcription provider is configured. */
-  get isConfigured() {
-    return Boolean(this.groqApiKey || this.apiKey);
-  }
-  async transcribe(audio) {
-    if (!this.groqApiKey && !this.apiKey) {
-      return { ok: false, skipped: true, error: "No transcription key configured (GROQ_API_KEY or GOOGLE_API_KEY)" };
-    }
-    if (!audio.audioBase64) {
-      return { ok: false, error: "No audio provided (audioBase64 required)" };
-    }
-    const mimeType = cleanMimeType(audio.mimeType);
-    if (this.groqApiKey) {
-      const g = await this.transcribeGroq(audio.audioBase64, mimeType);
-      if (g.ok || !this.apiKey) return g;
-    }
-    return this.transcribeGemini(audio.audioBase64, mimeType);
-  }
-  async transcribeGroq(audioBase64, mimeType) {
-    try {
-      const form = new FormData();
-      form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), `audio.${mimeToExt(mimeType)}`);
-      form.append("model", this.groqModel);
-      form.append("response_format", "text");
-      const res = await fetch(GROQ_TRANSCRIBE_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.groqApiKey}` },
-        body: form
-      });
-      if (!res.ok) return { ok: false, error: `Groq responded ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}` };
-      const text = stripWrappingQuotes(await res.text());
-      return { ok: true, text };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  }
-  async transcribeGemini(audioBase64, mimeType) {
-    if (!this.apiKey) return { ok: false, error: "Gemini key not configured" };
-    const url = `${GEMINI_BASE2}/${this.model}:generateContent?key=${this.apiKey}`;
-    const audio = { audioBase64 };
-    const body = {
-      contents: [
-        {
-          parts: [
-            { text: TRANSCRIBE_PROMPT },
-            { inline_data: { mime_type: mimeType, data: audio.audioBase64 } }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0
-      }
-    };
-    let response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    if (!response.ok) {
-      let error = `Gemini responded with status ${response.status}`;
-      try {
-        const text2 = await response.text();
-        if (text2) error = text2;
-      } catch {
-      }
-      return { ok: false, error };
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    const raw = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    const text = stripWrappingQuotes(raw);
-    return { ok: true, text };
-  }
-};
-function createTranscriptionServiceFromEnv(env = process.env) {
-  return new TranscriptionService({
-    groqApiKey: env.GROQ_API_KEY,
-    // primary — Whisper, separate free quota
-    groqModel: env.GROQ_WHISPER_MODEL,
-    apiKey: env.GOOGLE_API_KEY ?? env.GEMINI_API_KEY,
-    // fallback — Gemini
-    model: env.TRANSCRIPTION_MODEL
-  });
-}
-
-// ../../packages/integrations/src/tts.ts
-var DEFAULT_LANGUAGE_CODE = "en-IN";
-var TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
-var MAX_TEXT_LENGTH = 4800;
-var TtsService = class {
-  apiKey;
-  languageCode;
-  voiceName;
-  constructor(config = {}) {
-    this.apiKey = config.apiKey;
-    this.languageCode = config.languageCode ?? DEFAULT_LANGUAGE_CODE;
-    this.voiceName = config.voiceName;
-  }
-  /** True when an API key is present and synthesis can actually run. */
-  get isConfigured() {
-    return Boolean(this.apiKey);
-  }
-  async synthesize(params) {
-    if (!this.apiKey) {
-      return {
-        ok: false,
-        skipped: true,
-        error: "GOOGLE_CLOUD_TTS_API_KEY not configured"
-      };
-    }
-    const text = (params.text ?? "").trim();
-    if (!text) {
-      return { ok: false, error: "No text to synthesize" };
-    }
-    const languageCode = params.languageCode ?? this.languageCode;
-    const voiceName = params.voiceName ?? this.voiceName;
-    const voice = { languageCode };
-    if (voiceName) voice.name = voiceName;
-    const body = {
-      input: { text: text.slice(0, MAX_TEXT_LENGTH) },
-      voice,
-      audioConfig: { audioEncoding: "OGG_OPUS" }
-    };
-    const url = `${TTS_URL}?key=${this.apiKey}`;
-    let response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    if (!response.ok) {
-      let error = `Cloud TTS responded with status ${response.status}`;
-      try {
-        const errText = await response.text();
-        if (errText) error = errText.slice(0, 500);
-      } catch {
-      }
-      return { ok: false, error };
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    const audioContent = payload.audioContent;
-    if (!audioContent) {
-      return { ok: false, error: "Cloud TTS response missing audioContent" };
-    }
-    return { ok: true, audioBase64: audioContent, mimeType: "audio/ogg" };
-  }
-};
-function createTtsServiceFromEnv(env = process.env) {
-  return new TtsService({
-    apiKey: env.GOOGLE_CLOUD_TTS_API_KEY,
-    languageCode: env.TTS_LANGUAGE_CODE,
-    voiceName: env.TTS_VOICE_NAME
-  });
-}
-
-// ../../packages/integrations/src/billing.ts
-var import_node_crypto = require("node:crypto");
-var STRIPE_API_BASE = "https://api.stripe.com";
-var PLANS = [
-  { id: "starter", name: "Starter", priceEnvVar: "STRIPE_PRICE_STARTER", monthly: "\u20B9999" },
-  { id: "growth", name: "Growth", priceEnvVar: "STRIPE_PRICE_GROWTH", monthly: "\u20B92,999" },
-  { id: "scale", name: "Scale", priceEnvVar: "STRIPE_PRICE_SCALE", monthly: "\u20B97,999" }
-];
-var WEBHOOK_EVENT_TYPES = /* @__PURE__ */ new Set([
-  "checkout.session.completed",
-  "customer.subscription.updated",
-  "customer.subscription.deleted"
-]);
-var StripeBillingService = class {
-  secretKey;
-  webhookSecret;
-  constructor(config = {}) {
-    this.secretKey = config.secretKey;
-    this.webhookSecret = config.webhookSecret;
-  }
-  /** True when a secret key is present and Stripe calls can actually be made. */
-  get isConfigured() {
-    return Boolean(this.secretKey);
-  }
-  /**
-   * POST a form-encoded request to the Stripe API and return the parsed body,
-   * or a normalized error result. Never throws.
-   */
-  async postForm(path2, body) {
-    let response;
-    try {
-      response = await fetch(`${STRIPE_API_BASE}${path2}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: body.toString()
-      });
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    if (response.status >= 200 && response.status < 300) {
-      try {
-        const data = await response.json();
-        return { ok: true, data };
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-    let error = `Stripe responded with status ${response.status}`;
-    try {
-      const payload = await response.json();
-      if (payload?.error?.message) error = payload.error.message;
-    } catch {
-    }
-    return { ok: false, error };
-  }
-  async createCheckoutSession(params) {
-    if (!this.secretKey) {
-      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
-    }
-    const body = new URLSearchParams();
-    body.set("mode", "subscription");
-    body.set("line_items[0][price]", params.priceId);
-    body.set("line_items[0][quantity]", "1");
-    body.set("success_url", params.successUrl);
-    body.set("cancel_url", params.cancelUrl);
-    body.set("client_reference_id", params.organizationId);
-    if (params.customerEmail) {
-      body.set("customer_email", params.customerEmail);
-    }
-    body.set("metadata[organization_id]", params.organizationId);
-    const result = await this.postForm("/v1/checkout/sessions", body);
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-    const { id, url } = result.data;
-    return { ok: true, sessionId: id, url };
-  }
-  async createBillingPortalSession(params) {
-    if (!this.secretKey) {
-      return { ok: false, skipped: true, error: "STRIPE_SECRET_KEY not configured" };
-    }
-    const body = new URLSearchParams();
-    body.set("customer", params.customerId);
-    body.set("return_url", params.returnUrl);
-    const result = await this.postForm("/v1/billing_portal/sessions", body);
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-    const { url } = result.data;
-    return { ok: true, url };
-  }
-  /**
-   * Verify a Stripe webhook signature.
-   *
-   * The `Stripe-Signature` header looks like `t=timestamp,v1=signature`. We
-   * compute the HMAC-SHA256 hex of `${t}.${payload}` keyed by the webhook
-   * secret and timing-safe compare it to the header's v1 value. Returns false
-   * if the secret is missing or the header is malformed.
-   */
-  verifyWebhookSignature(payload, sigHeader) {
-    if (!this.webhookSecret || !sigHeader) return false;
-    let timestamp;
-    let signature;
-    for (const part of sigHeader.split(",")) {
-      const eq = part.indexOf("=");
-      if (eq === -1) continue;
-      const key = part.slice(0, eq).trim();
-      const value = part.slice(eq + 1).trim();
-      if (key === "t") timestamp = value;
-      else if (key === "v1") signature = value;
-    }
-    if (!timestamp || !signature) return false;
-    const payloadStr = typeof payload === "string" ? payload : payload.toString("utf8");
-    const expected = (0, import_node_crypto.createHmac)("sha256", this.webhookSecret).update(`${timestamp}.${payloadStr}`, "utf8").digest("hex");
-    const expectedBuf = Buffer.from(expected, "utf8");
-    const actualBuf = Buffer.from(signature, "utf8");
-    if (expectedBuf.length !== actualBuf.length) return false;
-    try {
-      return (0, import_node_crypto.timingSafeEqual)(expectedBuf, actualBuf);
-    } catch {
-      return false;
-    }
-  }
-  /**
-   * Parse a raw webhook body into a normalized event. Returns null for unknown
-   * or malformed events. Never throws. Signature verification is separate —
-   * call {@link verifyWebhookSignature} first.
-   */
-  async parseWebhookEvent(rawBody) {
-    let event;
-    try {
-      event = JSON.parse(rawBody);
-    } catch {
-      return null;
-    }
-    if (!event || typeof event !== "object") return null;
-    const { type, data } = event;
-    if (typeof type !== "string" || !WEBHOOK_EVENT_TYPES.has(type)) return null;
-    const obj = data?.object;
-    if (!obj || typeof obj !== "object") return null;
-    const metadata = obj.metadata;
-    const organizationId = asString(obj.client_reference_id) ?? asString(metadata?.organization_id);
-    const subscriptionId = asString(obj.subscription) ?? (type === "checkout.session.completed" ? void 0 : asString(obj.id));
-    return {
-      type,
-      organizationId,
-      customerId: asString(obj.customer),
-      subscriptionId,
-      status: asString(obj.status)
-    };
-  }
-};
-function asString(value) {
-  return typeof value === "string" && value.length > 0 ? value : void 0;
-}
-function createBillingServiceFromEnv(env = process.env) {
-  return new StripeBillingService({
-    secretKey: env.STRIPE_SECRET_KEY,
-    webhookSecret: env.STRIPE_WEBHOOK_SECRET
-  });
-}
-
-// ../../packages/integrations/src/hubspot.ts
-var import_node_crypto2 = require("node:crypto");
-var HUBSPOT_API_BASE = "https://api.hubapi.com";
-var NO_TOKEN_ERROR = "HUBSPOT_ACCESS_TOKEN not configured";
-var HubSpotService = class {
-  accessToken;
-  webhookSecret;
-  constructor(config = {}) {
-    this.accessToken = config.accessToken;
-    this.webhookSecret = config.webhookSecret;
-  }
-  /** True when an access token is present and HubSpot calls can actually be made. */
-  get isConfigured() {
-    return Boolean(this.accessToken);
-  }
-  /**
-   * Send a JSON request to the HubSpot API and return the parsed body, or a
-   * normalized error result. Never throws.
-   */
-  async request(method, path2, body) {
-    let response;
-    try {
-      response = await fetch(`${HUBSPOT_API_BASE}${path2}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: body === void 0 ? void 0 : JSON.stringify(body)
-      });
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-    if (response.status >= 200 && response.status < 300) {
-      try {
-        const data = await response.json();
-        return { ok: true, data };
-      } catch (err) {
-        return { ok: false, error: err.message };
-      }
-    }
-    let error = `HubSpot responded with status ${response.status}`;
-    try {
-      const payload = await response.json();
-      if (payload?.message) error = payload.message;
-    } catch {
-    }
-    return { ok: false, error };
-  }
-  /**
-   * Upsert a contact keyed by phone number. HubSpot has no native phone-based
-   * upsert, so we search by phone first, then PATCH the existing contact or
-   * POST a new one.
-   */
-  async upsertContact(params) {
-    if (!this.accessToken) {
-      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
-    }
-    const search = await this.request("POST", "/crm/v3/objects/contacts/search", {
-      filterGroups: [
-        { filters: [{ propertyName: "phone", operator: "EQ", value: params.phone }] }
-      ],
-      properties: ["phone", "email"]
-    });
-    if (!search.ok) {
-      return { ok: false, error: search.error };
-    }
-    const searchData = search.data;
-    const existingId = searchData.results?.[0]?.id;
-    const properties = { phone: params.phone };
-    if (params.email !== void 0) properties.email = params.email;
-    if (params.firstName !== void 0) properties.firstname = params.firstName;
-    if (params.lastName !== void 0) properties.lastname = params.lastName;
-    if (params.lifecycleStage !== void 0) properties.lifecyclestage = params.lifecycleStage;
-    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/contacts/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/contacts", { properties });
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-    const id = result.data.id ?? existingId;
-    return { ok: true, id };
-  }
-  /**
-   * Upsert a deal keyed by an external id (matched against `dealname`). Creates
-   * or patches the deal, and — when a new deal is created with a `contactId` —
-   * best-effort associates the deal to that contact.
-   */
-  async upsertDeal(params) {
-    if (!this.accessToken) {
-      return { ok: false, skipped: true, error: NO_TOKEN_ERROR };
-    }
-    const search = await this.request("POST", "/crm/v3/objects/deals/search", {
-      filterGroups: [
-        { filters: [{ propertyName: "dealname", operator: "EQ", value: params.externalId }] }
-      ],
-      properties: ["dealname"]
-    });
-    if (!search.ok) {
-      return { ok: false, error: search.error };
-    }
-    const searchData = search.data;
-    const existingId = searchData.results?.[0]?.id;
-    const properties = {
-      dealname: params.dealName,
-      pipeline: "default"
-    };
-    if (params.amount !== void 0) properties.amount = String(params.amount);
-    if (params.stage !== void 0) properties.dealstage = params.stage;
-    const created = !existingId;
-    const result = existingId ? await this.request("PATCH", `/crm/v3/objects/deals/${existingId}`, { properties }) : await this.request("POST", "/crm/v3/objects/deals", { properties });
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-    const id = result.data.id ?? existingId;
-    if (created && id && params.contactId) {
-      await this.request(
-        "PUT",
-        `/crm/v3/objects/deals/${id}/associations/contacts/${params.contactId}/deal_to_contact`
-      );
-    }
-    return { ok: true, id };
-  }
-  /**
-   * Verify a HubSpot v3 webhook signature.
-   *
-   * The signature is `base64( HMAC-SHA256( method + uri + body + timestamp,
-   * clientSecret ) )`, delivered in the `X-HubSpot-Signature-v3` header. We
-   * recompute it and timing-safe compare. Returns false if the webhook secret
-   * is missing or the header is absent.
-   */
-  verifyWebhookSignature(params) {
-    if (!this.webhookSecret || !params.signature) return false;
-    const base = `${params.method}${params.uri}${params.body}${params.timestamp}`;
-    const expected = (0, import_node_crypto2.createHmac)("sha256", this.webhookSecret).update(base, "utf8").digest("base64");
-    const expectedBuf = Buffer.from(expected, "utf8");
-    const actualBuf = Buffer.from(params.signature, "utf8");
-    if (expectedBuf.length !== actualBuf.length) return false;
-    try {
-      return (0, import_node_crypto2.timingSafeEqual)(expectedBuf, actualBuf);
-    } catch {
-      return false;
-    }
-  }
-  /**
-   * Parse a raw HubSpot webhook body — an ARRAY of subscription events — into
-   * normalized events. `objectType` is derived from the `subscriptionType`
-   * prefix (e.g. `contact.propertyChange` → `contact`). Returns [] for
-   * malformed input. Never throws. Signature verification is separate — call
-   * {@link verifyWebhookSignature} first.
-   */
-  parseWebhookEvents(rawBody) {
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody);
-    } catch {
-      return [];
-    }
-    if (!Array.isArray(parsed)) return [];
-    const events = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") continue;
-      const raw = item;
-      const subscriptionType = asString2(raw.subscriptionType);
-      const objectId = asString2(raw.objectId) ?? asNumberString(raw.objectId);
-      if (!subscriptionType || objectId === void 0) continue;
-      const objectType2 = subscriptionType.split(".")[0];
-      const event = { objectType: objectType2, objectId };
-      const propertyName = asString2(raw.propertyName);
-      if (propertyName !== void 0) event.propertyName = propertyName;
-      const propertyValue = asString2(raw.propertyValue);
-      if (propertyValue !== void 0) event.propertyValue = propertyValue;
-      const changeType = asString2(raw.changeType);
-      if (changeType !== void 0) event.changeType = changeType;
-      events.push(event);
-    }
-    return events;
-  }
-};
-function asString2(value) {
-  return typeof value === "string" && value.length > 0 ? value : void 0;
-}
-function asNumberString(value) {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : void 0;
-}
-function createHubSpotServiceFromEnv(env = process.env) {
-  return new HubSpotService({
-    accessToken: env.HUBSPOT_ACCESS_TOKEN,
-    webhookSecret: env.HUBSPOT_WEBHOOK_SECRET
-  });
-}
-
-// ../../packages/integrations/src/sheets.ts
-var import_node_crypto3 = require("node:crypto");
-var TOKEN_URL = "https://oauth2.googleapis.com/token";
-var SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
-var SCOPE = "https://www.googleapis.com/auth/spreadsheets";
-function b64url(input) {
-  return Buffer.from(input).toString("base64url");
-}
-function parseSpreadsheetId(urlOrId) {
-  const trimmed = (urlOrId || "").trim();
-  if (!trimmed) return null;
-  const m = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (m) return m[1] ?? null;
-  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) return trimmed;
-  return null;
-}
-function tabRange(tab, span = "A:Z") {
-  return encodeURIComponent(`'${tab.replace(/'/g, "''")}'!${span}`);
-}
-var SheetsService = class {
-  clientEmail;
-  privateKey;
-  token;
-  constructor(config = {}) {
-    this.clientEmail = config.clientEmail;
-    this.privateKey = config.privateKey?.replace(/\\n/g, "\n");
-  }
-  get isConfigured() {
-    return Boolean(this.clientEmail && this.privateKey);
-  }
-  /** The address merchants must share their spreadsheet with (Editor access). */
-  get serviceAccountEmail() {
-    return this.clientEmail;
-  }
-  async accessToken() {
-    const now = Math.floor(Date.now() / 1e3);
-    if (this.token && this.token.expiresAt > now + 60) return this.token.value;
-    if (!this.clientEmail || !this.privateKey) {
-      throw new Error("Google Sheets service account is not configured");
-    }
-    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-    const claim = b64url(
-      JSON.stringify({
-        iss: this.clientEmail,
-        scope: SCOPE,
-        aud: TOKEN_URL,
-        iat: now,
-        exp: now + 3600
-      })
-    );
-    const signingInput = `${header}.${claim}`;
-    const signature = (0, import_node_crypto3.createSign)("RSA-SHA256").update(signingInput).sign(this.privateKey, "base64url");
-    const jwt = `${signingInput}.${signature}`;
-    const res = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: jwt
-      })
-    });
-    if (!res.ok) {
-      throw new Error(`Google token exchange failed (${res.status}): ${await res.text()}`);
-    }
-    const data = await res.json();
-    this.token = { value: data.access_token, expiresAt: now + (data.expires_in ?? 3600) };
-    return this.token.value;
-  }
-  async api(path2, init) {
-    const token = await this.accessToken();
-    return fetch(`${SHEETS_API}/${path2}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        ...init?.headers ?? {}
-      }
-    });
-  }
-  /** Fetch title + tab names. Throws on 403 (not shared) / 404 (bad id). */
-  async getMeta(spreadsheetId) {
-    const res = await this.api(
-      `${spreadsheetId}?fields=${encodeURIComponent("properties.title,sheets.properties.title")}`
-    );
-    if (res.status === 403) {
-      throw new Error(
-        `Access denied \u2014 share the sheet with ${this.clientEmail} (Editor) and try again.`
-      );
-    }
-    if (!res.ok) {
-      throw new Error(`Could not open spreadsheet (${res.status}): ${await res.text()}`);
-    }
-    const data = await res.json();
-    return {
-      spreadsheetId,
-      title: data.properties?.title ?? "Untitled",
-      tabs: (data.sheets ?? []).map((s) => s.properties?.title ?? "").filter(Boolean)
-    };
-  }
-  /** Create a tab if it doesn't exist (idempotent). */
-  async ensureTab(spreadsheetId, tab) {
-    const meta = await this.getMeta(spreadsheetId);
-    if (meta.tabs.includes(tab)) return;
-    const res = await this.api(`${spreadsheetId}:batchUpdate`, {
-      method: "POST",
-      body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tab } } }] })
-    });
-    if (!res.ok) throw new Error(`Could not create tab "${tab}" (${res.status})`);
-  }
-  /**
-   * Ensure the tab exists and its first row matches `header`. Only writes the
-   * header when the tab is empty, so we never clobber a merchant's own columns.
-   */
-  async ensureHeader(spreadsheetId, tab, header) {
-    await this.ensureTab(spreadsheetId, tab);
-    const existing = await this.readRows(spreadsheetId, tab);
-    if (existing.length === 0) {
-      await this.api(`${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=RAW`, {
-        method: "POST",
-        body: JSON.stringify({ values: [header] })
-      });
-    }
-  }
-  /** Append rows to the bottom of a tab. */
-  async appendRows(spreadsheetId, tab, rows) {
-    if (rows.length === 0) return;
-    const res = await this.api(
-      `${spreadsheetId}/values/${tabRange(tab, "A1")}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-      { method: "POST", body: JSON.stringify({ values: rows }) }
-    );
-    if (!res.ok) throw new Error(`Append failed (${res.status}): ${await res.text()}`);
-  }
-  /** Read all rows of a tab as a 2D string array (including any header row). */
-  async readRows(spreadsheetId, tab) {
-    const res = await this.api(`${spreadsheetId}/values/${tabRange(tab)}`);
-    if (res.status === 400) return [];
-    if (!res.ok) throw new Error(`Read failed (${res.status}): ${await res.text()}`);
-    const data = await res.json();
-    return data.values ?? [];
-  }
-  /**
-   * Read a tab as objects keyed by its header row (lower-cased, trimmed).
-   * Returns [] when the tab is empty or missing.
-   */
-  async readAsObjects(spreadsheetId, tab) {
-    const rows = await this.readRows(spreadsheetId, tab);
-    if (rows.length < 2) return [];
-    const header = (rows[0] ?? []).map((h) => h.trim().toLowerCase());
-    return rows.slice(1).map((row) => {
-      const obj = {};
-      header.forEach((key, i) => {
-        if (key) obj[key] = (row[i] ?? "").trim();
-      });
-      return obj;
-    });
-  }
-};
-function createSheetsServiceFromEnv(env = process.env) {
-  const raw = env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (raw) {
-    try {
-      const json = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
-      const parsed = JSON.parse(json);
-      return new SheetsService({
-        clientEmail: parsed.client_email,
-        privateKey: parsed.private_key
-      });
-    } catch {
-    }
-  }
-  return new SheetsService({
-    clientEmail: env.GOOGLE_SHEETS_CLIENT_EMAIL,
-    privateKey: env.GOOGLE_SHEETS_PRIVATE_KEY
-  });
 }
 
 // ../scheduler-worker/src/index.ts

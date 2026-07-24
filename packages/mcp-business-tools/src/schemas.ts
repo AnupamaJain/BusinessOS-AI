@@ -269,6 +269,9 @@ export const GeneratePromoMediaOutput = z.object({
   durationSec: z.number(),
   caption: z.string(),
   providerUsed: z.string(),
+  /** 'done' | 'rendering' | 'assets_ready' | 'unconfigured' | 'failed'. */
+  renderStatus: z.string().optional(),
+  note: z.string().optional(),
 });
 export type GeneratePromoMediaOutput = z.infer<typeof GeneratePromoMediaOutput>;
 

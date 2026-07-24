@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ToolDataStore, generatePromoMedia } from '../index';
 
 describe('generatePromoMedia tool', () => {
-  it('generates AI promo video media result', async () => {
+  it('reports honest unconfigured status (no fake URL) when no media keys are set', async () => {
     const store = new ToolDataStore();
     const result = await generatePromoMedia(store, {
       organizationId: '11111111-1111-1111-1111-111111111111',
@@ -13,13 +13,16 @@ describe('generatePromoMedia tool', () => {
       targetChannel: 'whatsapp',
     });
 
-    expect(result.success).toBe(true);
-    expect(result.mediaUrl).toContain('mp4');
+    // No PEXELS/PIXABAY/TTS/SHOTSTACK keys in the test env → real service
+    // returns 'unconfigured' rather than a fabricated URL.
     expect(result.mediaType).toBe('video');
     expect(result.durationSec).toBe(15);
-    expect(result.caption).toContain('Bali Honeymoon Private Villa');
-    expect(result.providerUsed).toBe('openmontage_zero_cost_engine');
+    expect(result.renderStatus).toBe('unconfigured');
+    expect(result.success).toBe(false);
+    expect(result.mediaUrl).toBe('');
+    expect(result.note).toMatch(/PEXELS_API_KEY/);
 
+    // The audit event is still recorded regardless of provider config.
     expect(store.auditEvents.length).toBe(1);
     expect(store.auditEvents[0]?.action).toBe('promo_media_generated');
   });

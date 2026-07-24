@@ -161,6 +161,33 @@ function homePlan(orgId, sku, title, price, service, planType, hoursPerVisit, vi
   };
 }
 
+const WEALTH_INCLUSIONS = [
+  'Zero-commission direct mutual funds',
+  'Goal tracking & auto-rebalance alerts',
+  'Paperless KYC assistance',
+  'Auto-debit SIP setup',
+  'Access to a SEBI-registered advisor',
+];
+
+/**
+ * Helper to build a wealth / investment "plan" as a catalog package. Price is
+ * the minimum investment; the real product attributes live in metadata. (No
+ * guaranteed-return fields — VriddhiX never promises returns.)
+ */
+function wealthPlan(orgId, sku, title, minInvestment, mode, category, riskBand, horizonYears, lockInMonths) {
+  return {
+    organization_id: orgId,
+    sku,
+    title,
+    duration_days: SAME_DAY, // schema needs >0; real horizon is in metadata
+    price_per_person: minInvestment,
+    currency: 'INR',
+    inclusions: WEALTH_INCLUSIONS,
+    status: 'active',
+    metadata: { type: 'investment-plan', mode, category, riskBand, minInvestment, horizonYears, lockInMonths },
+  };
+}
+
 const TENANTS = [
   {
     key: 'RaahiCabs',
@@ -265,6 +292,74 @@ const TENANTS = [
       homePlan(orgId, 'GS-ELDER-M5', 'Elderly Care — 5 hrs/day', 16000, 'elderly-care', 'monthly', 5, 26, 'Bengaluru — Whitefield'),
     ],
   },
+  {
+    key: 'VriddhiX',
+    orgId: '55555555-5555-5555-5555-555555555555',
+    org: {
+      name: 'VriddhiX',
+      slug: 'vriddhix',
+      vertical: 'financial-services',
+      settings: {
+        enabled_verticals: ['financial-services'],
+        timezone: 'Asia/Kolkata',
+        business_hours: { start: '09:00', end: '19:00' },
+      },
+      // Compliance persona injected into the agent's LLM prompt (business rules
+      // tone) — VriddhiX educates, never promises returns, and hands off advice.
+      business_rules: {
+        languages: ['en', 'hi'],
+        tone:
+          'You are the friendly AI guide for VriddhiX, a wealth & investments firm in India. Explain SIPs, mutual funds, ELSS and goal-based investing simply and warmly. ALWAYS remind customers that mutual fund investments are subject to market risks and past performance does not guarantee future returns. NEVER promise, guarantee or predict specific returns. For personalised advice, large lump-sum decisions, or tax/legal specifics, offer to connect a SEBI-registered advisor and hand off to a human. Amounts are in INR (₹).',
+        bookingRequiresPayment: false,
+        refundRequiresApproval: true,
+        workingHours: { start: '09:00', end: '19:00', timezone: 'Asia/Kolkata' },
+      },
+      enabled_agents: ['sales', 'support', 'booking', 'operations'],
+    },
+    owner: {
+      email: process.env.VRIDDHIX_OWNER_EMAIL ?? 'owner@vriddhix.com',
+      password: process.env.VRIDDHIX_OWNER_PASSWORD ?? 'VriddhiX$2026!',
+      fullName: 'VriddhiX Owner',
+    },
+    contact: {
+      id: '55555555-0000-4000-8000-000000000001',
+      phone_number: '+919810055555',
+      name: 'Neha Kapoor',
+      email: 'neha.kapoor@example.com',
+    },
+    consentIds: ['55555555-0000-4000-8000-000000000002', '55555555-0000-4000-8000-000000000003'],
+    conversationId: '55555555-0000-4000-8000-000000000004',
+    docs: [
+      ['55555555-0000-4000-8000-000000000011', 'How SIP Investing Works', 'knowledge-base/financial-services/how-sip-works.md',
+        'A SIP (Systematic Investment Plan) lets you invest a fixed amount into a mutual fund every month — starting from as little as ₹500. Because you buy more units when prices are low and fewer when high, your average cost is smoothed out over time (rupee-cost averaging), and long-term compounding does the heavy lifting. SIPs build discipline and remove the need to time the market. Mutual fund investments are subject to market risks; returns are not guaranteed and past performance does not indicate future results. You can pause, increase, or stop a SIP anytime with no penalty (except ELSS which has a lock-in).'],
+      ['55555555-0000-4000-8000-000000000012', 'Getting Started & KYC', 'knowledge-base/financial-services/kyc-getting-started.md',
+        'To start investing with VriddhiX you complete a one-time paperless KYC using your PAN and Aadhaar — it takes about 5 minutes and is verified digitally. Once KYC is done you can begin a SIP or a lump-sum investment. Minimum SIP is ₹500/month for most funds. There is no account-opening fee and VriddhiX offers direct (zero-commission) plans. You can set up auto-debit from your bank so your SIP runs automatically each month.'],
+      ['55555555-0000-4000-8000-000000000013', 'Risk, Returns & Diversification', 'knowledge-base/financial-services/risk-and-returns.md',
+        'Every mutual fund carries risk, described by a risk band from Low (liquid/debt funds) to Very High (small-cap equity). Higher potential growth comes with higher short-term ups and downs. VriddhiX never promises or guarantees returns — anyone promising "guaranteed" mutual-fund returns is a red flag. We help you match funds to your goal and time horizon and diversify across categories so no single market swing hurts you badly. For goals under 3 years, prefer debt/hybrid; for 5+ years, equity historically rewards patience — but always subject to market risk.'],
+      ['55555555-0000-4000-8000-000000000014', 'Tax Saving with ELSS (80C)', 'knowledge-base/financial-services/elss-tax.md',
+        'ELSS (Equity Linked Savings Scheme) funds let you claim up to ₹1.5 lakh deduction under Section 80C of the Income Tax Act (old regime), while investing in equity for long-term growth. ELSS has the shortest lock-in among 80C options — just 3 years. Gains above ₹1 lakh a year are taxed as long-term capital gains at 10%. VriddhiX can suggest ELSS funds for tax-saving, but for personalised tax advice we connect you with a SEBI-registered advisor. Investments are subject to market risk.'],
+      ['55555555-0000-4000-8000-000000000015', 'Withdrawals, Lock-in & Exit Load', 'knowledge-base/financial-services/redemption-lockin.md',
+        'Most mutual funds are fully liquid — you can redeem anytime and money reaches your bank in 1-3 working days. Some funds charge a small exit load (often 1%) if you withdraw within a year, to discourage very short-term trading. ELSS funds are locked in for 3 years from each installment. Liquid funds have no lock-in and are ideal for an emergency fund. VriddhiX shows any exit load before you invest so there are no surprises.'],
+    ],
+    template: {
+      template_key: 'portfolio_review_reminder',
+      name: 'Portfolio Review Reminder',
+      content: 'Hi {{name}}, your VriddhiX portfolio review is due. Your SIPs are progressing toward your {{goal}} goal. Reply REVIEW to book a free call with a SEBI-registered advisor. Mutual funds are subject to market risk.',
+      language: 'en',
+      status: 'approved',
+      category: 'utility',
+    },
+    packages: (orgId) => [
+      wealthPlan(orgId, 'VX-SIP-INDEX', 'SIP Starter — Nifty 50 Index Fund', 500, 'SIP', 'equity-index', 'Moderate', 5, 0),
+      wealthPlan(orgId, 'VX-SIP-BALANCED', 'Balanced Advantage Fund SIP', 2000, 'SIP', 'hybrid', 'Moderate', 5, 0),
+      wealthPlan(orgId, 'VX-ELSS-TAX', 'Tax Saver ELSS (80C)', 500, 'SIP', 'elss-equity', 'Moderately High', 3, 36),
+      wealthPlan(orgId, 'VX-SIP-WEALTH', 'Wealth Builder — Flexi-cap Equity SIP', 5000, 'SIP', 'equity-flexicap', 'High', 7, 0),
+      wealthPlan(orgId, 'VX-SIP-RETIRE', 'Retirement Goal Plan', 3000, 'SIP', 'hybrid-retirement', 'Moderate', 15, 0),
+      wealthPlan(orgId, 'VX-LIQUID-EMERGENCY', 'Emergency Fund — Liquid Fund', 1000, 'SIP', 'debt-liquid', 'Low', 1, 0),
+      wealthPlan(orgId, 'VX-GOLD-SIP', 'Digital Gold SIP', 500, 'SIP', 'gold', 'Moderate', 5, 0),
+      wealthPlan(orgId, 'VX-LUMPSUM-ADVISORY', 'Lump-sum Advisory Portfolio', 100000, 'Lumpsum', 'advisory-diversified', 'Moderately High', 5, 0),
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -328,8 +423,10 @@ async function seedTenant(t) {
 async function main() {
   console.log(`Seeding demo tenants into ${SUPABASE_URL} ...`);
 
+  const only = process.env.SEED_ONLY;
+  const tenants = only ? TENANTS.filter((t) => t.key.toLowerCase() === only.toLowerCase()) : TENANTS;
   const results = [];
-  for (const t of TENANTS) {
+  for (const t of tenants) {
     results.push(await seedTenant(t));
   }
 

@@ -1,20 +1,47 @@
+/**
+ * Promotional media generation — REAL, not mocked.
+ *
+ * Three capabilities, each degrades gracefully when its provider key is absent
+ * (mirrors the other integrations: `isConfigured` + never throws):
+ *   1. searchStockFootage   → real Pexels (primary) / Pixabay (fallback) search
+ *   2. generateVoiceNarration → real Google Cloud TTS (returns base64 audio)
+ *   3. generateVideoTeaser  → assembles real stock + narration into a storyboard;
+ *      renders a real MP4 via Shotstack when SHOTSTACK_API_KEY is set, otherwise
+ *      returns the real asset kit with renderStatus='assets_ready'.
+ *
+ * Pure `fetch` — no SDK dependency — so it stays inside the esbuild bundle.
+ */
+import { TtsService } from './tts';
+
 export interface GenerateVideoTeaserOptions {
   topic: string;
   durationSec?: number;
   style?: 'cinematic' | 'anime' | 'documentary' | 'product_ad' | 'travel_reel';
-  provider?: 'free_open_source' | 'pexels_remotion' | 'fal' | 'replicate' | 'kling' | 'mock';
   aspectRatio?: '16:9' | '9:16' | '1:1';
-  preferFreeTier?: boolean;
+  /** Optional narration script; when omitted a line is derived from the topic. */
+  narration?: string;
+}
+
+export interface StoryboardClip {
+  url: string;
+  previewUrl: string;
+  provider: string;
+  title: string;
 }
 
 export interface GeneratedMediaResult {
   success: boolean;
+  /** Rendered MP4 URL when a renderer is configured + finished; else ''. */
   mediaUrl: string;
   mediaType: 'video' | 'image' | 'audio';
   durationSec: number;
   providerUsed: string;
   caption: string;
   costEstUsd: number;
+  /** 'done' | 'rendering' | 'assets_ready' | 'unconfigured' | 'failed'. */
+  renderStatus: string;
+  /** Shotstack render id when a render was submitted (poll for completion). */
+  renderId?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -34,129 +61,197 @@ export interface StockFootageResult {
   }>;
 }
 
+export interface NarrationResult {
+  /** base64-encoded audio when TTS is configured. */
+  audioBase64?: string;
+  mimeType?: string;
+  durationSec: number;
+  provider: string;
+  skipped?: boolean;
+}
+
+const SHOTSTACK_ASPECTS: Record<string, string> = { '16:9': '16:9', '9:16': '9:16', '1:1': '1:1' };
+
 export class OpenMontageMediaService {
-  private falKey?: string;
-  private replicateToken?: string;
-  private klingKey?: string;
-  private pexelsKey?: string;
+  private readonly pexelsKey?: string;
+  private readonly pixabayKey?: string;
+  private readonly shotstackKey?: string;
+  private readonly shotstackEnv: string;
+  private readonly tts: TtsService;
 
   constructor(env: Record<string, string | undefined> = process.env) {
-    this.falKey = env['FAL_KEY'] ?? env['FAL_AI_API_KEY'];
-    this.replicateToken = env['REPLICATE_API_TOKEN'];
-    this.klingKey = env['KLING_API_KEY'];
     this.pexelsKey = env['PEXELS_API_KEY'];
+    this.pixabayKey = env['PIXABAY_API_KEY'];
+    this.shotstackKey = env['SHOTSTACK_API_KEY'];
+    this.shotstackEnv = env['SHOTSTACK_ENV'] ?? 'stage'; // 'stage' = free sandbox
+    this.tts = new TtsService({
+      apiKey: env['GOOGLE_CLOUD_TTS_API_KEY'],
+      languageCode: env['TTS_LANGUAGE_CODE'] ?? 'en-IN',
+      voiceName: env['TTS_VOICE_NAME'],
+    });
   }
 
-  /**
-   * Generates a video teaser / promotional montage using OpenMontage provider pipeline.
-   * Defaults to 100% Free / Zero-Cost Open-Source engine (Pexels, Archive.org, Piper TTS).
-   */
+  get canSearchStock(): boolean { return Boolean(this.pexelsKey || this.pixabayKey); }
+  get canNarrate(): boolean { return this.tts.isConfigured; }
+  get canRender(): boolean { return Boolean(this.shotstackKey); }
+  /** Configured enough to produce *some* real asset. */
+  get isConfigured(): boolean { return this.canSearchStock || this.canNarrate; }
+
+  // ── 1. Stock footage (real Pexels / Pixabay) ─────────────────────
+  async searchStockFootage(options: StockFootageQuery): Promise<StockFootageResult> {
+    const limit = Math.min(options.limit ?? 5, 20);
+    const type = options.mediaType ?? 'video';
+    try {
+      if (this.pexelsKey) {
+        const items = await this.searchPexels(options.query, type, limit);
+        if (items.length) return { items };
+      }
+      if (this.pixabayKey) {
+        const items = await this.searchPixabay(options.query, type, limit);
+        if (items.length) return { items };
+      }
+    } catch {
+      // fall through to empty
+    }
+    return { items: [] };
+  }
+
+  private async searchPexels(query: string, type: 'video' | 'image', limit: number): Promise<StockFootageResult['items']> {
+    const url = type === 'video'
+      ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}`
+      : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}`;
+    const res = await fetch(url, { headers: { Authorization: this.pexelsKey ?? '' } });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      videos?: Array<{ id: number; image: string; video_files: Array<{ link: string; quality: string; file_type: string }> }>;
+      photos?: Array<{ id: number; alt?: string; src: { original: string; large: string; medium: string } }>;
+    };
+    if (type === 'video') {
+      return (data.videos ?? []).map((v) => {
+        const file = v.video_files.find((f) => f.quality === 'hd' && f.file_type === 'video/mp4') ?? v.video_files.find((f) => f.file_type === 'video/mp4') ?? v.video_files[0];
+        return { id: `pexels-${v.id}`, url: file?.link ?? '', previewUrl: v.image, provider: 'pexels' as const, title: `${query} clip` };
+      }).filter((i) => i.url);
+    }
+    return (data.photos ?? []).map((p) => ({ id: `pexels-${p.id}`, url: p.src.large, previewUrl: p.src.medium, provider: 'pexels' as const, title: p.alt || `${query} photo` }));
+  }
+
+  private async searchPixabay(query: string, type: 'video' | 'image', limit: number): Promise<StockFootageResult['items']> {
+    const base = type === 'video' ? 'https://pixabay.com/api/videos/' : 'https://pixabay.com/api/';
+    const res = await fetch(`${base}?key=${this.pixabayKey}&q=${encodeURIComponent(query)}&per_page=${limit}&safesearch=true`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      hits?: Array<{ id: number; tags?: string; videos?: { large?: { url: string }; medium?: { url: string } }; webformatURL?: string; largeImageURL?: string; previewURL?: string }>;
+    };
+    return (data.hits ?? []).map((h) => {
+      if (type === 'video') {
+        const v = h.videos?.large?.url ?? h.videos?.medium?.url ?? '';
+        return { id: `pixabay-${h.id}`, url: v, previewUrl: '', provider: 'pixabay' as const, title: h.tags || `${query} clip` };
+      }
+      return { id: `pixabay-${h.id}`, url: h.largeImageURL ?? h.webformatURL ?? '', previewUrl: h.previewURL ?? '', provider: 'pixabay' as const, title: h.tags || `${query} photo` };
+    }).filter((i) => i.url);
+  }
+
+  // ── 2. Voice narration (real Google Cloud TTS) ───────────────────
+  async generateVoiceNarration(text: string, opts?: { languageCode?: string; voiceName?: string }): Promise<NarrationResult> {
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    const durationSec = Math.max(3, Math.ceil(words / 2.5)); // ~150 wpm
+    if (!this.tts.isConfigured) {
+      return { durationSec, provider: 'none', skipped: true };
+    }
+    const r = await this.tts.synthesize({ text, languageCode: opts?.languageCode, voiceName: opts?.voiceName });
+    if (!r.ok || !r.audioBase64) return { durationSec, provider: 'google-tts', skipped: true };
+    return { audioBase64: r.audioBase64, mimeType: r.mimeType ?? 'audio/ogg', durationSec, provider: 'google-tts' };
+  }
+
+  // ── 3. Video teaser (real assets → optional Shotstack render) ────
   async generateVideoTeaser(options: GenerateVideoTeaserOptions): Promise<GeneratedMediaResult> {
     const duration = options.durationSec ?? 15;
-    const style = options.style ?? 'travel_reel';
+    const style = options.style ?? 'product_ad';
     const aspect = options.aspectRatio ?? '9:16';
+    const narrationText = options.narration ?? `Discover ${options.topic}. Book with us today.`;
+    const caption = `🎬 ${options.topic} (${style})`;
 
-    console.log('OpenMontage: Generating video teaser', { topic: options.topic, style, duration });
-
-    // Determine active provider based on environment keys & free-tier preference
-    let providerUsed = 'free_open_source';
-    if (options.provider) {
-      providerUsed = options.provider;
-    } else if (options.preferFreeTier !== false) {
-      providerUsed = 'openmontage_free_stack';
-    } else if (this.falKey) {
-      providerUsed = 'fal.ai/kling-v3';
-    } else if (this.replicateToken) {
-      providerUsed = 'replicate/wan2.1';
-    } else if (this.klingKey) {
-      providerUsed = 'kling-direct-api';
-    }
-
-    const caption = `🎬 SaarthiOne Free AI Teaser: "${options.topic}" (${style}, ${aspect})`;
-
-    if (providerUsed === 'openmontage_free_stack' || providerUsed === 'free_open_source' || providerUsed === 'mock' || !this.falKey) {
-      // 100% Free Open-Source Media Generation Engine (Zero Cost!)
-      const sampleMediaId = Math.floor(100000 + Math.random() * 900000);
+    if (!this.isConfigured) {
       return {
-        success: true,
-        mediaUrl: `https://cdn.saarthione.ai/media/promos/free_${style}_${sampleMediaId}.mp4`,
-        mediaType: 'video',
-        durationSec: duration,
-        providerUsed: 'openmontage_zero_cost_engine',
-        caption,
-        costEstUsd: 0.00, // 100% FREE!
-        metadata: {
-          style,
-          aspectRatio: aspect,
-          promptUsed: `Free open-source montage of ${options.topic} via Archive.org & Pexels`,
-          narrationEngine: 'Piper TTS (Offline Free)',
-        },
+        success: false, mediaUrl: '', mediaType: 'video', durationSec: duration,
+        providerUsed: 'none', caption, costEstUsd: 0, renderStatus: 'unconfigured',
+        metadata: { hint: 'Set PEXELS_API_KEY / PIXABAY_API_KEY (footage), GOOGLE_CLOUD_TTS_API_KEY (narration), SHOTSTACK_API_KEY (render).' },
       };
     }
 
-    // Real Provider Dispatch Skeleton (e.g. Fal.ai / Replicate)
-    try {
-      return {
-        success: true,
-        mediaUrl: `https://fal.media/files/openmontage/${Date.now()}.mp4`,
-        mediaType: 'video',
-        durationSec: duration,
-        providerUsed,
-        caption,
-        costEstUsd: 0.35,
-      };
-    } catch (err) {
-      console.error('OpenMontage media generation failed', { error: err instanceof Error ? err.message : String(err) });
-      return {
-        success: false,
-        mediaUrl: '',
-        mediaType: 'video',
-        durationSec: 0,
-        providerUsed,
-        caption: 'Media generation failed',
-        costEstUsd: 0,
-      };
+    // Real assets: stock clips + narration audio.
+    const stock = await this.searchStockFootage({ query: options.topic, mediaType: 'video', limit: 3 });
+    const narration = await this.generateVoiceNarration(narrationText);
+    const clips: StoryboardClip[] = stock.items.map((i) => ({ url: i.url, previewUrl: i.previewUrl, provider: i.provider, title: i.title }));
+
+    const baseMeta = {
+      style, aspectRatio: aspect, narrationScript: narrationText,
+      clips, narrationDurationSec: narration.durationSec, narrationProvider: narration.provider,
+      hasNarrationAudio: Boolean(narration.audioBase64),
+    };
+
+    // Render a real MP4 when Shotstack is configured and we have footage.
+    if (this.canRender && clips.length > 0) {
+      try {
+        const rendered = await this.renderWithShotstack(clips, options.topic, duration, aspect);
+        return {
+          success: true, mediaUrl: rendered.url ?? '', mediaType: 'video', durationSec: duration,
+          providerUsed: `shotstack-${this.shotstackEnv}`, caption, costEstUsd: 0,
+          renderStatus: rendered.status, renderId: rendered.id,
+          metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64 },
+        };
+      } catch (err) {
+        return {
+          success: false, mediaUrl: '', mediaType: 'video', durationSec: duration,
+          providerUsed: 'shotstack', caption, costEstUsd: 0, renderStatus: 'failed',
+          metadata: { ...baseMeta, error: err instanceof Error ? err.message : String(err) },
+        };
+      }
     }
-  }
 
-  /**
-   * Searches free stock footage and open media (Pexels / Pixabay / Archive.org).
-   */
-  async searchStockFootage(options: StockFootageQuery): Promise<StockFootageResult> {
-    const limit = options.limit ?? 5;
-    const mediaType = options.mediaType ?? 'video';
-    const provider = this.pexelsKey ? 'pexels' : 'pixabay';
-
-    console.log('OpenMontage: Searching stock media', { query: options.query, mediaType, limit, provider });
-
+    // No renderer: return the real asset kit (clips + narration).
     return {
-      items: [
-        {
-          id: 'stock-101',
-          url: `https://images.pexels.com/videos/${options.query.toLowerCase()}-101.mp4`,
-          previewUrl: `https://images.pexels.com/photos/${options.query.toLowerCase()}-101.jpg`,
-          provider: 'pexels',
-          title: `Stock ${options.query} Motion Clip 1`,
-        },
-        {
-          id: 'stock-102',
-          url: `https://pixabay.com/videos/download/${options.query.toLowerCase()}-102.mp4`,
-          previewUrl: `https://pixabay.com/photos/${options.query.toLowerCase()}-102.jpg`,
-          provider: 'pixabay',
-          title: `Stock ${options.query} Motion Clip 2`,
-        },
-      ],
+      success: clips.length > 0 || Boolean(narration.audioBase64), mediaUrl: '', mediaType: 'video',
+      durationSec: duration, providerUsed: `${clips[0]?.provider ?? 'stock'}+${narration.provider}`,
+      caption, costEstUsd: 0, renderStatus: 'assets_ready',
+      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: 'Real footage + narration ready; set SHOTSTACK_API_KEY to auto-render a single MP4.' },
     };
   }
 
-  /**
-   * Generates AI voice narration / audio clip.
-   */
-  async generateVoiceNarration(text: string, voiceId?: string): Promise<{ audioUrl: string; durationSec: number }> {
-    console.log('OpenMontage: Generating voice narration', { length: text.length, voiceId });
-    return {
-      audioUrl: `https://cdn.saarthione.ai/audio/narration_${Date.now()}.mp3`,
-      durationSec: Math.max(3, Math.ceil(text.length / 15)),
+  private async renderWithShotstack(clips: StoryboardClip[], title: string, duration: number, aspect: string): Promise<{ status: string; url?: string; id?: string }> {
+    const per = Math.max(2, Math.round(duration / clips.length));
+    const videoClips = clips.map((c, i) => ({
+      asset: { type: 'video', src: c.url }, start: i * per, length: per, fit: 'crop',
+      transition: { in: 'fade', out: 'fade' },
+    }));
+    const titleClip = { asset: { type: 'title', text: title, style: 'minimal', size: 'medium' }, start: 0, length: Math.min(duration, per) };
+    const body = {
+      timeline: { background: '#000000', tracks: [{ clips: [titleClip] }, { clips: videoClips }] },
+      output: { format: 'mp4', aspectRatio: SHOTSTACK_ASPECTS[aspect] ?? '9:16' },
     };
+    const submit = await fetch(`https://api.shotstack.io/${this.shotstackEnv}/render`, {
+      method: 'POST',
+      headers: { 'x-api-key': this.shotstackKey ?? '', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!submit.ok) throw new Error(`Shotstack submit failed (${submit.status})`);
+    const id = ((await submit.json()) as { response?: { id?: string } }).response?.id;
+    if (!id) throw new Error('Shotstack returned no render id');
+
+    // Bounded poll (renders are async; return 'rendering' + id if not done in time).
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const poll = await fetch(`https://api.shotstack.io/${this.shotstackEnv}/render/${id}`, { headers: { 'x-api-key': this.shotstackKey ?? '' } });
+      if (!poll.ok) continue;
+      const st = ((await poll.json()) as { response?: { status?: string; url?: string } }).response;
+      if (st?.status === 'done') return { status: 'done', url: st.url, id };
+      if (st?.status === 'failed') return { status: 'failed', id };
+    }
+    return { status: 'rendering', id };
   }
+}
+
+/** Build a media service from env (matches createXFromEnv convention). */
+export function createMediaServiceFromEnv(env: Record<string, string | undefined> = process.env): OpenMontageMediaService {
+  return new OpenMontageMediaService(env);
 }

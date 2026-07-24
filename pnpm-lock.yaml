@@ -399,6 +399,9 @@ importers:
       '@business-os-ai/database':
         specifier: workspace:*
         version: link:../database
+      '@business-os-ai/integrations':
+        specifier: workspace:*
+        version: link:../integrations
       '@business-os-ai/shared-types':
         specifier: workspace:*
         version: link:../shared-types
