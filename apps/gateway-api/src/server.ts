@@ -1694,9 +1694,16 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
       if (!op) { res.status(401).json({ ok: false, error: 'Unauthorized' }); return; }
       const message = strField((req.body as { message?: unknown })?.message);
       if (!message) { res.status(400).json({ ok: false, error: 'message required' }); return; }
+      // Optional sessionId → isolated synthetic contact/conversation (for running
+      // independent test scenarios without them bleeding into one thread). The
+      // derived number stays in a clearly-fake +0009… range (never a real phone).
+      const sessionId = strField((req.body as { sessionId?: unknown })?.sessionId);
+      const from = sessionId
+        ? '+0009' + String(Array.from(sessionId).reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 100_000_000).padStart(8, '0')
+        : '+000000000000';
       try {
         const org = await getOrgContext(op.organizationId);
-        const inbound: InboundMessage = { providerMessageId: `sandbox:${randomUUID()}`, from: '+000000000000', timestamp: new Date(), type: 'text', text: message, metadata: { channel: 'sandbox' } };
+        const inbound: InboundMessage = { providerMessageId: `sandbox:${randomUUID()}`, from, timestamp: new Date(), type: 'text', text: message, metadata: { channel: 'sandbox' } };
         const stored = await messageService.persistInbound(op.organizationId, inbound);
         if (!stored.contactId || !stored.conversationId) { res.status(500).json({ ok: false, error: 'sandbox init failed' }); return; }
         const state = await executeAgentGraph(store, {

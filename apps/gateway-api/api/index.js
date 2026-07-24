@@ -62713,9 +62713,11 @@ ${qrSvg ? `<div class="qr">${qrSvg}</div><div class="muted" style="font-size:12p
         res.status(400).json({ ok: false, error: "message required" });
         return;
       }
+      const sessionId = strField(req.body?.sessionId);
+      const from = sessionId ? "+0009" + String(Array.from(sessionId).reduce((a, c) => a * 31 + c.charCodeAt(0) >>> 0, 7) % 1e8).padStart(8, "0") : "+000000000000";
       try {
         const org = await getOrgContext(op.organizationId);
-        const inbound = { providerMessageId: `sandbox:${(0, import_crypto12.randomUUID)()}`, from: "+000000000000", timestamp: /* @__PURE__ */ new Date(), type: "text", text: message, metadata: { channel: "sandbox" } };
+        const inbound = { providerMessageId: `sandbox:${(0, import_crypto12.randomUUID)()}`, from, timestamp: /* @__PURE__ */ new Date(), type: "text", text: message, metadata: { channel: "sandbox" } };
         const stored = await messageService.persistInbound(op.organizationId, inbound);
         if (!stored.contactId || !stored.conversationId) {
           res.status(500).json({ ok: false, error: "sandbox init failed" });
