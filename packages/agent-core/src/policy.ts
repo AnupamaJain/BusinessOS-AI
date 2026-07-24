@@ -229,6 +229,8 @@ export function classifyIntent(message: string): IntentType {
     'cab', 'taxi', 'outstation', 'intercity',
     // Home services (maid/cook/cleaning)
     'maid', 'cook', 'cooking', 'cleaning', 'cleaner', 'housekeeping', 'househelp', 'babysitter', 'nanny', 'deep clean', 'full-time maid',
+    // Wealth / investments
+    'invest', 'investing', 'investment', 'sip', 'mutual fund', 'elss', 'portfolio', 'wealth', 'retirement', 'tax saving', 'tax saver', '80c', 'lump sum', 'lumpsum',
   ].some((k) => lower.includes(k))) return 'sales_enquiry';
 
   // Order status

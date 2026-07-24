@@ -660,7 +660,9 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
       const searchResult = await searchCabRoutes(store, input);
       // Only commit to the cab branch if it's an explicit cab signal OR the city-pair
       // actually resolves to real routes — this keeps skincare/travel enquiries out.
-      if (cabKeyword || searchResult.routes.length > 0) {
+      // Only commit to cabs if this IS a cab tenant or real routes matched —
+      // a mere "cab" keyword must not hijack another vertical (e.g. VriddhiX).
+      if (deps.vertical === 'cab-intercity' || searchResult.routes.length > 0) {
         state.toolCalls.push({ tool: 'search_cab_routes', input, output: searchResult });
         if (searchResult.routes.length > 0) {
           const top = searchResult.routes.slice(0, 3);
@@ -692,7 +694,7 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
   }
 
   // ── Home services (maid/cook/cleaning) sales flow ───────────────
-  if (hasHomeServiceSignal(deps, lower)) {
+  if (hasHomeServiceSignal(deps, lower) && (deps.vertical === 'home-services' || (await searchServicePlans(store, { organizationId: state.organizationId })).plans.length > 0)) {
     const service = parseServiceKind(lower);
     const planType: 'monthly' | 'one-time' | undefined =
       lower.includes('monthly') ? 'monthly' : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? 'one-time' : undefined;
@@ -888,7 +890,9 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
   // and (b) match them in their own sibling branches below.
   const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
   const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
+  const wealthPlans = await store.getPackagesByType(state.organizationId, 'investment-plan');
   const nonTravelSkus = new Set([...cabRoutes, ...servicePlans].map((p) => p.sku));
+  for (const p of wealthPlans) nonTravelSkus.add(p.sku);
   const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages
     .filter((p) => !nonTravelSkus.has(p.sku));
   const ctx = state.customerContext as { latestLead?: { serviceInterest?: string } } | undefined;
@@ -964,7 +968,7 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     contextText.includes(r.sku.toLowerCase()) ||
     (!!r.fromCity && !!r.toCity && contextText.includes(r.fromCity.toLowerCase()) && contextText.includes(r.toCity.toLowerCase())) ||
     r.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
-  const isCabBooking = !isTravelBooking && (deps.vertical === 'cab-intercity' || !!matchedCab || hasCabKeyword(deps, contextText));
+  const isCabBooking = !isTravelBooking && (deps.vertical === 'cab-intercity' || !!matchedCab || (hasCabKeyword(deps, contextText) && cabRoutes.length > 0));
   if (isCabBooking) {
     // 1) Route chosen but no pickup date yet → tappable date picker.
     if (matchedCab && !hasDate) {
@@ -1003,7 +1007,7 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
     contextText.includes(p.sku.toLowerCase()) ||
     (!!p.service && contextText.includes(p.service.toLowerCase())) ||
     p.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
-  const isServiceBooking = !isTravelBooking && (deps.vertical === 'home-services' || !!matchedPlan || hasHomeServiceSignal(deps, contextText));
+  const isServiceBooking = !isTravelBooking && (deps.vertical === 'home-services' || !!matchedPlan || (hasHomeServiceSignal(deps, contextText) && servicePlans.length > 0));
   if (isServiceBooking) {
     // 1) Plan chosen but no start date yet → tappable date picker.
     if (matchedPlan && !hasDate) {

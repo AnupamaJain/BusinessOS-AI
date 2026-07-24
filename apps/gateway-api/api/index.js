@@ -58991,7 +58991,22 @@ function classifyIntent(message) {
     "babysitter",
     "nanny",
     "deep clean",
-    "full-time maid"
+    "full-time maid",
+    // Wealth / investments
+    "invest",
+    "investing",
+    "investment",
+    "sip",
+    "mutual fund",
+    "elss",
+    "portfolio",
+    "wealth",
+    "retirement",
+    "tax saving",
+    "tax saver",
+    "80c",
+    "lump sum",
+    "lumpsum"
   ].some((k) => lower.includes(k))) return "sales_enquiry";
   if (["order status", "where is my order", "tracking", "package", "delivery status", "when will i receive", "owner of order", "order"].some((k) => lower.includes(k))) return "order_status";
   if (["what is", "how to use", "ingredients", "spf", "difference between", "suitable for", "good for", "tested", "niacinamide", "vitamin c", "serum", "cleanser"].some((k) => lower.includes(k))) return "product_question";
@@ -59645,7 +59660,7 @@ When are you planning to travel, and for how many people?`;
       const vehicleClass = VEHICLE_CLASSES.find((v) => lower.includes(v));
       const input = { organizationId: state.organizationId, fromCity, toCity, vehicleClass };
       const searchResult2 = await searchCabRoutes(store, input);
-      if (cabKeyword || searchResult2.routes.length > 0) {
+      if (deps.vertical === "cab-intercity" || searchResult2.routes.length > 0) {
         state.toolCalls.push({ tool: "search_cab_routes", input, output: searchResult2 });
         if (searchResult2.routes.length > 0) {
           const top = searchResult2.routes.slice(0, 3);
@@ -59678,7 +59693,7 @@ Which route works for you, and when should we pick you up?`;
       }
     }
   }
-  if (hasHomeServiceSignal(deps, lower)) {
+  if (hasHomeServiceSignal(deps, lower) && (deps.vertical === "home-services" || (await searchServicePlans(store, { organizationId: state.organizationId })).plans.length > 0)) {
     const service = parseServiceKind(lower);
     const planType = lower.includes("monthly") ? "monthly" : /\b(one[-\s]?time|onetime|single)\b/.test(lower) ? "one-time" : void 0;
     const input = { organizationId: state.organizationId, service, planType };
@@ -59871,7 +59886,9 @@ async function nodeBookingFlow(store, state, deps) {
   }
   const cabRoutes = (await searchCabRoutes(store, { organizationId: state.organizationId })).routes;
   const servicePlans = (await searchServicePlans(store, { organizationId: state.organizationId })).plans;
+  const wealthPlans = await store.getPackagesByType(state.organizationId, "investment-plan");
   const nonTravelSkus = new Set([...cabRoutes, ...servicePlans].map((p) => p.sku));
+  for (const p of wealthPlans) nonTravelSkus.add(p.sku);
   const packages = (await searchTravelPackages(store, { organizationId: state.organizationId })).packages.filter((p) => !nonTravelSkus.has(p.sku));
   const ctx = state.customerContext;
   const contextText = [
@@ -59945,7 +59962,7 @@ Is there anything else I can help you with? \u{1F60A}`;
     }
   }
   const matchedCab = cabRoutes.find((r) => contextText.includes(r.sku.toLowerCase()) || !!r.fromCity && !!r.toCity && contextText.includes(r.fromCity.toLowerCase()) && contextText.includes(r.toCity.toLowerCase()) || r.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
-  const isCabBooking = !isTravelBooking && (deps.vertical === "cab-intercity" || !!matchedCab || hasCabKeyword(deps, contextText));
+  const isCabBooking = !isTravelBooking && (deps.vertical === "cab-intercity" || !!matchedCab || hasCabKeyword(deps, contextText) && cabRoutes.length > 0);
   if (isCabBooking) {
     if (matchedCab && !hasDate) {
       offerChoices(state, { list: { header: "\u{1F4C5} When should we pick you up?", button: "Pick a date", items: upcomingDates() } });
@@ -59980,7 +59997,7 @@ Once you pay, your driver details will be shared. \u2728`;
     return state;
   }
   const matchedPlan = servicePlans.find((p) => contextText.includes(p.sku.toLowerCase()) || !!p.service && contextText.includes(p.service.toLowerCase()) || p.title.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && contextText.includes(w)));
-  const isServiceBooking = !isTravelBooking && (deps.vertical === "home-services" || !!matchedPlan || hasHomeServiceSignal(deps, contextText));
+  const isServiceBooking = !isTravelBooking && (deps.vertical === "home-services" || !!matchedPlan || hasHomeServiceSignal(deps, contextText) && servicePlans.length > 0);
   if (isServiceBooking) {
     if (matchedPlan && !hasDate) {
       offerChoices(state, { list: { header: "\u{1F4C5} When would you like to start?", button: "Pick a date", items: upcomingDates() } });
