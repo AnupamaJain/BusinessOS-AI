@@ -90,6 +90,7 @@ import {
   previewSegment,
   createCampaign,
   fetchCampaigns,
+  fetchCampaignDetail,
   fetchMarketingOverview,
 } from './lib/api';
 import { ActivityTrendChart, LeadFunnelChart } from './components/analyticsCharts';
@@ -112,6 +113,8 @@ import type {
   TemplateCategory,
   TimelineEvent,
   SegmentFilter,
+  CampaignRow,
+  CampaignStats,
 } from './lib/types';
 
 type ViewState = 'landing' | 'onboarding' | 'dashboard';
@@ -775,6 +778,8 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
   const [segPreview, setSegPreview] = useState<{ count: number; sample: string[] } | null>(null);
   const [campBusy, setCampBusy] = useState(false);
   const [campNotice, setCampNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<{ campaign: CampaignRow; stats: CampaignStats } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   function toggleAgent(id: string): void {
     setAiConfigNotice(null);
@@ -1488,6 +1493,13 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
     setSegPreview(null);
     setCampNotice({ kind: 'success', text: 'Campaign is sending — metrics will populate below as it lands.' });
     setTimeout(() => { void campaignsQuery.refetch(); void marketingQuery.refetch(); }, 1500);
+  }
+
+  async function openCampaignDetail(id: string): Promise<void> {
+    setDetailLoading(true);
+    const d = await fetchCampaignDetail(session.access_token, id);
+    setDetailLoading(false);
+    if (d) setSelectedCampaign(d);
   }
 
   /* Live data (10s polling while the relevant view is active) */
@@ -5211,18 +5223,90 @@ function AuthedApp({ session, viewState, setViewState, signOut }: AuthedAppProps
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {(campaignsQuery.data ?? []).map((c) => (
-                    <div key={c.id} style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-muted)' }}>
+                    <div
+                      key={c.id}
+                      onClick={() => { void openCampaignDetail(c.id); }}
+                      style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', backgroundColor: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-muted)', cursor: 'pointer' }}
+                    >
                       <span style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '14px' }}>{c.name}</span>
                       <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>{c.channel}</span>
                       <span style={{ fontSize: '12px', color: c.status === 'failed' ? 'var(--color-danger)' : c.status === 'sending' ? 'var(--text-muted)' : 'var(--color-success)' }}>
                         {c.status === 'sending' ? '⏳ sending' : c.status === 'failed' ? '⚠ failed' : `✅ ${c.sent}/${c.total} sent`}
                       </span>
                       <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-muted)' }}>{new Date(c.created_at).toLocaleString('en-IN')}</span>
+                      <span style={{ fontSize: '12px', color: 'var(--color-primary)', fontWeight: 600 }}>{detailLoading ? '…' : 'View →'}</span>
                     </div>
                   ))}
                 </div>
               )}
             </div>
+
+            {/* Campaign detail drill-down (funnel) */}
+            {selectedCampaign && (() => {
+              const { campaign: c, stats: st } = selectedCampaign;
+              const funnel: Array<{ label: string; count: number; rate?: number }> = [
+                { label: 'Sent', count: st.sent },
+                { label: 'Delivered', count: st.delivered, rate: st.deliveryRate },
+                { label: c.channel === 'whatsapp' ? 'Read' : 'Opened', count: st.opened, rate: st.openRate },
+                { label: 'Clicked', count: st.clicked, rate: st.ctr },
+                { label: 'Converted', count: st.converted, rate: st.conversionRate },
+              ];
+              const maxCount = Math.max(1, st.sent, st.total);
+              return (
+                <div
+                  onClick={() => setSelectedCampaign(null)}
+                  style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', zIndex: 1000 }}
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="report-card"
+                    style={{ maxWidth: '540px', width: '100%', maxHeight: '85vh', overflowY: 'auto' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '4px' }}>
+                      <div>
+                        <div className="report-card-title" style={{ margin: 0 }}>
+                          <Megaphone size={20} style={{ color: 'var(--color-primary)' }} />
+                          {c.name}
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', textTransform: 'capitalize' }}>
+                          {c.channel} · {c.status} · {new Date(c.created_at).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                      <button className="btn btn-secondary" style={{ marginLeft: 'auto', padding: '6px 10px' }} onClick={() => setSelectedCampaign(null)}>
+                        <X size={14} />
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '18px' }}>
+                      {funnel.map((f) => (
+                        <div key={f.label}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '4px' }}>
+                            <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{f.label}</span>
+                            <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                              {f.count}{f.rate != null && <span style={{ color: 'var(--color-primary)', marginLeft: '8px' }}>{f.rate}%</span>}
+                            </span>
+                          </div>
+                          <div style={{ height: '8px', borderRadius: '999px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${Math.round((f.count / maxCount) * 100)}%`, background: 'var(--color-primary)', borderRadius: '999px' }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {c.target_url && (
+                      <div style={{ marginTop: '18px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                        CTA link (tracked): <a href={c.target_url} target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)' }}>{c.target_url}</a>
+                      </div>
+                    )}
+                    <div style={{ marginTop: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      {c.channel === 'whatsapp'
+                        ? 'Open = message read receipt from WhatsApp. Clicks tracked via wrapped links.'
+                        : 'Open = email pixel (needs Resend tracking). Clicks tracked via wrapped links.'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

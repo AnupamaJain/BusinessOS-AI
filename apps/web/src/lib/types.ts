@@ -327,6 +327,8 @@ export interface CampaignRow {
   created_at: string;
   sent_at: string | null;
   completed_at: string | null;
+  /** Present on the detail endpoint only. */
+  target_url?: string | null;
 }
 
 export interface CampaignStats {
