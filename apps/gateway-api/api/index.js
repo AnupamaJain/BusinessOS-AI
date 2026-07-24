@@ -56855,7 +56855,7 @@ var OpenMontageMediaService = class {
     const type = options.mediaType ?? "video";
     try {
       if (this.pexelsKey) {
-        const items = await this.searchPexels(options.query, type, limit);
+        const items = await this.searchPexels(options.query, type, limit, options.orientation);
         if (items.length) return { items };
       }
       if (this.pixabayKey) {
@@ -56866,8 +56866,9 @@ var OpenMontageMediaService = class {
     }
     return { items: [] };
   }
-  async searchPexels(query, type, limit) {
-    const url = type === "video" ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}` : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}`;
+  async searchPexels(query, type, limit, orientation) {
+    const orient = orientation ? `&orientation=${orientation}` : "";
+    const url = type === "video" ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}${orient}` : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}${orient}`;
     const res = await fetch(url, { headers: { Authorization: this.pexelsKey ?? "" } });
     if (!res.ok) return [];
     const data = await res.json();
@@ -56923,7 +56924,8 @@ var OpenMontageMediaService = class {
         metadata: { hint: "Set PEXELS_API_KEY / PIXABAY_API_KEY (footage), GOOGLE_CLOUD_TTS_API_KEY (narration), SHOTSTACK_API_KEY (render)." }
       };
     }
-    const stock = await this.searchStockFootage({ query: options.topic, mediaType: "video", limit: 3 });
+    const orientation = aspect === "9:16" ? "portrait" : aspect === "1:1" ? "square" : "landscape";
+    const stock = await this.searchStockFootage({ query: options.topic, mediaType: "video", limit: 5, orientation });
     const narration = await this.generateVoiceNarration(narrationText);
     const clips = stock.items.map((i) => ({ url: i.url, previewUrl: i.previewUrl, provider: i.provider, title: i.title }));
     const baseMeta = {
@@ -56964,16 +56966,33 @@ var OpenMontageMediaService = class {
         };
       }
     }
+    if (clips.length > 0) {
+      return {
+        success: true,
+        mediaUrl: clips[0].url,
+        mediaType: "video",
+        durationSec: duration,
+        providerUsed: `${clips[0].provider}+${narration.provider} (free)`,
+        caption,
+        costEstUsd: 0,
+        renderStatus: "reel_ready",
+        metadata: {
+          ...baseMeta,
+          narrationAudioBase64: narration.audioBase64,
+          note: "Free reel: best-matching vertical stock clip + AI voiceover, ready to post. Add SHOTSTACK_API_KEY to stitch a multi-clip montage with the narration burned in."
+        }
+      };
+    }
     return {
-      success: clips.length > 0 || Boolean(narration.audioBase64),
+      success: Boolean(narration.audioBase64),
       mediaUrl: "",
-      mediaType: "video",
-      durationSec: duration,
-      providerUsed: `${clips[0]?.provider ?? "stock"}+${narration.provider}`,
+      mediaType: "audio",
+      durationSec: narration.durationSec,
+      providerUsed: narration.provider,
       caption,
       costEstUsd: 0,
-      renderStatus: "assets_ready",
-      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: "Real footage + narration ready; set SHOTSTACK_API_KEY to auto-render a single MP4." }
+      renderStatus: narration.audioBase64 ? "assets_ready" : "unconfigured",
+      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: "Add PEXELS_API_KEY (free) for stock footage to build a video reel." }
     };
   }
   async renderWithShotstack(clips, title, duration, aspect) {
@@ -57502,12 +57521,12 @@ async function generatePromoMedia(store, input) {
   return {
     success: teaser.success,
     mediaUrl: teaser.mediaUrl,
-    mediaType: "video",
+    mediaType: teaser.mediaType,
     durationSec: teaser.durationSec,
     caption: teaser.caption,
     providerUsed: teaser.providerUsed,
     renderStatus: teaser.renderStatus,
-    note: teaser.renderStatus === "unconfigured" ? "Set PEXELS_API_KEY / PIXABAY_API_KEY (footage) + SHOTSTACK_API_KEY (render) to produce a real reel." : teaser.renderStatus === "assets_ready" ? "Real footage + narration ready; add SHOTSTACK_API_KEY to auto-render a single MP4." : void 0
+    note: teaser.renderStatus === "unconfigured" ? "Add a free PEXELS_API_KEY (stock footage) to produce a real reel; SHOTSTACK_API_KEY optionally stitches a montage." : teaser.renderStatus === "assets_ready" ? "Voiceover ready; add a free PEXELS_API_KEY for stock footage to build a video reel." : void 0
   };
 }
 
@@ -59212,6 +59231,25 @@ function hasCabKeyword(deps, text) {
 function hasHomeServiceSignal(deps, text) {
   return deps.vertical === "home-services" || HOME_SERVICE_KEYWORD_RE.test(text);
 }
+var WEALTH_KEYWORD_RE = /\b(invest|investing|investment|sip|mutual\s?fund|elss|portfolio|wealth|retirement|tax[-\s]?sav|80c|lump[-\s]?sum|equity|debt\s?fund|gold\s?fund|nifty|savings\s?plan)\b/i;
+function hasWealthSignal(deps, text) {
+  return deps.vertical === "financial-services" || WEALTH_KEYWORD_RE.test(text);
+}
+function wealthPlanContext(plans) {
+  return plans.slice(0, 8).map((p) => {
+    const m = p.metadata ?? {};
+    return {
+      sku: p.sku,
+      title: p.title,
+      minInvestment: `\u20B9${Number(p.pricePerPerson ?? 0).toLocaleString("en-IN")}`,
+      mode: m.mode ?? "SIP",
+      category: m.category ?? "",
+      risk: m.riskBand ?? "",
+      horizonYears: m.horizonYears ?? null,
+      lockInMonths: m.lockInMonths ?? 0
+    };
+  });
+}
 var INTENT_VALUES = [
   "sales_enquiry",
   "product_question",
@@ -59675,6 +59713,35 @@ Which plan suits you, and when would you like to start?`;
     }
     return state;
   }
+  if (hasWealthSignal(deps, lower)) {
+    const rawPlans = await store.getPackagesByType(state.organizationId, "investment-plan");
+    if (deps.vertical === "financial-services" || rawPlans.length > 0) {
+      const plans = wealthPlanContext(rawPlans);
+      state.toolCalls.push({ tool: "search_wealth_plans", input: {}, output: { plans } });
+      const llmReply = hasRealLLM(deps) ? await composeReplyWithLLM(
+        deps.llm,
+        state,
+        deps,
+        "You are a friendly wealth guide. First, if you don't yet know the customer's GOAL, MONTHLY AMOUNT, TIME HORIZON and RISK comfort, ask ONE simple question to fill the biggest gap (don't interrogate). Once you have enough, recommend the single best-matching plan from the provided list \u2014 name it, state its minimum amount, and one line on why it fits their goal/risk. Keep replies to 2-4 sentences. ALWAYS include a brief 'mutual funds are subject to market risk' note and NEVER guarantee returns. End by offering to set up a quick call with a SEBI-registered advisor to complete KYC and start the SIP.",
+        { investmentPlans: plans }
+      ) : null;
+      state.proposedResponse = llmReply ?? `Here are a few ways to begin:
+${plans.slice(0, 3).map((p) => `\u2022 *${p.title}* \u2014 from ${p.minInvestment}, ${p.risk || "balanced"} risk`).join("\n")}
+
+What's your goal and roughly how much would you like to invest each month? Mutual funds are subject to market risk \u2014 I can also set up a call with a SEBI-registered advisor. \u{1F64F}`;
+      const leadResult = await upsertQualifiedLead(store, {
+        organizationId: state.organizationId,
+        contactId: state.contactId,
+        conversationId: state.conversationId,
+        serviceInterest: state.inboundMessage.substring(0, 500),
+        qualificationSummary: `Wealth enquiry: ${state.inboundMessage.substring(0, 160)}`,
+        score: 60,
+        idempotencyKey: `lead:${state.conversationId}:${state.traceId}`
+      });
+      state.toolCalls.push({ tool: "upsert_qualified_lead", input: { serviceInterest: state.inboundMessage }, output: leadResult });
+      return state;
+    }
+  }
   const skinType = lower.includes("oily") ? "oily" : lower.includes("dry") ? "dry" : void 0;
   const searchResult = await searchProductCatalog(store, {
     organizationId: state.organizationId,
@@ -59945,6 +60012,23 @@ Once you pay, we'll confirm your assigned help. \u2728`;
       return state;
     }
     state.proposedResponse = "Happy to book your home help! \u{1F60A} Which plan would you like, and when should we start?";
+    return state;
+  }
+  if (!isTravelBooking && (deps.vertical === "financial-services" || hasWealthSignal(deps, contextText))) {
+    const handoff = await createHumanHandoff(store, {
+      organizationId: state.organizationId,
+      contactId: state.contactId,
+      conversationId: state.conversationId,
+      reason: "customer_request",
+      priority: "medium",
+      summary: `[advisor_call] Wealth customer wants to start investing / book an advisor. Message: "${state.inboundMessage.substring(0, 200)}".`,
+      idempotencyKey: `advisor:${state.conversationId}:${state.traceId}`
+    }).catch(() => null);
+    if (handoff?.handoffId) {
+      state.handoffId = handoff.handoffId;
+      state.toolCalls.push({ tool: "create_human_handoff", input: { reason: "advisor_call" }, output: handoff });
+    }
+    state.proposedResponse = "Wonderful! \u{1F64C} I've asked one of our SEBI-registered advisors to reach out \u2014 they'll help complete your quick paperless KYC and set up your SIP at a time that suits you. Could you share the best time to call, and the goal you're investing towards? Mutual funds are subject to market risk. \u{1F64F}";
     return state;
   }
   if (!isTravelBooking && deps.vertical && deps.vertical !== "travel") {

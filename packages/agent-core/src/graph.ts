@@ -164,6 +164,30 @@ function hasHomeServiceSignal(deps: AgentGraphDeps, text: string): boolean {
   return deps.vertical === 'home-services' || HOME_SERVICE_KEYWORD_RE.test(text);
 }
 
+/** Wealth / investments vertical keywords, word-bounded. */
+const WEALTH_KEYWORD_RE = /\b(invest|investing|investment|sip|mutual\s?fund|elss|portfolio|wealth|retirement|tax[-\s]?sav|80c|lump[-\s]?sum|equity|debt\s?fund|gold\s?fund|nifty|savings\s?plan)\b/i;
+
+function hasWealthSignal(deps: AgentGraphDeps, text: string): boolean {
+  return deps.vertical === 'financial-services' || WEALTH_KEYWORD_RE.test(text);
+}
+
+/** Map the org's investment-plan packages into a compact shape for the LLM/UI. */
+function wealthPlanContext(plans: Array<{ sku: string; title: string; pricePerPerson: number; metadata?: Record<string, unknown> }>) {
+  return plans.slice(0, 8).map((p) => {
+    const m = (p.metadata ?? {}) as { mode?: string; category?: string; riskBand?: string; horizonYears?: number; lockInMonths?: number };
+    return {
+      sku: p.sku,
+      title: p.title,
+      minInvestment: `₹${Number(p.pricePerPerson ?? 0).toLocaleString('en-IN')}`,
+      mode: m.mode ?? 'SIP',
+      category: m.category ?? '',
+      risk: m.riskBand ?? '',
+      horizonYears: m.horizonYears ?? null,
+      lockInMonths: m.lockInMonths ?? 0,
+    };
+  });
+}
+
 const INTENT_VALUES: IntentType[] = [
   'sales_enquiry', 'product_question', 'support_question', 'order_status',
   'booking_request', 'complaint_or_refund', 'human_request', 'opt_out',
@@ -703,6 +727,34 @@ async function nodeSalesFlow(store: BusinessStore, state: AgentState, deps: Agen
     return state;
   }
 
+  // ── Wealth / investments sales flow (goal-based) ────────────────
+  if (hasWealthSignal(deps, lower)) {
+    const rawPlans = await store.getPackagesByType(state.organizationId, 'investment-plan');
+    if (deps.vertical === 'financial-services' || rawPlans.length > 0) {
+      const plans = wealthPlanContext(rawPlans);
+      state.toolCalls.push({ tool: 'search_wealth_plans', input: {}, output: { plans } });
+      const llmReply = hasRealLLM(deps)
+        ? await composeReplyWithLLM(deps.llm!, state, deps,
+            "You are a friendly wealth guide. First, if you don't yet know the customer's GOAL, MONTHLY AMOUNT, TIME HORIZON and RISK comfort, ask ONE simple question to fill the biggest gap (don't interrogate). Once you have enough, recommend the single best-matching plan from the provided list — name it, state its minimum amount, and one line on why it fits their goal/risk. Keep replies to 2-4 sentences. ALWAYS include a brief 'mutual funds are subject to market risk' note and NEVER guarantee returns. End by offering to set up a quick call with a SEBI-registered advisor to complete KYC and start the SIP.",
+            { investmentPlans: plans })
+        : null;
+      state.proposedResponse = llmReply ??
+        `Here are a few ways to begin:\n${plans.slice(0, 3).map((p) => `• *${p.title}* — from ${p.minInvestment}, ${p.risk || 'balanced'} risk`).join('\n')}\n\nWhat's your goal and roughly how much would you like to invest each month? Mutual funds are subject to market risk — I can also set up a call with a SEBI-registered advisor. 🙏`;
+
+      const leadResult = await upsertQualifiedLead(store, {
+        organizationId: state.organizationId,
+        contactId: state.contactId,
+        conversationId: state.conversationId,
+        serviceInterest: state.inboundMessage.substring(0, 500),
+        qualificationSummary: `Wealth enquiry: ${state.inboundMessage.substring(0, 160)}`,
+        score: 60,
+        idempotencyKey: `lead:${state.conversationId}:${state.traceId}`,
+      });
+      state.toolCalls.push({ tool: 'upsert_qualified_lead', input: { serviceInterest: state.inboundMessage }, output: leadResult });
+      return state;
+    }
+  }
+
   // Product sales flow
   const skinType = lower.includes('oily') ? 'oily' : lower.includes('dry') ? 'dry' : undefined;
   const searchResult = await searchProductCatalog(store, {
@@ -982,6 +1034,27 @@ async function nodeBookingFlow(store: BusinessStore, state: AgentState, deps: Ag
       return state;
     }
     state.proposedResponse = "Happy to book your home help! 😊 Which plan would you like, and when should we start?";
+    return state;
+  }
+
+  // ── Wealth / investments: hand off to a SEBI-registered advisor ─
+  // Investments can't be executed in-chat (KYC/compliance) — booking intent
+  // here means "connect me to an advisor", so we escalate to a human.
+  if (!isTravelBooking && (deps.vertical === 'financial-services' || hasWealthSignal(deps, contextText))) {
+    const handoff = await createHumanHandoff(store, {
+      organizationId: state.organizationId,
+      contactId: state.contactId,
+      conversationId: state.conversationId,
+      reason: 'customer_request',
+      priority: 'medium',
+      summary: `[advisor_call] Wealth customer wants to start investing / book an advisor. Message: "${state.inboundMessage.substring(0, 200)}".`,
+      idempotencyKey: `advisor:${state.conversationId}:${state.traceId}`,
+    }).catch(() => null);
+    if (handoff?.handoffId) {
+      state.handoffId = handoff.handoffId;
+      state.toolCalls.push({ tool: 'create_human_handoff', input: { reason: 'advisor_call' }, output: handoff });
+    }
+    state.proposedResponse = "Wonderful! 🙌 I've asked one of our SEBI-registered advisors to reach out — they'll help complete your quick paperless KYC and set up your SIP at a time that suits you. Could you share the best time to call, and the goal you're investing towards? Mutual funds are subject to market risk. 🙏";
     return state;
   }
 

@@ -66,12 +66,14 @@ describe('OpenMontageMediaService', () => {
     expect(n.durationSec).toBeGreaterThan(0);
   });
 
-  it('teaser returns a real asset kit (assets_ready) without a renderer', async () => {
+  it('teaser returns a FREE real reel (top stock clip as MP4) without a paid renderer', async () => {
     stubFetch();
     const svc = new OpenMontageMediaService({ PEXELS_API_KEY: 'k', GOOGLE_CLOUD_TTS_API_KEY: 'k' });
     const r = await svc.generateVideoTeaser({ topic: 'index funds', style: 'product_ad' });
-    expect(r.renderStatus).toBe('assets_ready');
+    expect(r.renderStatus).toBe('reel_ready');
     expect(r.success).toBe(true);
+    expect(r.mediaType).toBe('video');
+    expect(r.mediaUrl).toBe('https://vid/hd.mp4'); // real playable clip, free
     expect((r.metadata?.clips as unknown[]).length).toBeGreaterThan(0);
     expect(r.metadata?.narrationAudioBase64).toBe('BASE64AUDIO');
   });

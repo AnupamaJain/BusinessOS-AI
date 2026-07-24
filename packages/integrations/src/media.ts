@@ -49,6 +49,8 @@ export interface StockFootageQuery {
   query: string;
   mediaType?: 'video' | 'image';
   limit?: number;
+  /** Preferred orientation (Pexels video) — 'portrait' for 9:16 reels. */
+  orientation?: 'portrait' | 'landscape' | 'square';
 }
 
 export interface StockFootageResult {
@@ -103,7 +105,7 @@ export class OpenMontageMediaService {
     const type = options.mediaType ?? 'video';
     try {
       if (this.pexelsKey) {
-        const items = await this.searchPexels(options.query, type, limit);
+        const items = await this.searchPexels(options.query, type, limit, options.orientation);
         if (items.length) return { items };
       }
       if (this.pixabayKey) {
@@ -116,10 +118,11 @@ export class OpenMontageMediaService {
     return { items: [] };
   }
 
-  private async searchPexels(query: string, type: 'video' | 'image', limit: number): Promise<StockFootageResult['items']> {
+  private async searchPexels(query: string, type: 'video' | 'image', limit: number, orientation?: string): Promise<StockFootageResult['items']> {
+    const orient = orientation ? `&orientation=${orientation}` : '';
     const url = type === 'video'
-      ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}`
-      : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}`;
+      ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=${limit}${orient}`
+      : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${limit}${orient}`;
     const res = await fetch(url, { headers: { Authorization: this.pexelsKey ?? '' } });
     if (!res.ok) return [];
     const data = (await res.json()) as {
@@ -179,8 +182,9 @@ export class OpenMontageMediaService {
       };
     }
 
-    // Real assets: stock clips + narration audio.
-    const stock = await this.searchStockFootage({ query: options.topic, mediaType: 'video', limit: 3 });
+    // Real assets: stock clips (orientation-matched) + narration audio.
+    const orientation = aspect === '9:16' ? 'portrait' : aspect === '1:1' ? 'square' : 'landscape';
+    const stock = await this.searchStockFootage({ query: options.topic, mediaType: 'video', limit: 5, orientation });
     const narration = await this.generateVoiceNarration(narrationText);
     const clips: StoryboardClip[] = stock.items.map((i) => ({ url: i.url, previewUrl: i.previewUrl, provider: i.provider, title: i.title }));
 
@@ -209,12 +213,26 @@ export class OpenMontageMediaService {
       }
     }
 
-    // No renderer: return the real asset kit (clips + narration).
+    // FREE reel (no paid renderer): use the best orientation-matched stock clip
+    // as the actual reel — a real, playable MP4 — paired with free TTS narration.
+    if (clips.length > 0) {
+      return {
+        success: true, mediaUrl: clips[0]!.url, mediaType: 'video', durationSec: duration,
+        providerUsed: `${clips[0]!.provider}+${narration.provider} (free)`,
+        caption, costEstUsd: 0, renderStatus: 'reel_ready',
+        metadata: {
+          ...baseMeta, narrationAudioBase64: narration.audioBase64,
+          note: 'Free reel: best-matching vertical stock clip + AI voiceover, ready to post. Add SHOTSTACK_API_KEY to stitch a multi-clip montage with the narration burned in.',
+        },
+      };
+    }
+
+    // Narration only (no footage key): return the audio as the asset.
     return {
-      success: clips.length > 0 || Boolean(narration.audioBase64), mediaUrl: '', mediaType: 'video',
-      durationSec: duration, providerUsed: `${clips[0]?.provider ?? 'stock'}+${narration.provider}`,
-      caption, costEstUsd: 0, renderStatus: 'assets_ready',
-      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: 'Real footage + narration ready; set SHOTSTACK_API_KEY to auto-render a single MP4.' },
+      success: Boolean(narration.audioBase64), mediaUrl: '', mediaType: 'audio',
+      durationSec: narration.durationSec, providerUsed: narration.provider,
+      caption, costEstUsd: 0, renderStatus: narration.audioBase64 ? 'assets_ready' : 'unconfigured',
+      metadata: { ...baseMeta, narrationAudioBase64: narration.audioBase64, note: 'Add PEXELS_API_KEY (free) for stock footage to build a video reel.' },
     };
   }
 

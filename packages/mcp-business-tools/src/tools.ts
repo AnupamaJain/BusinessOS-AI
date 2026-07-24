@@ -737,15 +737,15 @@ export async function generatePromoMedia(store: BusinessStore, input: GeneratePr
   return {
     success: teaser.success,
     mediaUrl: teaser.mediaUrl,
-    mediaType: 'video',
+    mediaType: teaser.mediaType,
     durationSec: teaser.durationSec,
     caption: teaser.caption,
     providerUsed: teaser.providerUsed,
     renderStatus: teaser.renderStatus,
     note: teaser.renderStatus === 'unconfigured'
-      ? 'Set PEXELS_API_KEY / PIXABAY_API_KEY (footage) + SHOTSTACK_API_KEY (render) to produce a real reel.'
+      ? 'Add a free PEXELS_API_KEY (stock footage) to produce a real reel; SHOTSTACK_API_KEY optionally stitches a montage.'
       : teaser.renderStatus === 'assets_ready'
-        ? 'Real footage + narration ready; add SHOTSTACK_API_KEY to auto-render a single MP4.'
+        ? 'Voiceover ready; add a free PEXELS_API_KEY for stock footage to build a video reel.'
         : undefined,
   };
 }
