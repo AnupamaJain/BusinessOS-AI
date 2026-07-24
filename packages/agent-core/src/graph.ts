@@ -1115,7 +1115,17 @@ async function nodeClarificationFlow(state: AgentState, deps: AgentGraphDeps): P
     return state;
   }
 
-  state.proposedResponse = "Thanks for reaching out! Could you tell me a bit more about what you're looking for? I can help with product recommendations, order support, or connect you with our team.";
+  // New customer, brief/unclear message. Compose on the org's own persona so the
+  // clarifying question stays in the business's domain (wealth, travel, …) rather
+  // than a generic "products/orders" line. Neutral, business-named fallback.
+  const llmReply = hasRealLLM(deps)
+    ? await composeReplyWithLLM(deps.llm!, state, deps,
+        "The customer's message is brief or unclear. Warmly welcome them and ask ONE simple question to understand what they need, staying strictly within the business's own domain. Keep it to 1-2 sentences and follow all business rules.",
+        {})
+    : null;
+  const business = deps.businessName ?? 'us';
+  state.proposedResponse = llmReply ??
+    `Thanks for reaching out to ${business}! 🙏 Could you tell me a little more about what you're looking for, and I'll point you to the right option — or connect you with our team.`;
   return state;
 }
 
